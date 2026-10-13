@@ -151,17 +151,41 @@ class Database:
     def __init__(self, url: str = "sqlite:///:memory:") -> None:
         self.url = url
         engine_kwargs: dict[str, Any] = {"future": True}
+        self._is_file_sqlite = url.startswith("sqlite") and ":memory:" not in url
         if url.startswith("sqlite"):
-            engine_kwargs["connect_args"] = {"check_same_thread": False}
-            # For an in-memory database every connection otherwise gets its own
-            # private DB, so rows committed in one session are invisible in the
-            # next. StaticPool shares a single connection across all sessions.
+            # timeout = how long a writer waits for a competing lock instead of
+            # immediately raising "database is locked". Needed for real
+            # concurrent workers on a file database.
+            engine_kwargs["connect_args"] = {
+                "check_same_thread": False,
+                "timeout": 30,
+            }
             if ":memory:" in url:
+                # An in-memory DB otherwise gives every connection its own
+                # private database, so rows committed in one session vanish in
+                # the next. StaticPool shares a single connection; note this
+                # also means true multi-connection concurrency cannot be
+                # exercised against :memory: (use a file DB for that).
                 engine_kwargs["poolclass"] = StaticPool
         self.engine: Engine = create_engine(url, **engine_kwargs)
+        if self._is_file_sqlite:
+            self._enable_wal()
         self._sessionmaker = sessionmaker(
             self.engine, expire_on_commit=False, class_=Session
         )
+
+    def _enable_wal(self) -> None:
+        """Enable WAL + a busy timeout so concurrent workers can interleave.
+
+        WAL lets readers proceed while a writer holds the write lock, and
+        ``busy_timeout`` makes a second writer wait rather than fail instantly.
+        """
+        from sqlalchemy import text
+
+        with self.engine.begin() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.execute(text("PRAGMA busy_timeout=30000"))
+            conn.execute(text("PRAGMA synchronous=NORMAL"))
 
     def create_all(self) -> None:
         Base.metadata.create_all(self.engine)

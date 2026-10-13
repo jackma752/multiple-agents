@@ -11,7 +11,7 @@ import datetime as dt
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from agenthub.contracts import (
@@ -433,8 +433,31 @@ class PolicyService:
             )
 
         # 7. Atomic consume + reserve slot
-        appr.status = ApprovalStatus.CONSUMED.value
-        appr.consumed_at = now()
+        # 7. Atomic consume + reserve slot.
+        #
+        # The approval is consumed with a compare-and-swap UPDATE guarded on
+        # status='approved'. Two workers racing on the same approval therefore
+        # cannot both win: the loser's UPDATE affects 0 rows and is rejected
+        # here, before any quota reservation or adapter start. This is what
+        # makes "同一审批并发消费最多启动一次" hold under real concurrency,
+        # rather than relying on a read-then-write race.
+        cas = self.session.execute(
+            update(ApprovalRow)
+            .where(
+                ApprovalRow.id == appr.id,
+                ApprovalRow.status == ApprovalStatus.APPROVED.value,
+            )
+            .values(status=ApprovalStatus.CONSUMED.value, consumed_at=now())
+            .execution_options(synchronize_session=False)
+        )
+        if cas.rowcount != 1:
+            # Lost the race (or the status changed underneath us).
+            self.session.rollback()
+            raise QuotaError(
+                "already_consumed",
+                f"approval {appr.id} was consumed concurrently",
+            )
+
         reservation = QuotaReservationRow(
             id=new_id("res"),
             invocation_id=invocation_id,
@@ -450,6 +473,8 @@ class PolicyService:
                 payload={"invocation_id": invocation_id},
             )
         )
+        # Re-read the consumed approval so the returned plan reflects committed
+        # state rather than the pre-CAS object.
         self.session.flush()
         return {
             "invocation_id": invocation_id,

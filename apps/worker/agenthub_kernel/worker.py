@@ -41,39 +41,59 @@ class Worker:
         return outcomes
 
     def _process_one(self) -> Optional[dict[str, Any]]:
-        """Find one consumable invocation and start its adapter.
+        """Find one consumable invocation, commit the gate, then start the adapter.
+
+        Ordering is deliberate and load-bearing (AGENT_HUB_PLAN §4.1): the
+        approval is consumed and the quota slot reserved in a transaction that
+        is COMMITTED before the adapter is started. If that commit fails, the
+        adapter is never started — so a failed consume transaction can never
+        leave a call running without an approval.
 
         Returns None when there is nothing ready, else a diagnostic dict.
         """
+        snapshot_data: dict[str, Any]
+        invocation_id: str
+
+        # ---- Phase 1: atomic consume + reservation, committed first ----
         with self.db.session() as session:
             svc = PolicyService(session)
             inv = self._pick_ready(session)
             if inv is None:
                 return None
+            invocation_id = inv.id
 
-            # The consume gate: any QuotaError rolls back the whole transaction
-            # and the adapter is never started.
             try:
-                plan = svc.consume(inv.id)
+                plan = svc.consume(invocation_id)
             except QuotaError as exc:
-                session.commit()  # persist status changes (e.g. invalid/expired)
-                return {"invocation_id": inv.id, "ok": False, "code": exc.code, "error": exc.message}
+                # Persist denial side effects (e.g. expired/invalid marking)
+                # and stop: the adapter must not be started.
+                session.commit()
+                return {
+                    "invocation_id": invocation_id,
+                    "ok": False,
+                    "code": exc.code,
+                    "error": exc.message,
+                }
+            snapshot_data = plan["snapshot"]
+            # Exiting this block COMMITS the consumed approval + reservation.
+            # Any failure here propagates and the adapter is never started.
 
-            snapshot = plan["snapshot"]
-            # Start the adapter OUTSIDE the DB transaction. The approval is
-            # already consumed and the slot reserved, so a crash after this
-            # point cannot cause a double-start.
-            start = self.adapter.start(inv.id, _snapshot_from_dict(snapshot))
+        # ---- Phase 2: only now start the adapter, outside that transaction ----
+        start = self.adapter.start(invocation_id, _snapshot_from_dict(snapshot_data))
+
+        # ---- Phase 3: record the outcome ----
+        with self.db.session() as session:
+            svc = PolicyService(session)
             if start.ok:
-                svc.transition_invocation(inv.id, InvocationStatus.RUNNING)
+                svc.transition_invocation(invocation_id, InvocationStatus.RUNNING)
             else:
-                svc.release(inv.id, InvocationStatus.FAILED)
-            session.commit()
-            return {
-                "invocation_id": inv.id,
-                "ok": start.ok,
-                "adapter_invocation_id": start.adapter_invocation_id,
-            }
+                svc.release(invocation_id, InvocationStatus.FAILED)
+
+        return {
+            "invocation_id": invocation_id,
+            "ok": start.ok,
+            "adapter_invocation_id": start.adapter_invocation_id,
+        }
 
     def _pick_ready(self, session: Any) -> Optional[InvocationRow]:
         """Pick an invocation that has a consumable approval and is not terminal.

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from agenthub.contracts import InvocationSnapshot, Policy
@@ -32,6 +32,7 @@ from agenthub_kernel.db import Database, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
 
 from agenthub_adapters.mock import MockAdapter
+from agenthub_rt.auth import Principal, authenticate, require_approver
 
 
 class AgentIn(BaseModel):
@@ -154,19 +155,31 @@ def create_app(db: Optional[Database] = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
 
     @app.post("/api/approvals/{approval_id}/approve")
-    def approve(approval_id: str) -> dict[str, Any]:
+    def approve(
+        approval_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
         with db.session() as session:
             svc = PolicyService(session)
             try:
                 appr = svc.approve(approval_id)
                 session.commit()
-                return {"approval_id": appr.id, "status": appr.status}
+                return {
+                    "approval_id": appr.id,
+                    "status": appr.status,
+                    "approved_by": principal.identity,
+                }
             except QuotaError as exc:
                 session.rollback()
                 raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
 
     @app.post("/api/approvals/{approval_id}/reject")
-    def reject(approval_id: str) -> dict[str, Any]:
+    def reject(
+        approval_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
         with db.session() as session:
             svc = PolicyService(session)
             try:
@@ -178,7 +191,11 @@ def create_app(db: Optional[Database] = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
 
     @app.post("/api/approvals/{approval_id}/revoke")
-    def revoke(approval_id: str) -> dict[str, Any]:
+    def revoke(
+        approval_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
         with db.session() as session:
             svc = PolicyService(session)
             try:
@@ -190,7 +207,12 @@ def create_app(db: Optional[Database] = None) -> FastAPI:
                 raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
 
     @app.post("/api/tasks/{task_id}/policy")
-    def update_policy(task_id: str, body: PolicyIn) -> dict[str, Any]:
+    def update_policy(
+        task_id: str,
+        body: PolicyIn,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
         with db.session() as session:
             task = session.get(TaskRow, task_id)
             if task is None:
@@ -222,7 +244,11 @@ def create_app(db: Optional[Database] = None) -> FastAPI:
             ]
 
     @app.post("/api/tasks/{task_id}/stop")
-    def stop_task(task_id: str) -> dict[str, Any]:
+    def stop_task(
+        task_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
         with db.session() as session:
             task = session.get(TaskRow, task_id)
             if task is None:

@@ -13,14 +13,16 @@
 - 数据模型：`tasks`（根任务树，含 `root_task_id`/`depth`）、`invocations`（含不可变输入快照 `payload_hash`）、`approvals`、`quota_reservations`、`policy_versions`、`events`。
 - 调用状态机：`draft → awaiting_approval → queued → starting → running → succeeded/failed/canceled/timed_out/unknown/rejected/invalid`。
 - **审批是执行门**：只有 `approved` 审批可以进入消费路径（`pending → approved → consumed`）。`_find_consumable_approval` 只查询 `approved`；`consume` 在预留配额 / 更新状态 / 启动事件之前再次检查状态，非批准状态返回 `not_approved` 或 `no_approval`，不会造成消费、配额占用或适配器启动。
-- Worker 事务式消费：`consume` 校验审批有效性与停机状态、原子消费审批并预留并发名额后，才调用适配器；适配器启动次数可作为"未批准 = 未调用"的断言依据。
+- **审批权限在后端强制**：HTTP 审批端点须携带 Bearer token，只有 `user` 角色可批准 / 拒绝 / 撤销、改配额、停止任务树；无 token 返回 401，`agent` / `worker` 身份返回 403。因此 Agent 不能批准自己。
+- **Worker 事务边界**：Worker 先在事务中消费审批并预留名额，**提交成功后**才启动适配器；提交失败则不会启动。
+- **并发消费最多一次**：审批用条件更新（`WHERE status='approved'`）消费，两个 Worker 抢同一审批时只有一个成功，且只产生一条名额预留。
 - 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，用于断言未批准时启动次数为 0。
 
-**当前 24 个策略测试全部通过**（`test_approval.py` 7、`test_quota.py` 6、`test_stop_and_authz.py` 4、`test_consumable_approval.py` 7），见 `docs/p2-approval-gate.md` 的回归说明。
+**当前 38 个测试全部通过**：`http/test_auth.py` 11、`test_approval.py` 7、`test_consumable_approval.py` 7、`test_quota.py` 6、`test_stop_and_authz.py` 4、`test_worker_atomicity.py` 3。并发用例使用**文件型 SQLite + 独立连接**（内存库共享单连接，无法表达并发）。细节见 `docs/p2-approval-gate.md` 与 `docs/p2-auth-and-atomicity.md`。
 
-> **这不等于完整 P2 安全验收。** 以下仍需独立验证：HTTP 审批端点的用户身份鉴权、两个 Worker 并发消费同一审批的最多一次启动、崩溃/重启恢复、以及策略版本变化对既有审批的失效。参见 `docs/p2-approval-gate.md` §"本修复不能作为完整 P2 安全验收"。
+> **这不等于完整 P2 安全验收。** 以下仍需独立验证：进程崩溃 / 重启恢复后不重复调用、策略版本变化对既有审批的失效（`policy` 更新尚未持久化）、API 与 Worker 共用同一数据库文件、以及取消正在运行的调用。参见 `docs/p2-auth-and-atomicity.md` §6。
 
 ## 仓库约定
 
