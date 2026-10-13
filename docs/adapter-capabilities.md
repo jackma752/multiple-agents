@@ -1,0 +1,64 @@
+# 适配器能力矩阵（P0）
+
+规范（`AGENT_HUB_PLAN.md` §2）：**每个适配器先提交能力表，未验证的能力显示"未知"，不显示"支持"。**
+本表只记录已读源码或已读官方文档确认的内容，其余一律 `未知`。
+
+状态取值：`已实现` / `部分实现` / `未实现` / `未知`
+来源标注：`源码` = 本次审计的 AionUi/AionCore 源码；`文档` = 官方文档（未实测）。
+
+## 表 A：中间层（AionUi / AionCore）—— 已审计
+
+这一层决定"中转站能否管住 Agent"，是本次 P0 的审计对象。结论见 `docs/audit-aionui.md`。
+
+| 能力 | 状态 | 证据 |
+|---|---|---|
+| 发消息（用户 → Agent） | 已实现 | AionCore `aionui-conversation` 域 + WS 事件 |
+| 流式输出 | 已实现 | WebSocket + 事件广播（`ARCHITECTURE.md`） |
+| 恢复会话 | 部分实现 | ACP `session/new` + resume；claude/codebuddy 用 `_meta.claudeCode.options.resume`，codex 用 `session/load`（team `docs/mcp.md:171-176`） |
+| 取消任务 | 部分实现 | 有 kill/stop 路径；团队 MCP 无取消语义，permission pending 无超时（`permission_router.rs:124-146`） |
+| 限制文件目录 | **未实现** | 团队共享单一 workspace，无 per-agent 目录/worktree（`aionui-team/src/workspace.rs:50-77`）；无 OS 级沙箱（`aionui-process/src/containment.rs:1-8` 自述 lifecycle-only） |
+| 拦截工具操作 | **未实现** | 单聊有 ACP 审批卡片；但 team MCP 被硬编码自动放行（`permission_router.rs:15,73-76`），团队成员被强制 full-auto（`service/spawn_support.rs:68-79`），agy 钩子被主动删除（`factory/antigravity.rs:66-79`） |
+| 控制内部子 Agent | **未实现** | 原生委派仅翻译为 `SubagentUpdate` 事件、不计数不拦截（`claude_conn.rs:1791-1797`、`codex_conn.rs:6287-6329`）；全仓无关闭开关 |
+| 委派需用户批准 | **未实现** | `session.rs:1846` spawn 无审批分支；仅存于工具描述 `team_tools.rs:9,19` |
+| 全树数量/并发/深度配额 | **未实现** | 全 `crates` 数量类命名 0 命中；无 `parent_id/root_id/depth` 字段 |
+| 审批的凭证边界 | **未实现** | 本地模式不挂 CSRF（`routes.rs:428-435`）、CSRF 客户端恒为空桩（`httpBridge.ts:202-204`）、IPC 整桥透传（`preload/main.ts:18-32`） |
+| 返回真实用量 | 未知 | 本次未审计计费/用量路径；费用类信息不得假定可用 |
+
+## 表 B：各产品适配器 —— 多数单元格未知
+
+本次**只审计了中间层源码，没有安装或运行任何 CLI**，因此产品自身能力大多无法确认。
+下表 `未知` 的单元格就是 P0 待办（测试方法见最后一列）。
+
+| 产品 | 发消息 | 流式 | 恢复会话 | 取消 | 限制目录 | 拦截工具 | 控制内部子 Agent | 真实用量 |
+|---|---|---|---|---|---|---|---|---|
+| Codex | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | **已知不可控**（`spawnAgent` 仅事件） | 未知 |
+| CC / Claude Code | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | **已知不可控**（`Task`/`Workflow` 仅事件） | 未知 |
+| WorkBuddy | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 |
+| DSH | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 |
+| Ink Stone | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 | 未知 |
+| 自建 Agent | 待实现 | 待实现 | 待实现 | 待实现 | 待实现 | 待实现 | **可完全控制**（自己实现） | 待实现 |
+
+> Codex 与 CC 的"控制内部子 Agent"标为**已知不可控**，指的是**经 AionUi 接入时**观测到的行为
+> （只观测不拦截）。它们自身是否提供禁用开关（如 CLI 参数、环境变量）**未知**，需按 AGENTS.md 规则
+> 以真实 `--help` / 捕获样本为准，不得靠记忆推断。
+
+### 每个适配器接入前必须回答的问题（P0 出口条件）
+
+1. 能否发消息、是否流式、会话能否恢复、任务能否取消（不支持必须返回 `unsupported`，不得伪造）。
+2. 能否限制可读写目录（是"受限工作目录"还是"无限制"）。
+3. 工具操作能否在**启动前**拦截（不是提示词约定）。
+4. **产品自带的子 Agent / 后台委派能否关闭或在启动前拦截**；不能则标记"不满足严格协作要求"。
+5. 能否返回真实用量（token/费用）；不能则用次数与时限约束，并显示"费用未知"。
+6. 是否为子进程净化环境、是否能阻止 Agent 直接 fork 另一个 CLI 绕过中转站。
+
+### 验证方法（不得用记忆代替）
+
+- CLI 自身 `--help` / 自描述 schema 的实际输出。
+- 真实调用的一次捕获样本（wire 级），而非手写 mock。
+- 参考实现的源码（若存在）。
+
+## 结论对选型的影响
+
+表 A 中三个硬条件全部 `未实现`，且其中两项属"数据模型缺失"而非"开关未开"。
+因此**不建议**把 AionUi 当作满足方案 §6 安全阀用例的基座；它的价值在 UI、会话管理、ACP 接入与任务板，可作为参考实现。
+详见 `docs/audit-aionui.md` §5 的两条路线比较。
