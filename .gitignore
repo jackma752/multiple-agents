@@ -11,3 +11,12 @@ runtime/
 logs/
 .worktrees/
 *.log
+
+# P2 local generated artifacts (reproducible via tools/bootstrap/*; not committed)
+/wheelhouse/
+.uv-cache/
+.uv-python/
+*.db
+*.sqlite
+*.sqlite3
+
