@@ -22,7 +22,10 @@ WORKER = {"Authorization": "Bearer dev-worker-token"}
 
 @pytest.fixture
 def client():
-    app = create_app()
+    # Explicit in-memory DB so HTTP tests never touch the shared runtime file.
+    from agenthub_kernel.db import Database
+
+    app = create_app(db=Database("sqlite:///:memory:"))
     with TestClient(app) as c:
         yield c
 

@@ -138,15 +138,25 @@ def _snapshot_from_dict(data: dict[str, Any]):
 
 
 def main() -> None:
-    """Standalone worker loop (dev/demo). Drains once per second until stopped."""
+    """Standalone worker loop (dev/demo). Drains once per second until stopped.
+
+    Uses the shared runtime configuration so this process and the API process
+    open the SAME SQLite file, regardless of the working directory either was
+    launched from.
+    """
     import time
 
     from agenthub_adapters.mock import MockAdapter
 
-    db = Database("sqlite:///./agent-hub.db")
+    from agenthub_kernel import config
+
+    url = config.default_db_url()
+    if url.startswith("sqlite") and ":memory:" not in url:
+        config.ensure_data_dir()
+    db = Database(url)
     db.create_all()
     worker = Worker(db, MockAdapter())
-    print("worker started; Ctrl-C to stop")
+    print(f"worker started on {url}; Ctrl-C to stop")
     try:
         while True:
             drained = worker.drain_once()

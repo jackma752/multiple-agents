@@ -16,13 +16,14 @@
 - **审批权限在后端强制**：HTTP 审批端点须携带 Bearer token，只有 `user` 角色可批准 / 拒绝 / 撤销、改配额、停止任务树；无 token 返回 401，`agent` / `worker` 身份返回 403。因此 Agent 不能批准自己。
 - **Worker 事务边界**：Worker 先在事务中消费审批并预留名额，**提交成功后**才启动适配器；提交失败则不会启动。
 - **并发消费最多一次**：审批用条件更新（`WHERE status='approved'`）消费，两个 Worker 抢同一审批时只有一个成功，且只产生一条名额预留。
+- **API 与 Worker 共用同一数据库文件**：路径锚定仓库根（`config.py`，不依赖工作目录），文件型 SQLite 启用 WAL 与 busy timeout；记录可跨进程读取、重启后保留，已消费的审批不会重复启动。
 - 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，用于断言未批准时启动次数为 0。
 
-**当前 38 个测试全部通过**：`http/test_auth.py` 11、`test_approval.py` 7、`test_consumable_approval.py` 7、`test_quota.py` 6、`test_stop_and_authz.py` 4、`test_worker_atomicity.py` 3。并发用例使用**文件型 SQLite + 独立连接**（内存库共享单连接，无法表达并发）。细节见 `docs/p2-approval-gate.md` 与 `docs/p2-auth-and-atomicity.md`。
+**当前 44 个测试全部通过**：`http/test_auth.py` 11、`persistence/test_shared_db.py` 6、`test_approval.py` 7、`test_consumable_approval.py` 7、`test_quota.py` 6、`test_stop_and_authz.py` 4、`test_worker_atomicity.py` 3。并发用例使用**文件型 SQLite + 独立连接**（内存库共享单连接，无法表达并发）。细节见 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`。
 
-> **这不等于完整 P2 安全验收。** 以下仍需独立验证：进程崩溃 / 重启恢复后不重复调用、策略版本变化对既有审批的失效（`policy` 更新尚未持久化）、API 与 Worker 共用同一数据库文件、以及取消正在运行的调用。参见 `docs/p2-auth-and-atomicity.md` §6。
+> **这不等于完整 P2 安全验收。** 以下仍需独立验证：进程被强杀后的 `unknown` 收敛与重查、策略版本变化使既有审批失效（`update_policy` 尚未持久化策略）、取消正在运行的调用。参见 `docs/p2-shared-persistence.md` §5。
 
 ## 仓库约定
 

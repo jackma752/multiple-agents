@@ -70,8 +70,24 @@ class MessageIn(BaseModel):
     text: str
 
 
-def create_app(db: Optional[Database] = None) -> FastAPI:
-    db = db or Database("sqlite:///:memory:")
+def create_app(
+    db: Optional[Database] = None,
+    db_url: Optional[str] = None,
+) -> FastAPI:
+    """Build the FastAPI app.
+
+    By default the app opens the **shared** runtime database (a file whose path
+    is anchored to the repo root, not the working directory), so the API process
+    and a separately launched Worker process see the same data and it survives a
+    restart. Tests may pass an explicit ``db`` or ``db_url``.
+    """
+    from agenthub_kernel import config
+
+    if db is None:
+        url = db_url or config.default_db_url()
+        if url.startswith("sqlite") and ":memory:" not in url:
+            config.ensure_data_dir()
+        db = Database(url)
     db.create_all()
     app = FastAPI(title="Agent Hub", version="0.1.0")
     app.state.db = db
