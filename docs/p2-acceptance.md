@@ -9,8 +9,8 @@
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-结果：**127 passed，exit code 0**。并发/恢复/E2E 敏感用例另做 **8 轮重复**
-（9 项 × 8 = 72 次执行）全部 `exit=0`。
+结果：**136 passed，exit code 0**。并发/恢复/停止确认/E2E 敏感用例另做 **8 轮重复**
+（23 项 × 8 = 184 次执行）全部 `exit=0`。
 
 ---
 
@@ -46,7 +46,7 @@
 | 6 | 深度 1：子 Agent 不能再生成子 Agent | **通过** | `test_depth_limit_blocks_grandchild` |
 | 7 | Agent 尝试批准自己、增加上限或通过 CLI 绕过中转站：被权限边界阻止 | **部分通过**（CLI 项属 P3） | 批准自己：`test_non_user_cannot_approve`（agent/worker/无 token/伪造 token，启动数 0）。增加上限：`test_non_user_cannot_change_policy`、`test_agent_cannot_update_policy_via_api`、`test_patch_policy_requires_user`。**CLI 绕过：P2 无 CLI，无法验证** |
 | 8 | 关闭自动协作后无新自动分派；全部停止后无新启动 | **部分通过**（自动协作属 P4） | 全部停止：`test_stopped_tree_never_starts_new_invocation`、`test_stop_request_is_persisted_and_blocks_new_starts`、`e2e` 第 7 步。**本题另有"暂停"能力**（`test_pause_blocks_new_scheduling_without_cancelling`、`test_pause_blocks_new_start_and_resume_unblocks`），但计划所列的**自动协作开关**仍未实现（P4） |
-| 9 | 进程崩溃、远程超时、重复事件：不盲目重跑，不错误宣称远程停止 | **部分通过**（真实远程超时属 P3） | 崩溃：`test_crash_before_start_becomes_unknown_without_restart`、`test_crash_after_start_confirms_running_and_holds_slot`、`test_recovery_is_idempotent_and_never_restarts`。重复事件：`test_release_is_idempotent_on_repeat_calls`、`test_duplicate_stop_is_idempotent`。**本地超时已实现**（`test_overdue_invocation_is_timed_out_and_releases_slot`、`test_timeout_reports_unconfirmed_remote_stop`：无法取消时如实报告 `remote_stop_confirmed=False`）。**真实适配器的远程超时行为未验证** |
+| 9 | 进程崩溃、远程超时、重复事件：不盲目重跑，不错误宣称远程停止 | **部分通过**（真实远程超时属 P3） | 崩溃：`test_crash_before_start_becomes_unknown_without_restart`、`test_crash_after_start_confirms_running_and_holds_slot`、`test_recovery_is_idempotent_and_never_restarts`。重复事件：`test_release_is_idempotent_on_repeat_calls`、`test_duplicate_stop_is_idempotent`。**本地超时已实现且区分确认与否**：取消**已确认**才置 `timed_out` 并释放名额；**未确认**（不支持取消 / 外部仍报 running / 证据丢失）则置 `unknown` 并**保留名额**（`test_overdue_invocation_is_timed_out_and_releases_slot`、`test_timeout_with_unconfirmed_cancel_goes_unknown_and_keeps_slot`、`test_timeout_with_running_external_record_is_unconfirmed`）。**真实适配器的远程超时行为未验证** |
 | 10 | SSE 断线恢复后状态和事件顺序一致；日志和仓库不含真实密钥 | **部分通过**（SSE 属 P3/P5） | 仓库无密钥：`tests/test_hygiene.py`（扫描全部源文件 + token 取自环境变量 + 生成物已 ignore）。**SSE 未实现**：`GET /api/tasks/{id}/events` 是普通列表，无 SSE、无断线续传序号 |
 
 **汇总：10 条中 6 条完全通过，4 条部分通过**，其中
@@ -118,19 +118,47 @@ succeeded/failed/canceled/timed_out/unknown`，拒绝直接进 `rejected`。
 
 ---
 
-## F. unknown 的用户裁决入口（本轮新增）
+## F. unknown 的用户裁决入口（本轮修正语义）
 
 `unknown` 的调用**保留名额**（不提前释放）。此前没有任何人工出口，会永久占用并发名额。
-现提供**用户专用**的裁决入口 `POST /api/invocations/{id}/reconcile`（仅 `user` 角色）：
+现提供**用户专用**的裁决入口 `POST /api/invocations/{id}/reconcile`（仅 `user` 角色）。
+
+**核心安全规则：名额只能在对"旧执行已停止"取得确认之后释放一次。**
 
 | 动作 | 行为 | 测试 |
 |---|---|---|
-| `settle` + `outcome` | 用户认定真实结果，调用转终态并**幂等**释放名额；再次调用被拒（`not_unknown`），不会二次释放 | `test_settle_unknown_releases_slot_once`、`test_settle_rejects_bad_outcome` |
-| `retry` | 旧调用结算为 `failed`（被取代）并释放名额；**新建**调用 + **新的待批审批**，快照携带**当前策略版本**；**不自动启动** | `test_retry_requires_a_new_approval_and_does_not_auto_start`、`test_retry_snapshot_carries_current_policy_version` |
+| `settle` + `outcome` | 用户**明确认定**真实结果——这本身就是一次人工确认——调用转终态并**幂等**释放名额；再次调用被拒（`not_unknown`），不会二次释放 | `test_settle_unknown_releases_slot_once`、`test_settle_rejects_bad_outcome`、`test_settle_is_the_explicit_way_to_confirm_and_frees_once`、`test_settle_via_api_frees_slot` |
+| `retry`（**已确认**旧执行结束） | 结算旧调用为 `failed`（被取代）并释放名额**一次**；**新建**调用 + **新的待批审批**，快照携带**当前策略版本**；**不自动启动** | `test_retry_allowed_only_after_confirmation_and_releases_once`、`test_retry_requires_a_new_approval_and_does_not_auto_start`、`test_retry_snapshot_carries_current_policy_version` |
+| `retry`（**未确认**） | **拒绝**（`not_stopped`）：**不改写旧调用状态、不释放名额、不新建调用**。用户若确知结果，应先 `settle` | `test_retry_refused_while_old_execution_still_running`、`test_reconcile_retry_refused_while_execution_unconfirmed` |
+
+### F.1 "确认已停止"的判定（`Worker._stop_evidence`）
+
+先请求适配器取消，再查外部侧执行记录，判定如下：
+
+| 外部侧证据 | 是否算"已确认停止" | 理由 |
+|---|---|---|
+| 记录为终态（`finished` / `failed` / `cancelled`） | ✅ 是 | 外部明确报告已结束 |
+| **无记录** 且内核**不认为**该调用在运行（`starting` / `unknown`） | ✅ 是 | Mock 在 `start()` 返回前同步落库，无记录即"从未到达适配器" |
+| **无记录** 但内核认为调用为 `running` | ❌ 否 | 这是**证据丢失**，不是停止的证明 |
+| 记录仍为 `running` / 状态无法识别 / 存储不可读 / 适配器不支持取消 | ❌ 否 | 无法证明已停止 |
+
+### F.2 并发上限为 1 时的保证（本轮新增测试）
+
+`max_subagents_concurrent=1`，第一条调用因超时未确认而进入 `unknown`（名额仍被占用）时，
+**第二条已批准调用不得启动**：
+
+| 场景 | 测试 |
+|---|---|
+| 取消不支持 → `unknown` → 第二条阻塞 | `test_second_approved_call_blocked_when_cancel_unsupported` |
+| 外部仍报 running → `unknown` → 第二条阻塞 | `test_second_approved_call_blocked_when_outcome_unknown` |
+| 崩溃恢复产生的 `unknown` → 第二条阻塞 | `test_second_approved_call_blocked_after_unknown_recovery` |
+| 确认结束后释放**一次**并允许新调用占用名额 | `test_retry_allowed_only_after_confirmation_and_releases_once` |
+| 用户 `settle` 确认后释放一次并允许新调用 | `test_settle_is_the_explicit_way_to_confirm_and_frees_once` |
 
 API 层：`test_reconcile_settle_via_api`、`test_reconcile_retry_requires_new_approval_via_api`、
 `test_reconcile_requires_user_and_valid_action`（Agent→403、非法动作→422）、
-`test_reconcile_refuses_non_unknown`（非 unknown→409）。
+`test_reconcile_refuses_non_unknown`（非 unknown→409）、
+`test_reconcile_retry_refused_while_execution_unconfirmed`（未确认→409 `not_stopped`）。
 
 ---
 
@@ -139,14 +167,18 @@ API 层：`test_reconcile_settle_via_api`、`test_reconcile_retry_requires_new_a
 - **P2 自身的定义（§6 阶段表）全部达成**：批准、拒绝、过期、计数、并发、停止均以 Mock 验证，
   "未批准绝不调用适配器"有大量 `start_count == 0` 断言支撑。
 - **§10 首个演示链路完整通过。**
-- **P2 内部遗留已清零**：状态机三状态落地、`unknown` 人工裁决入口补齐、接口契约对齐。
+- **P2 内部遗留已清零**：状态机三状态落地、`unknown` 人工裁决入口补齐、接口契约对齐，
+  以及本轮修正的两处**名额释放语义**（超时未确认→`unknown` 并保留名额；
+  `retry` 须先确认旧执行结束才释放一次）。
+- **统一原则**：任何时刻，**一个并发名额只有在能确认对应执行已结束时才会被释放**；
+  无法确认时一律保留占位，宁可少放行也不让两条调用占用同一名额。
 - **不宣称整个项目安全阀全部通过。** 4 条部分通过的条目均有明确阶段归属与未验证标注：
 
 | 条目 | 阶段 | 未验证原因 |
 |---|---|---|
 | CLI 拦截 Agent 绕过中转站 | **P3** | P2 无 CLI 进程可拦截 |
 | 自动协作开关关闭后无新自动分派 | **P4** | 该功能属 P4 受控自动协作 |
-| 真实适配器的远程超时行为 | **P3** | 本地超时已实现；外部系统超时语义需真实适配器验证 |
+| 真实适配器的远程超时与取消语义 | **P3** | 本地超时与确认逻辑已实现并以 Mock 验证；外部系统真实语义（取消时延、超时后是否真停）需真实适配器验证 |
 | SSE 断线恢复与事件顺序一致 | **P3/P5** | 事件为普通列表，SSE 属后续阶段 |
 
-- **未使用任何真实 Agent 接口**，符合本阶段约束，可以进入 P3。
+- **未使用任何真实 Agent 接口**，符合本阶段约束，可以进入 P3（本轮按指示暂缓）。

@@ -20,16 +20,17 @@
 - **策略持久化与版本化**：策略存在根任务行，作用于整棵树；每次更新版本递增并保留旧版本与事件。更新会撤销**未消费**的审批，但不重置累计数量、不取消运行中的调用；非法参数不写入任何东西。
 - **停止与取消**：停止请求先**持久化**（带操作者）、再接通适配器 `cancel`；取消或重复停止只释放一次名额（按预留记录 CAS）。适配器不支持取消时返回 `unsupported`。
 - **暂停与恢复**：`POST /api/tasks/{id}/pause` 阻止后续调度但**不取消**运行中的调用；`/resume` 解除。
-- **执行超时**：超过树策略 `run_time_limit_seconds` 的调用被置 `timed_out` 并释放名额；无法取消时如实报告 `remote_stop_confirmed=false`，不谎称远程已停。
+- **执行超时**：超过树策略 `run_time_limit_seconds` 的调用——取消**已确认**才置 `timed_out` 并释放名额；**未确认**（不支持取消 / 外部仍报 running / 证据丢失）则置 `unknown` 并**保留名额**，不谎称远程已停。
 - **崩溃恢复**：重启后核对 `starting`/`running`，向外部侧按 `invocation_id` 查询；确认在跑的保留名额，确认终态的结算并释放一次，**无法确认的置 `unknown`、不自动重启、不提前释放名额**。
-- **unknown 用户裁决**：`POST /api/invocations/{id}/reconcile`（仅 user）——`settle` 认定结果并幂等释放名额；`retry` 结算旧调用并**新建调用 + 新待批审批**（重试必须重新审批，不自动启动）。
+- **unknown 用户裁决**：`POST /api/invocations/{id}/reconcile`（仅 user）——`settle` 认定结果（人工确认）并幂等释放名额；`retry` **必须先确认旧执行已结束**（否则 409 `not_stopped`，不改旧状态、不释放名额、不新建调用），确认后释放一次并**新建调用 + 新待批审批**（重试必须重新审批，不自动启动）。
+- **统一原则**：并发名额只有在能确认对应执行已结束时才释放；无法确认时一律保留占位。
 - **API 与 Worker 共用同一数据库文件**：路径锚定仓库根（`config.py`，不依赖工作目录），文件型 SQLite 启用 WAL 与 busy timeout。
 - 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，另有可持久化、按 `invocation_id` 查询的执行记录（用于恢复对账）。
 
-**当前 127 个测试全部通过**，并发/恢复/E2E 敏感用例另做 8 轮重复（72 次执行）全绿。
-分布：`e2e` 2、`http` 29、`persistence` 6、`policy` 87、`hygiene` 3。
+**当前 136 个测试全部通过**，并发/恢复/停止确认/E2E 敏感用例另做 8 轮重复（184 次执行）全绿。
+分布：`e2e` 2、`http` 31、`persistence` 6、`policy` 94、`hygiene` 3。
 完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；各轮实现说明见
 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、
 `docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`。

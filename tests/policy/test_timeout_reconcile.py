@@ -86,28 +86,65 @@ def test_not_overdue_is_left_alone(tmp_path):
     assert _quota(h, root.root_task_id).concurrent == 1
 
 
-def test_timeout_reports_unconfirmed_remote_stop(tmp_path):
-    """Without cancel support we must not claim the remote side stopped."""
+def test_timeout_with_unconfirmed_cancel_goes_unknown_and_keeps_slot(tmp_path):
+    """If we cannot confirm the call stopped, we must NOT time it out or free the slot."""
     url = f"sqlite:///{(tmp_path / 'toUnc.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=2, run_time_limit_seconds=60),
+        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1, run_time_limit_seconds=60),
         url=url,
     )
     root, _sub, inv, _appr = _running_sub(h)
+    assert _quota(h, root.root_task_id).concurrent == 1
     h.mark_running_old(inv.id, seconds=600)
 
     class NoCancelAdapter:
+        """Cannot cancel and cannot report status."""
+
         def lookup_by_invocation(self, invocation_id):
             return None
 
     h.worker.adapter = NoCancelAdapter()  # type: ignore[assignment]
     result = h.worker.reap_timeouts()
 
-    assert result["timed_out"][0]["cancel"] == {"ok": False, "reason": "unsupported"}
-    assert result["timed_out"][0]["remote_stop_confirmed"] is False
-    # Local state is still settled truthfully.
+    entry = result["timed_out"][0]
+    assert entry["cancel"] == {"ok": False, "reason": "unsupported"}
+    assert entry["remote_stop_confirmed"] is False
+    assert entry["outcome"] == "unknown"
+    assert entry["slot_released"] is False
+
     with h.open_session() as s:
-        assert s.get(InvocationRow, inv.id).status == InvocationStatus.TIMED_OUT.value
+        assert s.get(InvocationRow, inv.id).status == InvocationStatus.UNKNOWN.value
+    # The slot is deliberately still held.
+    assert _quota(h, root.root_task_id).concurrent == 1
+
+
+def test_timeout_with_running_external_record_is_unconfirmed(tmp_path):
+    """A record that still says 'running' is not proof of stopping."""
+    url = f"sqlite:///{(tmp_path / 'toRun.db').as_posix()}"
+    h = KernelHarness(
+        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1, run_time_limit_seconds=60),
+        url=url,
+    )
+    root, _sub, inv, _appr = _running_sub(h)
+    h.mark_running_old(inv.id, seconds=600)
+
+    class StuckAdapter:
+        """Cancel returns not-ok and the record still says running."""
+
+        def cancel_invocation(self, invocation_id):
+            return {"ok": False, "reason": "timeout"}
+
+        def lookup_by_invocation(self, invocation_id):
+            return {"status": "running", "adapter_invocation_id": "a1"}
+
+    h.worker.adapter = StuckAdapter()  # type: ignore[assignment]
+    result = h.worker.reap_timeouts()
+
+    assert result["timed_out"][0]["remote_stop_confirmed"] is False
+    assert result["timed_out"][0]["outcome"] == "unknown"
+    with h.open_session() as s:
+        assert s.get(InvocationRow, inv.id).status == InvocationStatus.UNKNOWN.value
+    assert _quota(h, root.root_task_id).concurrent == 1
 
 
 # --------------------------------------------------------------------------- #

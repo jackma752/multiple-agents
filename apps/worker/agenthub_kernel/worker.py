@@ -96,10 +96,14 @@ class Worker:
     def reap_timeouts(self) -> dict[str, Any]:
         """Time out invocations that exceeded the tree's run-time limit.
 
-        Ordering: ask the adapter to cancel FIRST (best effort), then settle the
-        invocation as ``timed_out`` and release its slot. If cancellation is
-        unsupported we still time the invocation out locally but say so, rather
-        than claiming the remote side stopped.
+        Crucial distinction:
+
+        * Cancellation CONFIRMED -> the call really stopped, so settle it as
+          ``timed_out`` and release its slot.
+        * Cancellation NOT confirmed (unsupported, errored, or no evidence) ->
+          we cannot prove the call stopped. Mark it ``unknown`` and KEEP its
+          quota slot, so no second call can take the slot the first one may
+          still be occupying.
         """
         with self.db.session() as session:
             overdue = PolicyService(session).list_overdue()
@@ -107,24 +111,101 @@ class Worker:
         timed_out = []
         for item in overdue:
             invocation_id = item["invocation_id"]
-            cancel_result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
-            cancel_fn = getattr(self.adapter, "cancel_invocation", None)
-            if cancel_fn is not None:
-                try:
-                    cancel_result = cancel_fn(invocation_id)
-                except Exception as exc:  # noqa: BLE001
-                    cancel_result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
+            confirmed, evidence, cancel_result = self._stop_evidence(invocation_id)
             with self.db.session() as session:
-                PolicyService(session).mark_timed_out(invocation_id)
+                svc = PolicyService(session)
+                if confirmed:
+                    svc.mark_timed_out(invocation_id)
+                    outcome = "timed_out"
+                else:
+                    svc.mark_unknown(
+                        invocation_id,
+                        reason=(
+                            "exceeded run_time_limit_seconds but cancellation "
+                            f"could not be confirmed ({evidence})"
+                        ),
+                    )
+                    outcome = "unknown"
             timed_out.append(
                 {
                     "invocation_id": invocation_id,
                     "limit_seconds": item["limit_seconds"],
                     "cancel": cancel_result,
-                    "remote_stop_confirmed": bool(cancel_result.get("ok")),
+                    "remote_stop_confirmed": confirmed,
+                    "outcome": outcome,
+                    "slot_released": confirmed,
+                    "evidence": evidence,
                 }
             )
         return {"examined": len(overdue), "timed_out": timed_out}
+
+    # ------------------------------------------------------------------ #
+    # Stop confirmation (shared by reaping and retry)
+    # ------------------------------------------------------------------ #
+
+    def _stop_evidence(
+        self, invocation_id: str, kernel_status: Optional[str] = None
+    ) -> tuple[bool, str, dict[str, Any]]:
+        """Try to CONFIRM that an execution is no longer running.
+
+        Returns ``(confirmed_stopped, evidence, cancel_result)``.
+
+        We first ask the adapter to cancel, then look at the adapter's own
+        execution record. Confirmed means either:
+
+        * the external side reports a terminal state (finished/failed/cancelled);
+        * the external side has NO record at all AND the kernel does not believe
+          the call was running. The Mock writes its record synchronously before
+          ``start()`` returns, so for a ``starting``/``unknown`` invocation an
+          absent record positively means it never reached the adapter.
+
+        A missing record for an invocation the kernel believes is RUNNING is
+        *lost evidence*, not proof of stopping, so it is NOT confirmation.
+
+        Anything else (record still running, unrecognised state, unreadable
+        store, adapter without cancel) is also NOT confirmation, and callers
+        must withhold both the slot release and any retry.
+        """
+        if kernel_status is None:
+            with self.db.session() as session:
+                row = session.get(InvocationRow, invocation_id)
+                kernel_status = row.status if row is not None else ""
+
+        cancel_result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
+        cancel_fn = getattr(self.adapter, "cancel_invocation", None)
+        if cancel_fn is not None:
+            try:
+                cancel_result = cancel_fn(invocation_id)
+            except Exception as exc:  # noqa: BLE001
+                cancel_result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
+
+        lookup = getattr(self.adapter, "lookup_by_invocation", None)
+        if lookup is None:
+            return False, "adapter cannot report execution status", cancel_result
+        try:
+            record = lookup(invocation_id)
+        except Exception as exc:  # noqa: BLE001
+            return False, f"status lookup failed: {type(exc).__name__}", cancel_result
+
+        if record is None:
+            if kernel_status == InvocationStatus.RUNNING.value:
+                return (
+                    False,
+                    "no execution record while the kernel believes the call is "
+                    "running: evidence lost, cannot confirm it stopped",
+                    cancel_result,
+                )
+            return (
+                True,
+                "no execution record and the call was not confirmed running: "
+                "it never reached the adapter",
+                cancel_result,
+            )
+
+        status = str(record.get("status") or "")
+        if status in ("finished", "failed", "cancelled"):
+            return True, f"external status is terminal ({status})", cancel_result
+        return False, f"external status is not terminal ({status or 'empty'})", cancel_result
 
     # ------------------------------------------------------------------ #
     # Unknown reconciliation (user adjudication)
@@ -140,8 +221,10 @@ class Worker:
     ) -> dict[str, Any]:
         """Resolve an ``unknown`` invocation: settle it or retry with re-approval.
 
-        Adapter evidence is gathered first and reported, so the user's decision
-        is informed — but the decision itself is the user's, never automatic.
+        For ``retry`` we first try to CONFIRM that the previous execution is no
+        longer running. Without that confirmation the retry is refused
+        (``not_stopped``) and the old invocation keeps its quota slot, so a
+        second call can never start on top of a possibly-still-running first.
         """
         evidence = None
         lookup = getattr(self.adapter, "lookup_by_invocation", None)
@@ -151,11 +234,30 @@ class Worker:
             except Exception:  # noqa: BLE001
                 evidence = None
 
+        confirmed_stopped = False
+        stop_evidence = "not evaluated"
+        cancel_result: dict[str, Any] = {"ok": False, "reason": "not attempted"}
+        if action == "retry":
+            confirmed_stopped, stop_evidence, cancel_result = self._stop_evidence(
+                invocation_id
+            )
+
         with self.db.session() as session:
             result = PolicyService(session).reconcile_unknown(
-                invocation_id, action=action, outcome=outcome, actor=actor
+                invocation_id,
+                action=action,
+                outcome=outcome,
+                actor=actor,
+                confirmed_stopped=confirmed_stopped,
+                stop_evidence=stop_evidence,
             )
-        return {**result, "adapter_evidence": evidence}
+        return {
+            **result,
+            "adapter_evidence": evidence,
+            "remote_stop_confirmed": confirmed_stopped if action == "retry" else None,
+            "stop_evidence": stop_evidence if action == "retry" else None,
+            "cancel": cancel_result if action == "retry" else None,
+        }
 
     # ------------------------------------------------------------------ #
     # Crash recovery

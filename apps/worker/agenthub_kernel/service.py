@@ -641,7 +641,7 @@ class PolicyService:
                 self._release_quota_atomic(task.root_task_id)
         self.session.flush()
 
-    def mark_unknown(self, invocation_id: str) -> None:
+    def mark_unknown(self, invocation_id: str, *, reason: str = "") -> None:
         """Record that an invocation's true state could not be confirmed.
 
         The concurrent slot is deliberately NOT released: we cannot prove the
@@ -653,7 +653,9 @@ class PolicyService:
         if inv is None:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
         inv.status = InvocationStatus.UNKNOWN.value
-        inv.error = "state could not be confirmed after recovery; not restarted"
+        inv.error = reason or (
+            "state could not be confirmed after recovery; not restarted"
+        )
         self.session.flush()
 
     # ------------------------------------------------------------------ #
@@ -942,19 +944,24 @@ class PolicyService:
         action: str,
         outcome: Optional[str] = None,
         actor: str = "local-user",
+        confirmed_stopped: bool = False,
+        stop_evidence: str = "",
     ) -> dict[str, Any]:
         """Let the USER settle or retry an ``unknown`` invocation.
 
-        ``unknown`` means recovery could not confirm the true state, so the slot
-        is held deliberately. Only a human may resolve it:
+        ``unknown`` means the kernel could not confirm the true state, so the
+        slot is held deliberately. Only a human may resolve it:
 
         * ``action="settle"``: the user states what actually happened. The
           invocation is moved to ``outcome`` and its slot is released
           (idempotently — releasing twice frees one slot).
-        * ``action="retry"``: the call is retried, but a retry is a NEW call and
-          therefore requires a NEW approval. The old invocation is settled as
-          failed (superseded) and a fresh invocation + pending approval is
-          created for the same task; nothing runs until the user approves again.
+        * ``action="retry"``: the call is retried. A retry is a NEW call, so it
+          needs a NEW approval. Crucially, the old attempt is **not** silently
+          written off: ``confirmed_stopped`` must be true (the caller has
+          established that the previous execution is no longer running). Until
+          then the retry is REFUSED with ``not_stopped`` and the old call keeps
+          holding its quota slot — otherwise a second call could start while the
+          first may still be running.
         """
         inv = self.session.get(InvocationRow, invocation_id)
         if inv is None:
@@ -977,6 +984,8 @@ class PolicyService:
                     "bad_outcome",
                     f"outcome must be one of {sorted(allowed)}, got {outcome!r}",
                 )
+            # A human statement about the outcome IS a confirmation that the
+            # execution is over, so the slot may be released here.
             self.release(invocation_id, allowed[outcome])
             self.session.add(
                 EventRow(
@@ -1000,14 +1009,23 @@ class PolicyService:
             }
 
         if action == "retry":
+            if not confirmed_stopped:
+                # Do NOT touch the old invocation and do NOT release its slot.
+                raise QuotaError(
+                    "not_stopped",
+                    "cannot retry before the previous execution is confirmed "
+                    f"stopped ({stop_evidence or 'no confirmation available'}); "
+                    "settle it first if you know the outcome",
+                )
+
             task = self.session.get(TaskRow, inv.task_id)
             if task is None:
                 raise QuotaError("no_task", f"task {inv.task_id} not found")
             root_task_id = task.root_task_id
 
-            # Settle the old attempt: it is superseded, and its slot is freed.
+            # Now, and only now, settle the old attempt and free its slot once.
             self.release(invocation_id, InvocationStatus.FAILED)
-            inv.error = "superseded by user-initiated retry"
+            inv.error = f"superseded by user-initiated retry ({stop_evidence})"
 
             # A retry is a NEW invocation with a NEW pending approval. The user
             # must approve it again; nothing is auto-started.
@@ -1056,6 +1074,7 @@ class PolicyService:
                         "retry_invocation_id": new_inv.id,
                         "retry_approval_id": appr.id,
                         "actor": actor,
+                        "stop_evidence": stop_evidence,
                     },
                 )
             )

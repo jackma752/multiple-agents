@@ -230,6 +230,78 @@ def test_reconcile_refuses_non_unknown(client):
     assert r.json()["detail"]["code"] == "not_unknown"
 
 
+def test_reconcile_retry_refused_while_execution_unconfirmed(client):
+    """retry must be refused (409 not_stopped) until the old execution is over."""
+    task_id, inv_id = _running(client, "unconfirmed")
+
+    # Time it out with an external record that still says running.
+    import datetime as dt
+
+    class StuckAdapter:
+        def cancel_invocation(self, invocation_id):
+            return {"ok": False, "reason": "still running"}
+
+        def lookup_by_invocation(self, invocation_id):
+            return {"status": "running", "adapter_invocation_id": "a1"}
+
+    client.app.state.worker.adapter = StuckAdapter()
+    with client.app.state.db.session() as s:
+        row = s.get(InvocationRow, inv_id)
+        row.started_at = dt.datetime.now(dt.timezone.utc).replace(
+            tzinfo=None
+        ) - dt.timedelta(seconds=5000)
+        s.commit()
+
+    reap = client.post("/api/worker/reap", headers=USER)
+    assert reap.status_code == 200
+    assert reap.json()["timed_out"][0]["outcome"] == "unknown"
+    assert reap.json()["timed_out"][0]["slot_released"] is False
+
+    r = client.post(
+        f"/api/invocations/{inv_id}/reconcile",
+        json={"action": "retry"},
+        headers=USER,
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "not_stopped"
+
+    # The old call is untouched and still holds its slot.
+    with client.app.state.db.session() as s:
+        assert s.get(InvocationRow, inv_id).status == InvocationStatus.UNKNOWN.value
+
+
+def test_settle_via_api_frees_slot(client):
+    """A user settle is an explicit confirmation and may release the slot."""
+    task_id, inv_id = _running(client, "to settle")
+
+    class StuckAdapter:
+        def cancel_invocation(self, invocation_id):
+            return {"ok": False, "reason": "still running"}
+
+        def lookup_by_invocation(self, invocation_id):
+            return {"status": "running", "adapter_invocation_id": "a1"}
+
+    client.app.state.worker.adapter = StuckAdapter()
+    import datetime as dt
+
+    with client.app.state.db.session() as s:
+        row = s.get(InvocationRow, inv_id)
+        row.started_at = dt.datetime.now(dt.timezone.utc).replace(
+            tzinfo=None
+        ) - dt.timedelta(seconds=5000)
+        s.commit()
+    client.post("/api/worker/reap", headers=USER)
+
+    r = client.post(
+        f"/api/invocations/{inv_id}/reconcile",
+        json={"action": "settle", "outcome": "timed_out"},
+        headers=USER,
+    )
+    assert r.status_code == 200, r.text
+    with client.app.state.db.session() as s:
+        assert s.get(InvocationRow, inv_id).status == InvocationStatus.TIMED_OUT.value
+
+
 # --------------------------------------------------------------------------- #
 # reap (run-time limit)
 # --------------------------------------------------------------------------- #
