@@ -542,27 +542,66 @@ class PolicyService:
     # ------------------------------------------------------------------ #
 
     def release(self, invocation_id: str, status: InvocationStatus) -> None:
-        """Mark an invocation terminal and release its concurrent slot."""
+        """Mark an invocation terminal and release its concurrent slot.
+
+        Idempotent: the concurrent counter is decremented only for reservation
+        rows that THIS call atomically claimed (compare-and-swap on
+        ``released_at IS NULL``). Calling release twice, or two workers racing
+        to release the same invocation, therefore frees exactly one slot.
+        """
         inv = self.session.get(InvocationRow, invocation_id)
         if inv is None:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
         task = self.session.get(TaskRow, inv.task_id)
-        inv.status = status.value
+        if inv.status not in (
+            InvocationStatus.SUCCEEDED.value,
+            InvocationStatus.FAILED.value,
+            InvocationStatus.CANCELED.value,
+            InvocationStatus.TIMED_OUT.value,
+        ):
+            inv.status = status.value
         inv.finished_at = now()
-        res = self.session.scalars(
-            select(QuotaReservationRow).where(
+
+        candidates = self.session.scalars(
+            select(QuotaReservationRow.id).where(
                 QuotaReservationRow.invocation_id == invocation_id,
                 QuotaReservationRow.released_at.is_(None),
             )
-        ).first()
-        released_now = False
-        if res is not None:
-            res.released_at = now()
-            released_now = True
-        # Free the CONCURRENT slot only, and only once per reservation. The
-        # cumulative launched_total is intentionally left untouched.
-        if released_now and task is not None and task.depth >= 1:
-            self._release_quota_atomic(task.root_task_id)
+        ).all()
+
+        released = 0
+        for res_id in candidates:
+            cas = self.session.execute(
+                update(QuotaReservationRow)
+                .where(
+                    QuotaReservationRow.id == res_id,
+                    QuotaReservationRow.released_at.is_(None),
+                )
+                .values(released_at=now())
+                .execution_options(synchronize_session=False)
+            )
+            released += int(cas.rowcount or 0)
+
+        # One decrement per reservation actually claimed; cumulative
+        # launched_total is intentionally left untouched.
+        if task is not None and task.depth >= 1:
+            for _ in range(released):
+                self._release_quota_atomic(task.root_task_id)
+        self.session.flush()
+
+    def mark_unknown(self, invocation_id: str) -> None:
+        """Record that an invocation's true state could not be confirmed.
+
+        The concurrent slot is deliberately NOT released: we cannot prove the
+        external call has stopped, and releasing it would let another call take
+        a slot while the old one may still be running (AGENT_HUB_PLAN §4.1
+        "执行状态未知...不能盲目重试").
+        """
+        inv = self.session.get(InvocationRow, invocation_id)
+        if inv is None:
+            raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
+        inv.status = InvocationStatus.UNKNOWN.value
+        inv.error = "state could not be confirmed after recovery; not restarted"
         self.session.flush()
 
     # ------------------------------------------------------------------ #
@@ -674,6 +713,77 @@ class PolicyService:
             )
         )
         self.session.flush()
+
+    def request_stop(
+        self, root_task_id: str, *, requested_by: str = "local-user"
+    ) -> dict[str, Any]:
+        """Persist a stop request for a tree and report what is running.
+
+        Persisting the request is what makes the stop durable: a Worker that
+        restarts afterwards still sees the tree as stopped and will not start
+        anything new. Actually cancelling in-flight calls is the Worker's job
+        (it owns the adapter), and is driven from the returned running list.
+        """
+        if self.session.get(TaskRow, root_task_id) is None:
+            raise QuotaError("no_task", f"root task {root_task_id} not found")
+
+        already = self._tree_stopped(root_task_id)
+        self.session.add(
+            EventRow(
+                root_task_id=root_task_id,
+                seq=self._next_seq(root_task_id),
+                type="tree_stop",
+                payload={"requested_by": requested_by, "repeat": already},
+            )
+        )
+        self.session.flush()
+
+        running = self.session.scalars(
+            select(InvocationRow)
+            .join(TaskRow, TaskRow.id == InvocationRow.task_id)
+            .where(
+                TaskRow.root_task_id == root_task_id,
+                InvocationRow.status.in_(
+                    [InvocationStatus.STARTING.value, InvocationStatus.RUNNING.value]
+                ),
+            )
+        ).all()
+        return {
+            "root_task_id": root_task_id,
+            "already_stopped": already,
+            "running": [
+                {"invocation_id": r.id, "status": r.status} for r in running
+            ],
+        }
+
+    def list_recoverable(self) -> list[dict[str, Any]]:
+        """Invocation rows whose state must be reconciled after a restart.
+
+        ``starting`` and ``running`` are the states where the kernel had (or may
+        have had) handed work to an adapter. Everything else is already settled
+        and is left alone.
+        """
+        rows = self.session.scalars(
+            select(InvocationRow).where(
+                InvocationRow.status.in_(
+                    [InvocationStatus.STARTING.value, InvocationStatus.RUNNING.value]
+                )
+            )
+        ).all()
+        out = []
+        for r in rows:
+            task = self.session.get(TaskRow, r.task_id)
+            out.append(
+                {
+                    "invocation_id": r.id,
+                    "status": r.status,
+                    "adapter_invocation_id": r.adapter_invocation_id,
+                    "root_task_id": task.root_task_id if task is not None else None,
+                    "depth": task.depth if task is not None else None,
+                    "task_id": r.task_id,
+                }
+            )
+        return out
 
     # ------------------------------------------------------------------ #
     # Policy updates (persisted, versioned, invalidating)

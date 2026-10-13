@@ -11,6 +11,18 @@ from agenthub_kernel.worker import Worker
 DEFAULT_POLICY = Policy()
 
 
+def _store_path_for(url: str) -> str:
+    """Where the Mock adapter keeps its execution log.
+
+    Uses the same file as the kernel DB when the kernel is file-backed (so
+    records survive a simulated restart), otherwise a shared-cache in-memory
+    database.
+    """
+    if url.startswith("sqlite:///") and ":memory:" not in url:
+        return url.replace("sqlite:///", "", 1)
+    return ":memory:"
+
+
 class KernelHarness:
     """High-level driver around a fresh Database + MockAdapter + Worker.
 
@@ -22,8 +34,28 @@ class KernelHarness:
         self.policy = policy or DEFAULT_POLICY
         self.db = Database(url)
         self.db.create_all()
-        self.adapter = MockAdapter()
+        # The Mock adapter keeps its own execution log. For a file-backed kernel
+        # DB we point the mock store at the same file (its own table) so records
+        # survive a simulated restart; for in-memory we use a shared-cache
+        # in-memory store.
+        self.store_path = _store_path_for(url)
+        self.adapter = MockAdapter(store_path=self.store_path)
         self.worker = Worker(self.db, self.adapter)
+
+    def new_adapter(self) -> MockAdapter:
+        """A fresh adapter (and fresh in-memory counters) over the same store.
+
+        Used to simulate a process restart: counters reset, persisted execution
+        records remain, which is exactly the situation recovery must handle.
+        """
+        return MockAdapter(store_path=self.store_path)
+
+    def new_worker(self):
+        """A fresh Worker + fresh adapter over the same database and store."""
+        from agenthub_kernel.worker import Worker as _Worker
+
+        adapter = self.new_adapter()
+        return _Worker(self.db, adapter), adapter
 
     # ---- service helpers (each opens a fresh session) ----
 

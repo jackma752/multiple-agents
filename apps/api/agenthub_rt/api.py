@@ -156,6 +156,10 @@ def create_app(
                     depth=task.depth,
                     permissions=body.permissions,
                     resources=body.resources,
+                    # Must carry the tree's CURRENT policy version, otherwise the
+                    # consume-time policy check would (correctly) reject this
+                    # invocation as approved under a stale policy.
+                    policy_version=task.policy_version,
                 )
                 inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
                 session.commit()
@@ -299,15 +303,37 @@ def create_app(
             task = session.get(TaskRow, task_id)
             if task is None:
                 raise HTTPException(status_code=404, detail="task not found")
-            svc = PolicyService(session)
-            svc.stop_tree(task.root_task_id)
-            session.commit()
-            return {"stopped": True, "root_task_id": task.root_task_id}
+            root_task_id = task.root_task_id
+        # Persist the stop first, then cancel in-flight calls (the worker owns
+        # the adapter). If the process dies between the two, the persisted stop
+        # still prevents any new scheduling.
+        worker: Worker = app.state.worker
+        result = worker.cancel_tree(root_task_id, requested_by=principal.identity)
+        return {
+            "stopped": True,
+            "root_task_id": result["root_task_id"],
+            "already_stopped": result["already_stopped"],
+            "cancelled": result["attempted"],
+            "outcomes": result["outcomes"],
+        }
 
     @app.post("/api/worker/drain")
     def drain() -> list[dict[str, Any]]:
         worker: Worker = app.state.worker
         return worker.drain_once()
+
+    @app.post("/api/worker/recover")
+    def recover(
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """Reconcile starting/running invocations after a restart.
+
+        Requires the user role: recovery can settle calls and free quota slots,
+        so it is not something an agent or worker identity may trigger.
+        """
+        require_approver(principal)
+        worker: Worker = app.state.worker
+        return worker.recover()
 
     return app
 

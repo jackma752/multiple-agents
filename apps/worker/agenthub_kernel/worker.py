@@ -20,6 +20,9 @@ from agenthub.contracts import AdapterContract, InvocationStatus
 from agenthub_kernel.db import Database, InvocationRow, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
 
+#: External run states the Mock adapter records (see agenthub_adapters.mock).
+MOCK_RUNNING_STATE = "running"
+
 
 class Worker:
     def __init__(self, db: Database, adapter: AdapterContract) -> None:
@@ -29,6 +32,145 @@ class Worker:
 
     def stop(self) -> None:
         self._stopped = True
+
+    # ------------------------------------------------------------------ #
+    # Stop / cancel
+    # ------------------------------------------------------------------ #
+
+    def cancel_tree(self, root_task_id: str, *, requested_by: str = "local-user") -> dict[str, Any]:
+        """Persist a stop request, then cancel the calls that are in flight.
+
+        Ordering matters: the stop is persisted FIRST, so even if cancellation
+        fails or the process dies mid-way, no new call can be scheduled for this
+        tree. Cancellation then asks the adapter to stop each running invocation
+        and marks it ``canceled``, releasing its slot idempotently.
+        """
+        with self.db.session() as session:
+            plan = PolicyService(session).request_stop(
+                root_task_id, requested_by=requested_by
+            )
+
+        outcomes: list[dict[str, Any]] = []
+        for item in plan["running"]:
+            invocation_id = item["invocation_id"]
+            cancel_result = self._cancel_one(invocation_id)
+            outcomes.append(
+                {"invocation_id": invocation_id, "cancel": cancel_result}
+            )
+
+        return {
+            "root_task_id": root_task_id,
+            "already_stopped": plan["already_stopped"],
+            "attempted": len(plan["running"]),
+            "outcomes": outcomes,
+        }
+
+    def _cancel_one(self, invocation_id: str) -> dict[str, Any]:
+        """Cancel a single invocation via the adapter, then settle its slot."""
+        cancel_fn = getattr(self.adapter, "cancel_invocation", None)
+        if cancel_fn is None:
+            # An adapter that cannot cancel must say so, not pretend.
+            return {"ok": False, "reason": "unsupported"}
+        try:
+            result = cancel_fn(invocation_id)
+        except Exception as exc:  # noqa: BLE001
+            result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
+
+        with self.db.session() as session:
+            svc = PolicyService(session)
+            inv = session.get(InvocationRow, invocation_id)
+            if inv is not None and inv.status not in (
+                InvocationStatus.SUCCEEDED.value,
+                InvocationStatus.FAILED.value,
+            ):
+                # Do not stomp a call that finished concurrently.
+                svc.release(invocation_id, InvocationStatus.CANCELED)
+            else:
+                result = {**result, "note": "already_terminal"}
+        return result
+
+    # ------------------------------------------------------------------ #
+    # Crash recovery
+    # ------------------------------------------------------------------ #
+
+    def recover(self) -> dict[str, Any]:
+        """Reconcile ``starting``/``running`` invocations after a restart.
+
+        Rules (AGENT_HUB_PLAN §4.1):
+
+        * Ask the **external side** (adapter) what it knows, per invocation.
+        * Confirmed running  -> keep as ``running``; the slot stays held.
+        * Confirmed terminal -> settle the invocation and free the slot once.
+        * **Unconfirmable**  -> ``unknown``; NOT restarted, and the slot is NOT
+          released early, because we cannot prove the call has stopped.
+        * Never silently restart a call.
+        """
+        with self.db.session() as session:
+            candidates = PolicyService(session).list_recoverable()
+
+        summary = {
+            "examined": len(candidates),
+            "confirmed_running": [],
+            "settled": [],
+            "unknown": [],
+            "restarted": [],  # always empty by design
+        }
+
+        for item in candidates:
+            invocation_id = item["invocation_id"]
+            record = None
+            lookup = getattr(self.adapter, "lookup_by_invocation", None)
+            if lookup is not None:
+                try:
+                    record = lookup(invocation_id)
+                except Exception:  # noqa: BLE001
+                    record = None
+
+            if record is None:
+                # Cannot confirm: mark unknown, keep the slot, do not restart.
+                with self.db.session() as session:
+                    PolicyService(session).mark_unknown(invocation_id)
+                summary["unknown"].append(invocation_id)
+                continue
+
+            external_status = str(record.get("status") or "")
+            adapter_id = record.get("adapter_invocation_id")
+
+            if external_status == MOCK_RUNNING_STATE:
+                with self.db.session() as session:
+                    svc = PolicyService(session)
+                    inv = session.get(InvocationRow, invocation_id)
+                    if inv is not None:
+                        inv.status = InvocationStatus.RUNNING.value
+                        inv.adapter_invocation_id = (
+                            inv.adapter_invocation_id or adapter_id
+                        )
+                    svc.session.flush()
+                summary["confirmed_running"].append(invocation_id)
+                continue
+
+            if external_status == "cancelled":
+                term = InvocationStatus.CANCELED
+            elif external_status == "finished":
+                term = InvocationStatus.SUCCEEDED
+            elif external_status == "failed":
+                term = InvocationStatus.FAILED
+            else:
+                # An unrecognised external state must not be guessed at.
+                with self.db.session() as session:
+                    PolicyService(session).mark_unknown(invocation_id)
+                summary["unknown"].append(invocation_id)
+                continue
+
+            with self.db.session() as session:
+                svc = PolicyService(session)
+                inv = session.get(InvocationRow, invocation_id)
+                if inv is not None:
+                    inv.adapter_invocation_id = inv.adapter_invocation_id or adapter_id
+                svc.release(invocation_id, term)
+            summary["settled"].append({"invocation_id": invocation_id, "status": term.value})
+
+        return summary
 
     def drain_once(self, max_calls: int = 100) -> list[dict[str, Any]]:
         """Process up to ``max_calls`` ready invocations. Returns diagnostics."""
