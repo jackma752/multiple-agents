@@ -229,18 +229,48 @@ def create_app(
         principal: Principal = Depends(authenticate),
     ) -> dict[str, Any]:
         require_approver(principal)
-        with db.session() as session:
-            task = session.get(TaskRow, task_id)
-            if task is None:
-                raise HTTPException(status_code=404, detail="task not found")
+        # Validate BEFORE opening a transaction: an illegal policy must not
+        # write anything (no version bump, no revocation).
+        try:
             policy = Policy(
                 max_subagents_total=body.max_subagents_total,
                 max_subagents_concurrent=body.max_subagents_concurrent,
                 max_depth=body.max_depth,
                 max_agent_invocations=body.max_agent_invocations,
             )
-            session.commit()
-            return {"task_id": task_id, "policy": policy.as_dict()}
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "invalid_policy", "message": str(exc)},
+            )
+        with db.session() as session:
+            task = session.get(TaskRow, task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            svc = PolicyService(session)
+            try:
+                result = svc.update_policy(
+                    task.root_task_id, policy, updated_by=principal.identity
+                )
+            except QuotaError as exc:
+                session.rollback()
+                raise HTTPException(
+                    status_code=404 if exc.code == "no_task" else 409,
+                    detail={"code": exc.code, "message": exc.message},
+                )
+            except ValueError as exc:
+                session.rollback()
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "invalid_policy", "message": str(exc)},
+                )
+            return {
+                "task_id": task_id,
+                "root_task_id": result["root_task_id"],
+                "version": result["version"],
+                "policy": result["policy"],
+                "revoked_approvals": result["revoked_approvals"],
+            }
 
     @app.get("/api/tasks/{task_id}/events")
     def list_events(task_id: str) -> list[dict[str, Any]]:

@@ -60,6 +60,12 @@ class KernelHarness:
         with self.open_session() as session:
             svc = PolicyService(session, self.policy)
             task = session.get(TaskRow, task_id)
+            # Use the tree's CURRENT policy version so a call created after a
+            # policy update is not instantly invalidated by that update.
+            root = session.get(TaskRow, task.root_task_id)
+            policy_version = int(
+                (root.policy_version if root is not None else task.policy_version) or 1
+            )
             snapshot = InvocationSnapshot(
                 agent_id=task.agent_id,
                 task_input=task.goal,
@@ -67,7 +73,7 @@ class KernelHarness:
                 depth=task.depth,
                 permissions=permissions or {},
                 resources=resources or {},
-                policy_version=self.policy.version,
+                policy_version=policy_version,
             )
             return svc.create_invocation(task_id=task_id, snapshot=snapshot)
 
@@ -118,6 +124,13 @@ class KernelHarness:
             svc = PolicyService(session, self.policy)
             svc.stop_tree(root_task_id)
             session.commit()
+
+    def update_policy(self, root_task_id: str, policy: Policy, updated_by: str = "local-user"):
+        with self.open_session() as session:
+            svc = PolicyService(session, self.policy)
+            result = svc.update_policy(root_task_id, policy, updated_by=updated_by)
+            session.commit()
+            return result
 
     def drain(self) -> list:
         return self.worker.drain_once()

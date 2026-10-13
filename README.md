@@ -16,14 +16,16 @@
 - **审批权限在后端强制**：HTTP 审批端点须携带 Bearer token，只有 `user` 角色可批准 / 拒绝 / 撤销、改配额、停止任务树；无 token 返回 401，`agent` / `worker` 身份返回 403。因此 Agent 不能批准自己。
 - **Worker 事务边界**：Worker 先在事务中消费审批并预留名额，**提交成功后**才启动适配器；提交失败则不会启动。
 - **并发消费最多一次**：审批用条件更新（`WHERE status='approved'`）消费，两个 Worker 抢同一审批时只有一个成功，且只产生一条名额预留。
+- **配额预留是原子的**：每棵树一行计数器（`tree_quota`），预留用单条条件更新把上限写进 `WHERE`，多条**不同**调用争抢最后一个名额时也只有一条成功（"先读后写"的检查曾使 4 条全部通过，已修复）。
+- **策略持久化与版本化**：策略存在根任务行，作用于整棵树；每次更新版本递增并保留旧版本与事件。更新会撤销**未消费**的审批，但不重置累计数量、不取消运行中的调用；非法参数不写入任何东西。
 - **API 与 Worker 共用同一数据库文件**：路径锚定仓库根（`config.py`，不依赖工作目录），文件型 SQLite 启用 WAL 与 busy timeout；记录可跨进程读取、重启后保留，已消费的审批不会重复启动。
 - 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，用于断言未批准时启动次数为 0。
 
-**当前 44 个测试全部通过**：`http/test_auth.py` 11、`persistence/test_shared_db.py` 6、`test_approval.py` 7、`test_consumable_approval.py` 7、`test_quota.py` 6、`test_stop_and_authz.py` 4、`test_worker_atomicity.py` 3。并发用例使用**文件型 SQLite + 独立连接**（内存库共享单连接，无法表达并发）。细节见 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`。
+**当前 61 个测试全部通过**：`http/test_auth.py` 11、`http/test_policy_api.py` 3、`persistence/test_shared_db.py` 6、`test_approval.py` 7、`test_consumable_approval.py` 7、`test_policy_versioning.py` 14、`test_quota.py` 6、`test_stop_and_authz.py` 4、`test_worker_atomicity.py` 3。并发用例使用**文件型 SQLite + 独立连接**（内存库共享单连接，无法表达并发），并重复 10 轮验证稳定。细节见 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、`docs/p2-policy-versioning.md`。
 
-> **这不等于完整 P2 安全验收。** 以下仍需独立验证：进程被强杀后的 `unknown` 收敛与重查、策略版本变化使既有审批失效（`update_policy` 尚未持久化策略）、取消正在运行的调用。参见 `docs/p2-shared-persistence.md` §5。
+> **这不等于完整 P2 安全验收。** 以下仍需独立验证：进程被强杀后 `starting` 状态的 `unknown` 收敛与重查、取消正在运行的调用、更高并发规模与 `busy_timeout` 超阈值的失败语义。参见 `docs/p2-policy-versioning.md` §7。
 
 ## 仓库约定
 

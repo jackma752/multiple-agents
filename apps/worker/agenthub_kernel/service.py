@@ -26,8 +26,10 @@ from agenthub_kernel.db import (
     ApprovalRow,
     EventRow,
     InvocationRow,
+    PolicyVersionRow,
     QuotaReservationRow,
     TaskRow,
+    TreeQuotaRow,
 )
 
 UTC = dt.timezone.utc
@@ -101,12 +103,19 @@ class PolicyService:
             # addressable via a single id and `get(TaskRow, root_task_id)` works.
             root_task_id = task_id
             depth = 0
+            effective_policy_version = policy.version
         else:
             parent = self.session.get(TaskRow, parent_task_id)
             if parent is None:
                 raise QuotaError("no_parent", f"parent task {parent_task_id} not found")
             root_task_id = parent.root_task_id
             depth = parent.depth + 1
+            # Inherit the tree's CURRENT policy version, so a call created after
+            # a policy update is not immediately invalidated by that update.
+            root = self.session.get(TaskRow, root_task_id)
+            effective_policy_version = int(
+                (root.policy_version if root is not None else parent.policy_version) or 1
+            )
             if depth > policy.max_depth:
                 raise QuotaError(
                     "max_depth",
@@ -122,7 +131,7 @@ class PolicyService:
             goal=goal,
             agent_id=agent_id,
             status="draft",
-            policy_version=policy.version,
+            policy_version=effective_policy_version,
             # Store the effective policy on the root node so the worker can
             # enforce the same tree-scoped limits without being told the policy
             # out-of-band (AGENT_HUB_PLAN §5: policy_versions are per-tree).
@@ -130,6 +139,17 @@ class PolicyService:
         )
         self.session.add(task)
         self.session.flush()
+        if depth == 0:
+            # Initialise the atomic quota counters for this tree.
+            self.session.add(
+                TreeQuotaRow(
+                    root_task_id=root_task_id,
+                    launched_total=0,
+                    concurrent=0,
+                    total_invocations=0,
+                )
+            )
+            self.session.flush()
         return task
 
     def create_invocation(
@@ -378,7 +398,24 @@ class PolicyService:
                 "snapshot_changed",
                 f"invocation {invocation_id} payload changed; approval is void",
             )
-        self._maybe_invalidate_if_task_changed(task)
+
+        # 1b. Policy-version check: if the tree's policy changed after this
+        # invocation was approved, the approval no longer describes the terms
+        # the user agreed to (AGENT_HUB_PLAN §4.1 "快照变化，审批立即失效").
+        # This also closes the race where an update commits between the
+        # worker's pick and its consume.
+        root = self.session.get(TaskRow, task.root_task_id)
+        if root is not None:
+            snapshot_policy_version = int(inv.snapshot.get("policy_version") or 0)
+            if int(root.policy_version or 0) != snapshot_policy_version:
+                inv.status = InvocationStatus.INVALID.value
+                self.session.flush()
+                raise QuotaError(
+                    "policy_changed",
+                    f"invocation {invocation_id} was approved under policy "
+                    f"v{snapshot_policy_version} but the tree is now at "
+                    f"v{root.policy_version}; approval is void",
+                )
 
         # 2. Find an approval and validate consumability
         appr = self._find_consumable_approval(invocation_id)
@@ -408,28 +445,45 @@ class PolicyService:
         if self._tree_stopped(task.root_task_id):
             raise QuotaError("tree_stopped", f"tree {task.root_task_id} is stopped")
 
-        # 6. Quota evaluation
-        quota = self.evaluate_quota(inv)
+        # 6. Atomic quota reservation.
+        #
+        # A read-then-write check races: with several distinct invocations in
+        # flight, every worker can read the same "0 launched / 0 running" state
+        # and then all proceed, breaking the whole-tree cap. We therefore take
+        # the slot with a single conditional UPDATE (compare-and-swap) whose
+        # WHERE clause encodes the limits. Exactly one racer can win the last
+        # slot; losers see rowcount 0 and are refused.
         policy = self._quotas(inv)
-        is_subagent = quota["is_subagent"]
-        if is_subagent:
-            if quota["launched_subagents"] >= policy.max_subagents_total:
+        is_subagent = task.depth >= 1
+        if not self._reserve_quota_atomic(
+            root_task_id=task.root_task_id,
+            is_subagent=is_subagent,
+            policy=policy,
+        ):
+            # Re-read for a precise refusal reason (diagnostics only).
+            quota = self.evaluate_quota(inv)
+            if quota["total_invocations"] >= policy.max_agent_invocations:
+                raise QuotaError(
+                    "max_agent_invocations",
+                    f"total invocations {quota['total_invocations']} at limit "
+                    f"{policy.max_agent_invocations}",
+                )
+            if is_subagent and quota["launched_subagents"] >= policy.max_subagents_total:
                 raise QuotaError(
                     "max_subagents_total",
                     f"sub-agent total {quota['launched_subagents']} already at "
                     f"limit {policy.max_subagents_total}",
                 )
-            if quota["concurrent"] >= policy.max_subagents_concurrent:
+            if is_subagent and quota["concurrent"] >= policy.max_subagents_concurrent:
                 raise QuotaError(
                     "max_subagents_concurrent",
                     f"concurrent {quota['concurrent']} already at limit "
                     f"{policy.max_subagents_concurrent}",
                 )
-        if quota["total_invocations"] >= policy.max_agent_invocations:
+            # Lost an optimisation race; report the binding limit generically.
             raise QuotaError(
-                "max_agent_invocations",
-                f"total invocations {quota['total_invocations']} at limit "
-                f"{policy.max_agent_invocations}",
+                "quota_exceeded",
+                f"quota reservation failed for tree {task.root_task_id}",
             )
 
         # 7. Atomic consume + reserve slot
@@ -492,6 +546,7 @@ class PolicyService:
         inv = self.session.get(InvocationRow, invocation_id)
         if inv is None:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
+        task = self.session.get(TaskRow, inv.task_id)
         inv.status = status.value
         inv.finished_at = now()
         res = self.session.scalars(
@@ -500,13 +555,85 @@ class PolicyService:
                 QuotaReservationRow.released_at.is_(None),
             )
         ).first()
+        released_now = False
         if res is not None:
             res.released_at = now()
+            released_now = True
+        # Free the CONCURRENT slot only, and only once per reservation. The
+        # cumulative launched_total is intentionally left untouched.
+        if released_now and task is not None and task.depth >= 1:
+            self._release_quota_atomic(task.root_task_id)
         self.session.flush()
 
     # ------------------------------------------------------------------ #
     # Helpers
     # ------------------------------------------------------------------ #
+
+    def _reserve_quota_atomic(
+        self,
+        *,
+        root_task_id: str,
+        is_subagent: bool,
+        policy: Policy,
+    ) -> bool:
+        """Reserve a quota slot with a compare-and-swap UPDATE.
+
+        The WHERE clause encodes every limit, so the reservation is atomic with
+        respect to the check: no two racers can both win the last slot.
+
+        * ``total_invocations`` is always incremented (counts main + sub).
+        * ``launched_total`` / ``concurrent`` are incremented only for sub-agents;
+          ``launched_total`` is cumulative and never returned.
+
+        Returns True when the slot was reserved, False when a limit blocked it.
+        """
+        row = self.session.get(TreeQuotaRow, root_task_id)
+        if row is None:
+            # Trees created before this table existed: create lazily.
+            row = TreeQuotaRow(
+                root_task_id=root_task_id,
+                launched_total=0,
+                concurrent=0,
+                total_invocations=0,
+            )
+            self.session.add(row)
+            self.session.flush()
+
+        conditions = [TreeQuotaRow.root_task_id == root_task_id]
+        conditions.append(
+            TreeQuotaRow.total_invocations < policy.max_agent_invocations
+        )
+        values: dict[str, Any] = {
+            "total_invocations": TreeQuotaRow.total_invocations + 1
+        }
+        if is_subagent:
+            conditions.append(
+                TreeQuotaRow.launched_total < policy.max_subagents_total
+            )
+            conditions.append(
+                TreeQuotaRow.concurrent < policy.max_subagents_concurrent
+            )
+            values["launched_total"] = TreeQuotaRow.launched_total + 1
+            values["concurrent"] = TreeQuotaRow.concurrent + 1
+
+        result = self.session.execute(
+            update(TreeQuotaRow)
+            .where(*conditions)
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        self.session.flush()
+        return result.rowcount == 1
+
+    def _release_quota_atomic(self, root_task_id: str) -> None:
+        """Decrement the concurrent counter (cumulative total is preserved)."""
+        self.session.execute(
+            update(TreeQuotaRow)
+            .where(TreeQuotaRow.root_task_id == root_task_id)
+            .values(concurrent=func.max(TreeQuotaRow.concurrent - 1, 0))
+            .execution_options(synchronize_session=False)
+        )
+        self.session.flush()
 
     def _find_consumable_approval(self, invocation_id: str) -> Optional[ApprovalRow]:
         # Creating an approval does not grant consent; only approval by the
@@ -523,10 +650,10 @@ class PolicyService:
         return appr
 
     def _maybe_invalidate_if_task_changed(self, task: TaskRow) -> None:
-        """No-op placeholder for a real implementation.
+        """Deprecated no-op.
 
-        A real deployment would check the policy version / adapter version vs.
-        the snapshot. P2 keeps the invocation snapshot as the source of truth.
+        Policy-version invalidation is now enforced directly in :meth:`consume`
+        (step 1b) so that the check cannot be forgotten by a caller.
         """
 
     def _next_seq(self, root_task_id: str) -> int:
@@ -547,3 +674,126 @@ class PolicyService:
             )
         )
         self.session.flush()
+
+    # ------------------------------------------------------------------ #
+    # Policy updates (persisted, versioned, invalidating)
+    # ------------------------------------------------------------------ #
+
+    def update_policy(
+        self,
+        root_task_id: str,
+        new_policy: Policy,
+        *,
+        updated_by: str = "local-user",
+    ) -> dict[str, Any]:
+        """Persist a new policy version for a whole root task tree.
+
+        Guarantees required by AGENT_HUB_PLAN §4.2:
+
+        * The policy applies to the **entire tree** (stored on the root row).
+        * The version **increments** on every update; the previous version is
+          recorded as inactive so the audit trail is preserved.
+        * Outstanding **unconsumed** approvals become void, because the terms the
+          user agreed to no longer hold. Already-consumed approvals and running
+          calls are left alone.
+        * Lowering a limit **never** resets the cumulative launched-sub-agent
+          count and **never** auto-cancels a running call.
+
+        ``new_policy`` is validated by :class:`Policy` before anything is
+        written; an invalid policy raises ``ValueError`` and the caller's
+        transaction rolls back with no partial write.
+        """
+        root = self.session.get(TaskRow, root_task_id)
+        if root is None:
+            raise QuotaError("no_task", f"root task {root_task_id} not found")
+        if root.parent_task_id is not None or root.depth != 0:
+            # A policy lives on the root; refuse to treat a subtree node as one.
+            root = self.session.get(TaskRow, root.root_task_id)
+            if root is None:
+                raise QuotaError("no_task", f"root task {root_task_id} not found")
+
+        new_version = int(root.policy_version or 0) + 1
+
+        # Record the new version; deactivate the previous active version.
+        for prev in self.session.scalars(
+            select(PolicyVersionRow).where(
+                PolicyVersionRow.root_task_id == root.root_task_id,
+                PolicyVersionRow.active.is_(True),
+            )
+        ).all():
+            prev.active = False
+
+        payload = new_policy.as_dict()
+        payload["version"] = new_version
+        self.session.add(
+            PolicyVersionRow(
+                id=new_id("pol"),
+                version=new_version,
+                root_task_id=root.root_task_id,
+                payload=payload,
+                active=True,
+            )
+        )
+
+        # Effective policy + version on the root row (what the worker reads).
+        root.policy = payload
+        root.policy_version = new_version
+
+        # Void outstanding unconsumed approvals for this tree.
+        revoked = self._revoke_unconsumed_approvals(root.root_task_id)
+
+        self.session.add(
+            EventRow(
+                root_task_id=root.root_task_id,
+                seq=self._next_seq(root.root_task_id),
+                type="policy_updated",
+                payload={
+                    "version": new_version,
+                    "updated_by": updated_by,
+                    "revoked_approvals": revoked,
+                    "policy": payload,
+                },
+            )
+        )
+        self.session.flush()
+        return {
+            "root_task_id": root.root_task_id,
+            "version": new_version,
+            "policy": payload,
+            "revoked_approvals": revoked,
+        }
+
+    def _revoke_unconsumed_approvals(self, root_task_id: str) -> int:
+        """Revoke pending/approved approvals in a tree. Returns the count.
+
+        Only approvals that have NOT been consumed are touched, so a running
+        call is never disturbed and a consumed approval stays consumed.
+        """
+        sub_task_ids = [
+            t.id
+            for t in self.session.scalars(
+                select(TaskRow).where(TaskRow.root_task_id == root_task_id)
+            ).all()
+        ]
+        if not sub_task_ids:
+            return 0
+        inv_ids = [
+            i.id
+            for i in self.session.scalars(
+                select(InvocationRow).where(InvocationRow.task_id.in_(sub_task_ids))
+            ).all()
+        ]
+        if not inv_ids:
+            return 0
+        targets = self.session.scalars(
+            select(ApprovalRow).where(
+                ApprovalRow.invocation_id.in_(inv_ids),
+                ApprovalRow.status.in_(
+                    [ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]
+                ),
+            )
+        ).all()
+        for appr in targets:
+            appr.status = ApprovalStatus.REVOKED.value
+        self.session.flush()
+        return len(targets)

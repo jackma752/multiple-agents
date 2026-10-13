@@ -186,6 +186,25 @@ class Policy:
     root_task_ttl_seconds: int = 3600
 
     def __post_init__(self) -> None:
+        # Validate the whole policy up front so an illegal update is rejected
+        # before anything is persisted (the caller rolls back on ValueError).
+        for name in (
+            "max_subagents_total",
+            "max_subagents_concurrent",
+            "max_depth",
+            "max_agent_invocations",
+            "run_time_limit_seconds",
+            "root_task_ttl_seconds",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError(f"{name} must be an integer, got {value!r}")
+            if value < 0:
+                raise ValueError(f"{name} must not be negative, got {value}")
+        if self.max_agent_invocations < 1:
+            raise ValueError("max_agent_invocations must be at least 1")
+        if self.run_time_limit_seconds < 1:
+            raise ValueError("run_time_limit_seconds must be at least 1")
         if self.max_subagents_concurrent > self.max_subagents_total:
             raise ValueError(
                 "max_subagents_concurrent cannot exceed max_subagents_total"
@@ -193,6 +212,9 @@ class Policy:
 
     @property
     def version(self) -> int:
+        # Policy objects are immutable settings; the authoritative version lives
+        # on the root task row (``TaskRow.policy_version``) so it can increment
+        # per update. This property exists only for the stored payload shape.
         return 1
 
     def as_dict(self) -> dict[str, Any]:

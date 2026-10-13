@@ -132,6 +132,32 @@ class QuotaReservationRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class TreeQuotaRow(Base):
+    """Atomic per-tree quota counters.
+
+    Read-then-write quota checks race: several concurrent workers can all read
+    "0 launched / 0 running" and then all proceed, breaking the whole-tree cap.
+    This row exists so a reservation can be taken with a single conditional
+    UPDATE (compare-and-swap) whose WHERE clause enforces the limits. Exactly
+    one racer can win the last slot.
+
+    Semantics (AGENT_HUB_PLAN §4.2):
+
+    * ``launched_total`` is **cumulative** for the tree; it is never decremented,
+      so finishing or failing a sub-agent does not return total budget.
+    * ``concurrent`` is incremented on reserve and decremented on release.
+    * ``total_invocations`` counts every consumed invocation (main + sub).
+    """
+
+    __tablename__ = "tree_quota"
+
+    root_task_id = Column(String, primary_key=True)
+    launched_total = Column(Integer, nullable=False, default=0)
+    concurrent = Column(Integer, nullable=False, default=0)
+    total_invocations = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
 class EventRow(Base):
     """Streamed / audited event. ``seq`` is the per-tree ordering."""
 
