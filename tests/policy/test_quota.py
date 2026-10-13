@@ -120,6 +120,55 @@ def test_total_zero_blocks_all_subagents():
     assert h.adapter.start_count == 0
 
 
+def test_total_zero_blocks_auto_delegation_too():
+    """§6: with total=0, AUTO delegation is refused as well as manual."""
+    from agenthub.contracts import Policy
+    from agenthub_kernel.service import PolicyService
+
+    h = KernelHarness(policy=Policy(max_subagents_total=0, max_subagents_concurrent=0))
+    root = h.create_root()
+
+    # An auto-proposed delegation (kind="auto") must not run either.
+    with h.open_session() as session:
+        svc = PolicyService(session, h.policy)
+        child = svc.create_task(
+            agent_id="sub", goal="auto-proposed", kind="auto", parent_task_id=root.id
+        )
+        child_id = child.id
+    inv = h.create_invocation(child_id)
+    appr = h.create_approval(inv.id)
+    h.approve(appr.id)
+
+    h.drain()
+
+    assert h.adapter.start_count == 0
+
+
+def test_total_zero_blocks_grandchild_dispatch():
+    """§6: with total=0 a grandchild cannot be dispatched either."""
+    from agenthub.contracts import Policy
+    from agenthub_kernel.service import PolicyService
+
+    # max_depth=2 so a grandchild is structurally creatable; the total cap of 0
+    # must be what stops it from ever starting.
+    h = KernelHarness(
+        policy=Policy(max_subagents_total=0, max_subagents_concurrent=0, max_depth=2)
+    )
+    root = h.create_root()
+
+    sub = h.create_subtask(root.id, "sub")
+    grand = h.create_subtask(sub.id, "grandchild")
+    assert grand.depth == 2
+
+    inv = h.create_invocation(grand.id)
+    appr = h.create_approval(inv.id)
+    h.approve(appr.id)
+
+    h.drain()
+
+    assert h.adapter.start_count == 0
+
+
 def test_depth_limit_blocks_grandchild():
     from agenthub.contracts import Policy
 
