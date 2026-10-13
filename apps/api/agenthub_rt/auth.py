@@ -23,7 +23,14 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+#: ``auto_error=False`` so a missing header reaches our own handler, which
+#: returns a structured 401 instead of FastAPI's bare default. Using the standard
+#: HTTPBearer scheme also makes the interactive docs page show an "Authorize"
+#: button, so a trial user pastes the token once instead of per request.
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 ROLE_USER = "user"
@@ -65,7 +72,7 @@ def _dev_tokens() -> dict[str, Principal]:
 
 
 def authenticate(
-    authorization: Optional[str] = Header(default=None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     x_agent_hub_token: Optional[str] = Header(default=None),
 ) -> Principal:
     """Resolve the caller from a bearer token. 401 when absent/unknown.
@@ -74,12 +81,8 @@ def authenticate(
     approval endpoint, and cannot approve by omission.
     """
     token: Optional[str] = None
-    if authorization:
-        parts = authorization.split(None, 1)
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            token = parts[1].strip()
-        else:
-            token = authorization.strip()
+    if credentials is not None and credentials.credentials:
+        token = credentials.credentials.strip()
     elif x_agent_hub_token:
         token = x_agent_hub_token.strip()
 

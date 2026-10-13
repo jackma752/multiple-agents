@@ -28,16 +28,15 @@ def client(tmp_path):
 
 
 def _root_with_approval(client):
+    """Create an invocation (which now raises its own pending approval) + approve it."""
     r = client.post(
         "/api/invocations",
         json={"task_id": "ignored", "agent_id": "mock", "task_input": "x"},
     )
     task_id = r.json()["task_id"]
     inv_id = r.json()["invocation_id"]
+    appr_id = r.json()["approval_id"]
     db = client.app.state.db
-    with db.session() as s:
-        appr = PolicyService(s).create_approval(invocation_id=inv_id)
-        appr_id = appr.id
     with db.session() as s:
         PolicyService(s).approve(appr_id)
     return task_id, inv_id, appr_id

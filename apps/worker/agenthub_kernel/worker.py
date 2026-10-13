@@ -343,16 +343,27 @@ class Worker:
         return summary
 
     def drain_once(self, max_calls: int = 100) -> list[dict[str, Any]]:
-        """Process up to ``max_calls`` ready invocations. Returns diagnostics."""
+        """Process ready invocations, at most once each per pass.
+
+        An invocation that is REFUSED by the consume gate usually keeps its
+        state (e.g. it is over quota, or the tree is stopped), so a naive loop
+        would re-pick and re-refuse it until ``max_calls`` is exhausted — 100
+        pointless round-trips per drain. We therefore remember what we already
+        looked at in this pass and stop once nothing new is available.
+
+        Returns diagnostics for every invocation examined.
+        """
         outcomes: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for _ in range(max_calls):
-            outcome = self._process_one()
+            outcome = self._process_one(exclude=seen)
             if outcome is None:
                 break
             outcomes.append(outcome)
+            seen.add(outcome["invocation_id"])
         return outcomes
 
-    def _process_one(self) -> Optional[dict[str, Any]]:
+    def _process_one(self, exclude: Optional[set[str]] = None) -> Optional[dict[str, Any]]:
         """Find one consumable invocation, commit the gate, then start the adapter.
 
         Ordering is deliberate and load-bearing (AGENT_HUB_PLAN §4.1): the
@@ -369,7 +380,7 @@ class Worker:
         # ---- Phase 1: atomic consume + reservation, committed first ----
         with self.db.session() as session:
             svc = PolicyService(session)
-            inv = self._pick_ready(session)
+            inv = self._pick_ready(session, exclude=exclude)
             if inv is None:
                 return None
             invocation_id = inv.id
@@ -407,14 +418,14 @@ class Worker:
             "adapter_invocation_id": start.adapter_invocation_id,
         }
 
-    def _pick_ready(self, session: Any) -> Optional[InvocationRow]:
-        """Pick an invocation that has a consumable approval and is not terminal.
+    def _pick_ready(
+        self, session: Any, exclude: Optional[set[str]] = None
+    ) -> Optional[InvocationRow]:
+        """Pick a QUEUED invocation with an approved approval.
 
-        We deliberately select by a consumable approval join so that an
-        invocation awaiting user approval is never picked.
+        ``exclude`` holds ids already handled in this drain pass; they are
+        filtered out so a refused invocation is not retried in a tight loop.
         """
-        from sqlalchemy.orm import aliased
-
         from agenthub_kernel.db import ApprovalRow
 
         stmt = (
@@ -430,9 +441,13 @@ class Worker:
                 InvocationRow.status == InvocationStatus.QUEUED.value,
             )
             .order_by(InvocationRow.created_at)
-            .limit(1)
+            .limit(50)
         )
-        return session.scalar(stmt)
+        skip = exclude or set()
+        for candidate in session.scalars(stmt).all():
+            if candidate.id not in skip:
+                return candidate
+        return None
 
 
 def _snapshot_from_dict(data: dict[str, Any]):

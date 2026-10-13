@@ -176,13 +176,18 @@ def create_app(
                     policy_version=task.policy_version,
                 )
                 inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
+                # Plan §5: "POST /api/invocations — 创建待审批调用". Creating the
+                # invocation also raises the pending approval, otherwise a call
+                # made through the API could never be approved.
+                approval = svc.create_approval(invocation_id=inv.id)
                 session.commit()
                 return {
                     "task_id": task.id,
                     "depth": task.depth,
                     "invocation_id": inv.id,
+                    "approval_id": approval.id,
                     "payload_hash": inv.payload_hash,
-                    "status": "draft",
+                    "status": "awaiting_approval",
                 }
             except QuotaError as exc:
                 session.rollback()
@@ -407,8 +412,37 @@ def create_app(
         worker: Worker = app.state.worker
         return worker.reap_timeouts()
 
+    @app.get("/api/dev/mock-activity")
+    def mock_activity(
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """MOCK-ONLY introspection: what the Mock adapter was asked to run.
+
+        This exists purely so a local trial can SEE the safety valve working
+        ("unapproved => start_count stayed 0"). A real adapter would not expose
+        this; it is not part of the product contract.
+        """
+        require_approver(principal)
+        worker: Worker = app.state.worker
+        adapter = worker.adapter
+        store = getattr(adapter, "store", None)
+        return {
+            "mock_only": True,
+            "start_count": getattr(adapter, "start_count", None),
+            "started_invocations": sorted(getattr(adapter, "started_invocations", [])),
+            "executions": store.all_records() if store is not None else [],
+        }
+
     @app.post("/api/worker/drain")
-    def drain() -> list[dict[str, Any]]:
+    def drain(
+        principal: Principal = Depends(authenticate),
+    ) -> list[dict[str, Any]]:
+        """Run one worker pass. User-only: it can start approved calls.
+
+        In a real deployment the Worker is a separate process that polls on its
+        own; this endpoint exists so a local trial can step the scheduler.
+        """
+        require_approver(principal)
         worker: Worker = app.state.worker
         return worker.drain_once()
 

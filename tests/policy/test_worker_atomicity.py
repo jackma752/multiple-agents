@@ -104,6 +104,56 @@ def test_concurrent_consume_starts_at_most_once(tmp_path):
         assert n_res == 1
 
 
+def test_drain_examines_each_invocation_at_most_once(tmp_path):
+    """A refused invocation is not re-picked in a tight loop.
+
+    Before this fix, a call refused by the gate (over quota, stopped tree) kept
+    its state, so drain_once re-picked and re-refused it until max_calls was
+    exhausted - 100 pointless round-trips per drain.
+    """
+    from agenthub.contracts import Policy
+
+    url = f"sqlite:///{(tmp_path / 'drain_once.db').as_posix()}"
+    h = KernelHarness(policy=Policy(max_subagents_total=0, max_subagents_concurrent=0), url=url)
+    root = h.create_root()
+
+    sub = h.create_subtask(root.id, "blocked")
+    inv = h.create_invocation(sub.id)
+    appr = h.create_approval(inv.id)
+    h.approve(appr.id)
+
+    outcomes = h.worker.drain_once()
+
+    assert len(outcomes) == 1, f"same invocation examined {len(outcomes)} times: {outcomes}"
+    assert outcomes[0]["ok"] is False
+    assert outcomes[0]["code"] == "max_subagents_total"
+    assert h.adapter.start_count == 0
+
+
+def test_drain_processes_distinct_invocations_in_one_pass(tmp_path):
+    """Several ready calls are all handled in a single pass."""
+    from agenthub.contracts import Policy
+
+    url = f"sqlite:///{(tmp_path / 'drain_many.db').as_posix()}"
+    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    root = h.create_root()
+
+    ids = []
+    for i in range(2):
+        sub = h.create_subtask(root.id, f"s{i}")
+        inv = h.create_invocation(sub.id)
+        appr = h.create_approval(inv.id)
+        h.approve(appr.id)
+        ids.append(inv.id)
+
+    outcomes = h.worker.drain_once()
+
+    examined = sorted(o["invocation_id"] for o in outcomes)
+    assert examined == sorted(ids)
+    assert len({o["invocation_id"] for o in outcomes}) == len(outcomes)
+    assert h.adapter.start_count == 2
+
+
 def test_release_does_not_return_cumulative_total():
     """A finished sub-agent frees the concurrent slot but not the total budget."""
     h = KernelHarness(policy=Policy(max_subagents_total=1, max_subagents_concurrent=1))

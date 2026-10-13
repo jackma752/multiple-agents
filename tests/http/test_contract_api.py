@@ -60,6 +60,33 @@ def test_post_conversations_returns_id(client):
     assert r.json()["conversation_id"].startswith("conv-")
 
 
+def test_post_invocations_raises_a_pending_approval(client):
+    """Plan §5: POST /api/invocations creates an invocation AWAITING approval.
+
+    Without this, a call created through the API could never be approved.
+    """
+    task_id, inv_id = _invocation(client, "needs approval")
+
+    with client.app.state.db.session() as s:
+        row = s.get(InvocationRow, inv_id)
+        assert row.status == InvocationStatus.AWAITING_APPROVAL.value
+
+    # The response must expose the approval id so the user can act on it.
+    r = client.post(
+        "/api/invocations",
+        json={"task_id": "-", "agent_id": "mock", "task_input": "again"},
+    )
+    assert r.status_code == 200
+    assert r.json()["approval_id"]
+    assert r.json()["status"] == "awaiting_approval"
+
+    # And that approval is genuinely usable: approve -> queued -> runs.
+    appr = r.json()["approval_id"]
+    assert client.post(f"/api/approvals/{appr}/approve", headers=USER).status_code == 200
+    client.post("/api/worker/drain", headers=USER)
+    assert client.app.state.worker.adapter.start_count == 1
+
+
 def test_message_still_works(client):
     r = client.post("/api/conversations/c1/messages", json={"text": "hi"})
     assert r.status_code == 200
@@ -101,7 +128,7 @@ def _running(client, goal="run me"):
     task_id, inv_id = _invocation(client, goal)
     appr = _pending_approval(client, inv_id)
     client.post(f"/api/approvals/{appr}/approve", headers=USER)
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     return task_id, inv_id
 
 
@@ -117,7 +144,7 @@ def test_pause_blocks_new_start_and_resume_unblocks(client):
     _t2, inv2 = _invocation(client, "second", parent_task_id=task_id)
     appr2 = _pending_approval(client, inv2)
     client.post(f"/api/approvals/{appr2}/approve", headers=USER)
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert client.app.state.worker.adapter.start_count == 1
 
     # The already-running call was NOT cancelled by the pause.
@@ -127,7 +154,7 @@ def test_pause_blocks_new_start_and_resume_unblocks(client):
     r = client.post(f"/api/tasks/{task_id}/resume", headers=USER)
     assert r.status_code == 200
     assert r.json()["paused"] is False
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert client.app.state.worker.adapter.start_count == 2
 
 
@@ -190,10 +217,10 @@ def test_reconcile_retry_requires_new_approval_via_api(client):
         assert s.get(ApprovalRow, new_appr).status == ApprovalStatus.PENDING.value
 
     # Nothing starts until the user approves the retry.
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert client.app.state.worker.adapter.start_count == 0
     client.post(f"/api/approvals/{new_appr}/approve", headers=USER)
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert client.app.state.worker.adapter.start_count == 1
 
 
@@ -329,3 +356,18 @@ def test_reap_endpoint_times_out_overdue(client):
 
 def test_reap_requires_user(client):
     assert client.post("/api/worker/reap", headers=AGENT).status_code == 403
+
+
+def test_drain_requires_user(client):
+    """drain() can start approved calls, so it is a privileged endpoint too."""
+    assert client.post("/api/worker/drain").status_code == 401
+    assert client.post("/api/worker/drain", headers=AGENT).status_code == 403
+    assert client.post("/api/worker/drain", headers=USER).status_code == 200
+
+
+def test_mock_activity_requires_user(client):
+    """The Mock introspection endpoint is user-only."""
+    assert client.get("/api/dev/mock-activity").status_code == 401
+    r = client.get("/api/dev/mock-activity", headers=USER)
+    assert r.status_code == 200
+    assert r.json()["mock_only"] is True

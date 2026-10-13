@@ -29,9 +29,9 @@
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，另有可持久化、按 `invocation_id` 查询的执行记录（用于恢复对账）。
 
-**当前 136 个测试全部通过**，并发/恢复/停止确认/E2E 敏感用例另做 8 轮重复（184 次执行）全绿。
-分布：`e2e` 2、`http` 31、`persistence` 6、`policy` 94、`hygiene` 3。
-完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；各轮实现说明见
+**当前 141 个测试全部通过**。分布：`e2e` 2、`http` 33、`persistence` 6、
+`policy` 97、`hygiene` 3。完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；
+本地试用步骤见 **`docs/trial-mock.md`**；各轮实现说明见
 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、
 `docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`。
 
@@ -42,6 +42,20 @@
 ## 仓库约定
 
 见 `AGENTS.md`。
+
+## 本地试用（Mock，无需真实 Agent 账号）
+
+```powershell
+.\.venv\Scripts\python.exe tools\demo\serve.py     # 启动 Mock API
+# 交互式 API 页： http://127.0.0.1:8080/docs   （右上角 Authorize 填用户 token）
+.\.venv\Scripts\python.exe tools\demo\demo_flow.py # 一键跑完整演示流程
+```
+
+详细步骤（启动命令、凭证设置、建任务、批准/拒绝/配额/停止/超时/恢复操作、
+数据位置与重置、已知限制）见 **`docs/trial-mock.md`**。
+
+> **暂未接入任何真实 Agent。** 试用只验证审批与配额这套安全阀本身，
+> Mock 适配器仅记录"被启动次数"与执行记录，不调用真实产品、不发外部网络请求。
 
 ## 目录结构
 

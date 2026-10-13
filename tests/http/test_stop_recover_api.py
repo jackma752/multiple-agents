@@ -50,7 +50,7 @@ def test_stop_endpoint_cancels_running_call(client):
     _approve(client, inv_id)
 
     # Run it so it is RUNNING.
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
 
     db = client.app.state.db
     with db.session() as s:

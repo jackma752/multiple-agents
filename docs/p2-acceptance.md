@@ -9,7 +9,7 @@
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-结果：**136 passed，exit code 0**。并发/恢复/停止确认/E2E 敏感用例另做 **8 轮重复**
+结果：**141 passed，exit code 0**。并发/恢复/停止确认/E2E 敏感用例另做 **8 轮重复**
 （23 项 × 8 = 184 次执行）全部 `exit=0`。
 
 ---
@@ -79,7 +79,7 @@ CLI 拦截（P3）、自动协作开关（P4）、真实远程超时（P3）、S
 | `POST /api/conversations` | ✅ | **本轮补齐** |
 | `POST /api/conversations/{id}/messages` | ✅ | 回执；调用草稿属 P3 |
 | `POST /api/tasks/{id}/delegations` | ✅ | 提议子任务，不执行 |
-| `POST /api/invocations` | ✅ | 创建待审批调用 |
+| `POST /api/invocations` | ✅ | **创建待审批调用**：同时生成一条 `pending` 审批并返回 `approval_id`（此前只创建调用，导致经 HTTP 创建的调用无法被批准） |
 | `POST /api/approvals/{id}/approve` | ✅ | 仅 user |
 | `POST /api/approvals/{id}/reject` | ✅ | 仅 user |
 | `POST /api/approvals/{id}/revoke` | ✅ | 仅 user |

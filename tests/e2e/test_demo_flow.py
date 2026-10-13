@@ -69,7 +69,7 @@ def test_p2_demo_flow(client):
     # ---- 2. main agent call, approved by the user ---------------------
     root_task_id, main_inv = _create_root_invocation(client)
     _approve(client, main_inv)
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert _starts(client) == 1, "approved main call should have started"
 
     # ---- 3. manually dispatch two Mock sub-agents ---------------------
@@ -79,20 +79,20 @@ def test_p2_demo_flow(client):
     assert d2["status"] == "awaiting_approval"
 
     # ---- 4. NOT approved yet -> nothing starts ------------------------
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert _starts(client) == 1, "unapproved sub-agents must not start"
 
     # ---- 5. user approves both -> they execute ------------------------
     for d in (d1, d2):
         r = client.post(f"/api/approvals/{d['approval_id']}/approve", headers=USER)
         assert r.status_code == 200, r.text
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert _starts(client) == 3, "both approved sub-agents should have started"
 
     # ---- 6. cap reached (total 2 sub-agents) -> new one is refused ----
     d3 = _propose_delegation(client, root_task_id, "write the JS")
     client.post(f"/api/approvals/{d3['approval_id']}/approve", headers=USER)
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert _starts(client) == 3, "the total sub-agent cap should have blocked the 3rd"
 
     with client.app.state.db.session() as s:
@@ -124,7 +124,7 @@ def test_p2_demo_flow(client):
     # Nothing new starts after a stop, even with a fresh approved approval.
     d4 = _propose_delegation(client, root_task_id, "more work")
     client.post(f"/api/approvals/{d4['approval_id']}/approve", headers=USER)
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert _starts(client) == 3, "a stopped tree must not start anything new"
 
 
@@ -149,5 +149,5 @@ def test_demo_flow_rejection_and_expiry_never_start(client):
         row.expires_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(seconds=5)
         s.commit()
 
-    client.post("/api/worker/drain")
+    client.post("/api/worker/drain", headers=USER)
     assert _starts(client) == 0
