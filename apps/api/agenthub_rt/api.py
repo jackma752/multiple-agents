@@ -70,6 +70,13 @@ class MessageIn(BaseModel):
     text: str
 
 
+class ReconcileIn(BaseModel):
+    """User adjudication of an ``unknown`` invocation."""
+
+    action: str  # "settle" | "retry"
+    outcome: Optional[str] = None  # required when action == "settle"
+
+
 def create_app(
     db: Optional[Database] = None,
     db_url: Optional[str] = None,
@@ -100,6 +107,13 @@ def create_app(
     @app.post("/api/agents")
     def register_agent(agent: AgentIn) -> dict[str, Any]:
         return agent.model_dump()
+
+    @app.post("/api/conversations")
+    def create_conversation() -> dict[str, Any]:
+        """Create a chat. P2 keeps conversations in-memory/stateless."""
+        import uuid
+
+        return {"conversation_id": f"conv-{uuid.uuid4().hex[:12]}"}
 
     @app.post("/api/conversations/{cid}/messages")
     def post_message(cid: str, msg: MessageIn) -> dict[str, Any]:
@@ -226,6 +240,7 @@ def create_app(
                 session.rollback()
                 raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message})
 
+    @app.patch("/api/tasks/{task_id}/policy")
     @app.post("/api/tasks/{task_id}/policy")
     def update_policy(
         task_id: str,
@@ -316,6 +331,81 @@ def create_app(
             "cancelled": result["attempted"],
             "outcomes": result["outcomes"],
         }
+
+    @app.post("/api/tasks/{task_id}/pause")
+    def pause_task(
+        task_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """Block further scheduling for the tree. Running calls keep running."""
+        require_approver(principal)
+        with db.session() as session:
+            task = session.get(TaskRow, task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            result = PolicyService(session).pause_tree(
+                task.root_task_id, requested_by=principal.identity
+            )
+            return result
+
+    @app.post("/api/tasks/{task_id}/resume")
+    def resume_task(
+        task_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
+        with db.session() as session:
+            task = session.get(TaskRow, task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            result = PolicyService(session).resume_tree(
+                task.root_task_id, requested_by=principal.identity
+            )
+            return result
+
+    @app.post("/api/invocations/{invocation_id}/reconcile")
+    def reconcile_invocation(
+        invocation_id: str,
+        body: ReconcileIn,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """User-only resolution of an ``unknown`` invocation.
+
+        ``settle`` states what actually happened; ``retry`` supersedes the call
+        and creates a NEW pending approval, because a retry is a new call.
+        """
+        require_approver(principal)
+        if body.action not in ("settle", "retry"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "bad_action",
+                    "message": "action must be 'settle' or 'retry'",
+                },
+            )
+        worker: Worker = app.state.worker
+        try:
+            return worker.reconcile(
+                invocation_id,
+                action=body.action,
+                outcome=body.outcome,
+                actor=principal.identity,
+            )
+        except QuotaError as exc:
+            status = 404 if exc.code in ("no_invocation", "no_task") else 409
+            raise HTTPException(
+                status_code=status,
+                detail={"code": exc.code, "message": exc.message},
+            )
+
+    @app.post("/api/worker/reap")
+    def reap(
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """Time out invocations that exceeded the run-time limit."""
+        require_approver(principal)
+        worker: Worker = app.state.worker
+        return worker.reap_timeouts()
 
     @app.post("/api/worker/drain")
     def drain() -> list[dict[str, Any]]:

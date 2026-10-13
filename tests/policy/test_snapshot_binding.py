@@ -82,7 +82,15 @@ def test_mutating_snapshot_with_rehash_mismatches_approval(tmp_path, field, new_
 
     with h.open_session() as s:
         row = s.get(InvocationRow, inv.id)
-        assert row.status in ("invalid", "draft"), row.status
+        # It must not have started; the state is whatever the gate left it in
+        # (queued when the refusal happened at the approval-hash check).
+        assert row.status in (
+            "invalid",
+            "draft",
+            "queued",
+            "awaiting_approval",
+        ), row.status
+        assert row.status not in ("running", "succeeded")
         assert s.get(ApprovalRow, appr.id).status == "approved"
 
 

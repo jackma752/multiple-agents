@@ -19,15 +19,24 @@
 - **配额预留是原子的**：每棵树一行计数器（`tree_quota`），预留用单条条件更新把上限写进 `WHERE`，多条**不同**调用争抢最后一个名额时也只有一条成功（"先读后写"的检查曾使 4 条全部通过，已修复）。
 - **策略持久化与版本化**：策略存在根任务行，作用于整棵树；每次更新版本递增并保留旧版本与事件。更新会撤销**未消费**的审批，但不重置累计数量、不取消运行中的调用；非法参数不写入任何东西。
 - **停止与取消**：停止请求先**持久化**（带操作者）、再接通适配器 `cancel`；取消或重复停止只释放一次名额（按预留记录 CAS）。适配器不支持取消时返回 `unsupported`。
-- **崩溃恢复**：重启后核对 `starting`/`running`，向外部侧按 `invocation_id` 查询；确认在跑的保留名额，确认终态的结算并释放一次，**无法确认的置 `unknown`、不自动重启、不提前释放名额**。Mock 适配器有可持久化、按 `invocation_id` 查询的执行记录。
-- **API 与 Worker 共用同一数据库文件**：路径锚定仓库根（`config.py`，不依赖工作目录），文件型 SQLite 启用 WAL 与 busy timeout；记录可跨进程读取、重启后保留，已消费的审批不会重复启动。
+- **暂停与恢复**：`POST /api/tasks/{id}/pause` 阻止后续调度但**不取消**运行中的调用；`/resume` 解除。
+- **执行超时**：超过树策略 `run_time_limit_seconds` 的调用被置 `timed_out` 并释放名额；无法取消时如实报告 `remote_stop_confirmed=false`，不谎称远程已停。
+- **崩溃恢复**：重启后核对 `starting`/`running`，向外部侧按 `invocation_id` 查询；确认在跑的保留名额，确认终态的结算并释放一次，**无法确认的置 `unknown`、不自动重启、不提前释放名额**。
+- **unknown 用户裁决**：`POST /api/invocations/{id}/reconcile`（仅 user）——`settle` 认定结果并幂等释放名额；`retry` 结算旧调用并**新建调用 + 新待批审批**（重试必须重新审批，不自动启动）。
+- **API 与 Worker 共用同一数据库文件**：路径锚定仓库根（`config.py`，不依赖工作目录），文件型 SQLite 启用 WAL 与 busy timeout。
 - 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
-- Mock 适配器：只记录"被启动次数"，用于断言未批准时启动次数为 0。
+- Mock 适配器：只记录"被启动次数"，另有可持久化、按 `invocation_id` 查询的执行记录（用于恢复对账）。
 
-**当前 80 个测试全部通过**：`http/test_auth.py` 11、`http/test_policy_api.py` 3、`http/test_stop_recover_api.py` 3、`persistence/test_shared_db.py` 6、`test_approval.py` 7、`test_consumable_approval.py` 7、`test_policy_versioning.py` 14、`test_quota.py` 6、`test_recovery.py` 8、`test_stop_and_authz.py` 4、`test_stop_cancel.py` 8、`test_worker_atomicity.py` 3。并发/恢复用例使用**文件型 SQLite + 独立连接**（内存库共享单连接，无法表达并发），并重复 10 轮验证稳定。细节见 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、`docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`。
+**当前 127 个测试全部通过**，并发/恢复/E2E 敏感用例另做 8 轮重复（72 次执行）全绿。
+分布：`e2e` 2、`http` 29、`persistence` 6、`policy` 87、`hygiene` 3。
+完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；各轮实现说明见
+`docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、
+`docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`。
 
-> **这不等于完整 P2 安全验收。** 仍未验证：真实进程强杀（`kill -9`）中途打断事务、`unknown` 调用的人工裁决入口（当前会永久占位）、真实适配器取消的时延与超时。参见 `docs/p2-stop-and-recovery.md` §7。
+> **这不等于整个项目安全阀全部通过。** 计划 §6 十条中 6 条完全通过、4 条部分通过，
+> 后者的阶段归属与未验证状态：**CLI 拦截**（P3）、**自动协作开关**（P4）、
+> **真实适配器远程超时**（P3）、**SSE 断线恢复**（P3/P5）。详见 `docs/p2-acceptance.md` §B/§G。
 
 ## 仓库约定
 

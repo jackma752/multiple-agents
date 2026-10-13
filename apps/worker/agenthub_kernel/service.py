@@ -180,7 +180,12 @@ class PolicyService:
         user_id: str = "local-user",
         ttl_seconds: int = 300,
     ) -> ApprovalRow:
-        """Create a pending approval bound to the invocation's current hash."""
+        """Create a pending approval bound to the invocation's current hash.
+
+        Also moves the invocation to ``awaiting_approval``: once an approval
+        request exists, the call is waiting on the user (AGENT_HUB_PLAN §5
+        state chain ``draft -> awaiting_approval -> queued -> ...``).
+        """
         inv = self.session.get(InvocationRow, invocation_id)
         if inv is None:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
@@ -194,6 +199,11 @@ class PolicyService:
             expires_at=now() + dt.timedelta(seconds=ttl_seconds),
         )
         self.session.add(appr)
+        if inv.status in (
+            InvocationStatus.DRAFT.value,
+            InvocationStatus.AWAITING_APPROVAL.value,
+        ):
+            inv.status = InvocationStatus.AWAITING_APPROVAL.value
         self.session.flush()
         return appr
 
@@ -210,7 +220,11 @@ class PolicyService:
             inv.started_at = now()
 
     def approve(self, approval_id: str) -> ApprovalRow:
-        """Mark pending->approved. Only a valid pending approval can be approved."""
+        """Mark pending->approved. Only a valid pending approval can be approved.
+
+        The invocation moves to ``queued``: the user has consented, so the call
+        is now waiting for a Worker to pick it up (and for a quota slot).
+        """
         appr = self.session.get(ApprovalRow, approval_id)
         if appr is None:
             raise QuotaError("no_approval", f"approval {approval_id} not found")
@@ -218,6 +232,12 @@ class PolicyService:
             raise QuotaError("not_pending", f"approval {approval_id} is {appr.status}")
         appr.status = ApprovalStatus.APPROVED.value
         appr.approved_at = now()
+        inv = self.session.get(InvocationRow, appr.invocation_id)
+        if inv is not None and inv.status not in (
+            InvocationStatus.STARTING.value,
+            InvocationStatus.RUNNING.value,
+        ):
+            inv.status = InvocationStatus.QUEUED.value
         self.session.flush()
         return appr
 
@@ -228,11 +248,22 @@ class PolicyService:
         if appr.status != ApprovalStatus.PENDING.value:
             raise QuotaError("not_pending", f"approval {approval_id} is {appr.status}")
         appr.status = ApprovalStatus.REJECTED.value
+        inv = self.session.get(InvocationRow, appr.invocation_id)
+        if inv is not None and inv.status not in (
+            InvocationStatus.STARTING.value,
+            InvocationStatus.RUNNING.value,
+        ):
+            inv.status = InvocationStatus.REJECTED.value
         self.session.flush()
         return appr
 
     def revoke(self, approval_id: str) -> ApprovalRow:
-        """Revoke a not-yet-consumed approval (pending or approved)."""
+        """Revoke a not-yet-consumed approval (pending or approved).
+
+        The invocation returns to ``draft`` because, with the approval void, the
+        call is once again awaiting a user decision — and a fresh approval is
+        required.
+        """
         appr = self.session.get(ApprovalRow, approval_id)
         if appr is None:
             raise QuotaError("no_approval", f"approval {approval_id} not found")
@@ -244,6 +275,13 @@ class PolicyService:
         ):
             raise QuotaError("already_terminal", f"approval {approval_id} is {appr.status}")
         appr.status = ApprovalStatus.REVOKED.value
+        inv = self.session.get(InvocationRow, appr.invocation_id)
+        if inv is not None and inv.status in (
+            InvocationStatus.DRAFT.value,
+            InvocationStatus.AWAITING_APPROVAL.value,
+            InvocationStatus.QUEUED.value,
+        ):
+            inv.status = InvocationStatus.DRAFT.value
         self.session.flush()
         return appr
 
@@ -441,9 +479,23 @@ class PolicyService:
             self.session.flush()
             raise QuotaError("expired", f"approval {appr.id} expired")
 
-        # 5. Stop state
+        # 5. Stop / pause state
         if self._tree_stopped(task.root_task_id):
             raise QuotaError("tree_stopped", f"tree {task.root_task_id} is stopped")
+        if self._tree_paused(task.root_task_id):
+            raise QuotaError("tree_paused", f"tree {task.root_task_id} is paused")
+
+        # 5b. The invocation must be in the queued state. An approval is what
+        # moves it there, so this is defence in depth against any path that
+        # approved without queueing (or replayed an old row).
+        if inv.status not in (
+            InvocationStatus.QUEUED.value,
+            InvocationStatus.AWAITING_APPROVAL.value,
+        ):
+            raise QuotaError(
+                "not_queued",
+                f"invocation {invocation_id} is {inv.status}, not queued for execution",
+            )
 
         # 6. Atomic quota reservation.
         #
@@ -758,7 +810,6 @@ class PolicyService:
 
     def list_recoverable(self) -> list[dict[str, Any]]:
         """Invocation rows whose state must be reconciled after a restart.
-
         ``starting`` and ``running`` are the states where the kernel had (or may
         have had) handed work to an adapter. Everything else is already settled
         and is left alone.
@@ -784,6 +835,247 @@ class PolicyService:
                 }
             )
         return out
+
+    # ------------------------------------------------------------------ #
+    # Pause / resume (blocks new scheduling without cancelling anything)
+    # ------------------------------------------------------------------ #
+
+    def pause_tree(self, root_task_id: str, *, requested_by: str = "local-user") -> dict[str, Any]:
+        """Block further scheduling for a tree. Running calls are NOT touched."""
+        if self.session.get(TaskRow, root_task_id) is None:
+            raise QuotaError("no_task", f"root task {root_task_id} not found")
+        self.session.add(
+            EventRow(
+                root_task_id=root_task_id,
+                seq=self._next_seq(root_task_id),
+                type="tree_pause",
+                payload={"requested_by": requested_by},
+            )
+        )
+        self.session.flush()
+        return {"root_task_id": root_task_id, "paused": True}
+
+    def resume_tree(self, root_task_id: str, *, requested_by: str = "local-user") -> dict[str, Any]:
+        """Lift a pause. Does not resurrect expired/revoked approvals."""
+        if self.session.get(TaskRow, root_task_id) is None:
+            raise QuotaError("no_task", f"root task {root_task_id} not found")
+        self.session.add(
+            EventRow(
+                root_task_id=root_task_id,
+                seq=self._next_seq(root_task_id),
+                type="tree_resume",
+                payload={"requested_by": requested_by},
+            )
+        )
+        self.session.flush()
+        return {"root_task_id": root_task_id, "paused": False}
+
+    def _tree_paused(self, root_task_id: str) -> bool:
+        """Paused when the most recent pause/resume event is a pause."""
+        event = self.session.scalars(
+            select(EventRow)
+            .where(
+                EventRow.root_task_id == root_task_id,
+                EventRow.type.in_(["tree_pause", "tree_resume"]),
+            )
+            .order_by(EventRow.seq.desc())
+            .limit(1)
+        ).first()
+        return event is not None and event.type == "tree_pause"
+
+    # ------------------------------------------------------------------ #
+    # Run-time limit enforcement (timed_out)
+    # ------------------------------------------------------------------ #
+
+    def list_overdue(
+        self, *, now_ts: Optional[dt.datetime] = None
+    ) -> list[dict[str, Any]]:
+        """Running/starting invocations that have exceeded the run-time limit.
+
+        The limit comes from the tree's effective policy
+        (``run_time_limit_seconds``). Returns rows the Worker should time out.
+        """
+        current = now_ts or now()
+        rows = self.session.scalars(
+            select(InvocationRow).where(
+                InvocationRow.status.in_(
+                    [InvocationStatus.STARTING.value, InvocationStatus.RUNNING.value]
+                )
+            )
+        ).all()
+        overdue = []
+        for r in rows:
+            if r.started_at is None:
+                continue
+            task = self.session.get(TaskRow, r.task_id)
+            if task is None:
+                continue
+            policy = self._quotas(r)
+            deadline = r.started_at + dt.timedelta(seconds=policy.run_time_limit_seconds)
+            if current >= deadline:
+                overdue.append(
+                    {
+                        "invocation_id": r.id,
+                        "root_task_id": task.root_task_id,
+                        "started_at": r.started_at,
+                        "deadline": deadline,
+                        "limit_seconds": policy.run_time_limit_seconds,
+                    }
+                )
+        return overdue
+
+    def mark_timed_out(self, invocation_id: str) -> None:
+        """Settle an overdue invocation as timed_out and free its slot once."""
+        self.release(invocation_id, InvocationStatus.TIMED_OUT)
+        inv = self.session.get(InvocationRow, invocation_id)
+        if inv is not None:
+            inv.error = "exceeded run_time_limit_seconds"
+
+    # ------------------------------------------------------------------ #
+    # Unknown reconciliation (user adjudication)
+    # ------------------------------------------------------------------ #
+
+    def reconcile_unknown(
+        self,
+        invocation_id: str,
+        *,
+        action: str,
+        outcome: Optional[str] = None,
+        actor: str = "local-user",
+    ) -> dict[str, Any]:
+        """Let the USER settle or retry an ``unknown`` invocation.
+
+        ``unknown`` means recovery could not confirm the true state, so the slot
+        is held deliberately. Only a human may resolve it:
+
+        * ``action="settle"``: the user states what actually happened. The
+          invocation is moved to ``outcome`` and its slot is released
+          (idempotently — releasing twice frees one slot).
+        * ``action="retry"``: the call is retried, but a retry is a NEW call and
+          therefore requires a NEW approval. The old invocation is settled as
+          failed (superseded) and a fresh invocation + pending approval is
+          created for the same task; nothing runs until the user approves again.
+        """
+        inv = self.session.get(InvocationRow, invocation_id)
+        if inv is None:
+            raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
+        if inv.status != InvocationStatus.UNKNOWN.value:
+            raise QuotaError(
+                "not_unknown",
+                f"invocation {invocation_id} is {inv.status}, not unknown",
+            )
+
+        if action == "settle":
+            allowed = {
+                "succeeded": InvocationStatus.SUCCEEDED,
+                "failed": InvocationStatus.FAILED,
+                "canceled": InvocationStatus.CANCELED,
+                "timed_out": InvocationStatus.TIMED_OUT,
+            }
+            if outcome not in allowed:
+                raise QuotaError(
+                    "bad_outcome",
+                    f"outcome must be one of {sorted(allowed)}, got {outcome!r}",
+                )
+            self.release(invocation_id, allowed[outcome])
+            self.session.add(
+                EventRow(
+                    root_task_id=self._root_of(inv),
+                    seq=self._next_seq(self._root_of(inv)),
+                    type="unknown_settled",
+                    payload={
+                        "invocation_id": invocation_id,
+                        "outcome": outcome,
+                        "actor": actor,
+                    },
+                )
+            )
+            self.session.flush()
+            return {
+                "invocation_id": invocation_id,
+                "action": "settle",
+                "outcome": outcome,
+                "retry_invocation_id": None,
+                "retry_approval_id": None,
+            }
+
+        if action == "retry":
+            task = self.session.get(TaskRow, inv.task_id)
+            if task is None:
+                raise QuotaError("no_task", f"task {inv.task_id} not found")
+            root_task_id = task.root_task_id
+
+            # Settle the old attempt: it is superseded, and its slot is freed.
+            self.release(invocation_id, InvocationStatus.FAILED)
+            inv.error = "superseded by user-initiated retry"
+
+            # A retry is a NEW invocation with a NEW pending approval. The user
+            # must approve it again; nothing is auto-started.
+            root = self.session.get(TaskRow, root_task_id)
+            policy_version = int(
+                (root.policy_version if root is not None else task.policy_version) or 1
+            )
+            snapshot = InvocationSnapshot(
+                agent_id=task.agent_id,
+                task_input=task.goal,
+                parent_task_id=str(task.parent_task_id) if task.parent_task_id else None,
+                depth=task.depth,
+                permissions=dict(inv.snapshot.get("permissions") or {}),
+                resources=dict(inv.snapshot.get("resources") or {}),
+                policy_version=policy_version,
+            )
+            new_inv = InvocationRow(
+                id=new_id("inv"),
+                task_id=task.id,
+                payload_hash=snapshot.payload_hash(),
+                snapshot=snapshot.to_dict(),
+                status=InvocationStatus.AWAITING_APPROVAL.value,
+            )
+            self.session.add(new_inv)
+            self.session.flush()
+
+            appr = ApprovalRow(
+                id=new_id("appr"),
+                invocation_id=new_inv.id,
+                payload_hash=new_inv.payload_hash,
+                user_id=actor,
+                status=ApprovalStatus.PENDING.value,
+                policy_version=policy_version,
+                expires_at=now() + dt.timedelta(
+                    seconds=max(self._quotas(new_inv).run_time_limit_seconds, 300)
+                ),
+            )
+            self.session.add(appr)
+            self.session.add(
+                EventRow(
+                    root_task_id=root_task_id,
+                    seq=self._next_seq(root_task_id),
+                    type="retry_requested",
+                    payload={
+                        "superseded_invocation_id": invocation_id,
+                        "retry_invocation_id": new_inv.id,
+                        "retry_approval_id": appr.id,
+                        "actor": actor,
+                    },
+                )
+            )
+            self.session.flush()
+            return {
+                "invocation_id": invocation_id,
+                "action": "retry",
+                "outcome": None,
+                "retry_invocation_id": new_inv.id,
+                "retry_approval_id": appr.id,
+                "requires_approval": True,
+            }
+
+        raise QuotaError(
+            "bad_action", f"action must be 'settle' or 'retry', got {action!r}"
+        )
+
+    def _root_of(self, inv: InvocationRow) -> str:
+        task = self.session.get(TaskRow, inv.task_id)
+        return task.root_task_id if task is not None else "unknown"
 
     # ------------------------------------------------------------------ #
     # Policy updates (persisted, versioned, invalidating)
@@ -905,5 +1197,14 @@ class PolicyService:
         ).all()
         for appr in targets:
             appr.status = ApprovalStatus.REVOKED.value
+            # The invocation's snapshot carries the OLD policy version, so it can
+            # never be consumed again; mark it invalid rather than draft.
+            inv = self.session.get(InvocationRow, appr.invocation_id)
+            if inv is not None and inv.status in (
+                InvocationStatus.DRAFT.value,
+                InvocationStatus.AWAITING_APPROVAL.value,
+                InvocationStatus.QUEUED.value,
+            ):
+                inv.status = InvocationStatus.INVALID.value
         self.session.flush()
         return len(targets)

@@ -164,6 +164,33 @@ class KernelHarness:
             session.commit()
             return result
 
+    def pause(self, root_task_id: str, requested_by: str = "local-user"):
+        with self.open_session() as session:
+            result = PolicyService(session, self.policy).pause_tree(
+                root_task_id, requested_by=requested_by
+            )
+            session.commit()
+            return result
+
+    def resume(self, root_task_id: str, requested_by: str = "local-user"):
+        with self.open_session() as session:
+            result = PolicyService(session, self.policy).resume_tree(
+                root_task_id, requested_by=requested_by
+            )
+            session.commit()
+            return result
+
+    def mark_running_old(self, invocation_id: str, seconds: int):
+        """Backdate started_at so the run-time limit is exceeded (test-only)."""
+        import datetime as dt
+
+        with self.open_session() as session:
+            row = session.get(InvocationRow, invocation_id)
+            row.started_at = dt.datetime.now(dt.timezone.utc).replace(
+                tzinfo=None
+            ) - dt.timedelta(seconds=seconds)
+            session.commit()
+
     def drain(self) -> list:
         return self.worker.drain_once()
 

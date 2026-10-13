@@ -22,7 +22,13 @@ def _assert_not_started(session, invocation_id, approval_id, status):
     approval = session.get(ApprovalRow, approval_id)
     assert approval.status == status.value
     assert approval.consumed_at is None
-    assert session.get(InvocationRow, invocation_id).status == InvocationStatus.DRAFT.value
+    # The invocation sits in awaiting_approval: an approval request exists but
+    # the user has not consented, so it must never be picked or started.
+    inv_status = session.get(InvocationRow, invocation_id).status
+    assert inv_status in (
+        InvocationStatus.AWAITING_APPROVAL.value,
+        InvocationStatus.DRAFT.value,
+    ), inv_status
     assert session.scalar(select(func.count()).select_from(QuotaReservationRow)) == 0
     assert session.scalar(select(func.count()).select_from(EventRow)) == 0
 

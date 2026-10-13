@@ -90,6 +90,74 @@ class Worker:
         return result
 
     # ------------------------------------------------------------------ #
+    # Run-time limit enforcement
+    # ------------------------------------------------------------------ #
+
+    def reap_timeouts(self) -> dict[str, Any]:
+        """Time out invocations that exceeded the tree's run-time limit.
+
+        Ordering: ask the adapter to cancel FIRST (best effort), then settle the
+        invocation as ``timed_out`` and release its slot. If cancellation is
+        unsupported we still time the invocation out locally but say so, rather
+        than claiming the remote side stopped.
+        """
+        with self.db.session() as session:
+            overdue = PolicyService(session).list_overdue()
+
+        timed_out = []
+        for item in overdue:
+            invocation_id = item["invocation_id"]
+            cancel_result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
+            cancel_fn = getattr(self.adapter, "cancel_invocation", None)
+            if cancel_fn is not None:
+                try:
+                    cancel_result = cancel_fn(invocation_id)
+                except Exception as exc:  # noqa: BLE001
+                    cancel_result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
+            with self.db.session() as session:
+                PolicyService(session).mark_timed_out(invocation_id)
+            timed_out.append(
+                {
+                    "invocation_id": invocation_id,
+                    "limit_seconds": item["limit_seconds"],
+                    "cancel": cancel_result,
+                    "remote_stop_confirmed": bool(cancel_result.get("ok")),
+                }
+            )
+        return {"examined": len(overdue), "timed_out": timed_out}
+
+    # ------------------------------------------------------------------ #
+    # Unknown reconciliation (user adjudication)
+    # ------------------------------------------------------------------ #
+
+    def reconcile(
+        self,
+        invocation_id: str,
+        *,
+        action: str,
+        outcome: Optional[str] = None,
+        actor: str = "local-user",
+    ) -> dict[str, Any]:
+        """Resolve an ``unknown`` invocation: settle it or retry with re-approval.
+
+        Adapter evidence is gathered first and reported, so the user's decision
+        is informed — but the decision itself is the user's, never automatic.
+        """
+        evidence = None
+        lookup = getattr(self.adapter, "lookup_by_invocation", None)
+        if lookup is not None:
+            try:
+                evidence = lookup(invocation_id)
+            except Exception:  # noqa: BLE001
+                evidence = None
+
+        with self.db.session() as session:
+            result = PolicyService(session).reconcile_unknown(
+                invocation_id, action=action, outcome=outcome, actor=actor
+            )
+        return {**result, "adapter_evidence": evidence}
+
+    # ------------------------------------------------------------------ #
     # Crash recovery
     # ------------------------------------------------------------------ #
 
@@ -255,17 +323,9 @@ class Worker:
                 # ready. A merely pending approval must never be picked, and
                 # ``consume`` re-checks this independently.
                 ApprovalRow.status == "approved",
-                InvocationRow.status.notin_(
-                    [
-                        InvocationStatus.SUCCEEDED.value,
-                        InvocationStatus.FAILED.value,
-                        InvocationStatus.CANCELED.value,
-                        InvocationStatus.TIMED_OUT.value,
-                        InvocationStatus.UNKNOWN.value,
-                        InvocationStatus.REJECTED.value,
-                        InvocationStatus.INVALID.value,
-                    ]
-                ),
+                # The invocation must be QUEUED: that is the state an approval
+                # puts it in. Anything terminal, or not yet approved, is skipped.
+                InvocationRow.status == InvocationStatus.QUEUED.value,
             )
             .order_by(InvocationRow.created_at)
             .limit(1)
