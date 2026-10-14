@@ -36,7 +36,7 @@
 **只读沙箱是否真拒绝写入**（历次提示词都没要求写文件）、app-server 协议。
 四项验证方案、判定条件与清理步骤见 `docs/p3-permission-probes.md`。
 
-**当前 289 个测试全部通过**。P3 验收与逐条证据见 **`docs/p3-acceptance.md`**；
+**当前 304 个测试全部通过**。P3 验收与逐条证据见 **`docs/p3-acceptance.md`**；
 真实调用记录见 `docs/p3-codex-real-run-2026-10-14.md`；P2 验收矩阵见 **`docs/p2-acceptance.md`**；
 控制台说明见 **`docs/p3-ui.md`**，试用步骤见 **`docs/p3-console-trial-steps.md`**；
 Codex 能力与未决项见 `docs/agent-codex-capabilities.md`；

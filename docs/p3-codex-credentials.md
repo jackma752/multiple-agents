@@ -34,19 +34,30 @@ WARNING: proceeding, even though we could not create PATH aliases: Refusing to
 它只是警告并继续执行（那次真实调用仍然成功），但这是能力降级。临时目录只适合
 一次性验证；长期使用请用普通目录。
 
-## 2. 本环境为什么不能替你建：实测结果
+## 2. 当前实际状态（2026-10-14 核对，元数据 + 登录状态）
 
-在受约束的执行环境里写入 `%LOCALAPPDATA%` 被拒绝（只允许工作区内写入）：
+| 检查项 | 结果 |
+|---|---|
+| 目录存在 | **存在**：`C:\Users\Administrator\AppData\Local\AgentHub\codex-home` |
+| 目录内容（仅元数据） | `auth.json`、`sessions/`、`log/`、`tmp/`、`state_5.sqlite` 等（**未读取任何文件内容**） |
+| 凭证文件 | `auth.json` 存在，3918 字节，mtime `2026-10-14 21:28:13`（**只读元数据**） |
+| 登录状态 | `codex login status` → **`Logged in using ChatGPT`**，退出码 0 |
+| 本进程能否**写**该目录 | **不能**：`codex login status` 输出 `WARNING: … could not create PATH aliases: 拒绝访问。(os error 5) at path "...\codex-home\tmp\arg0\..."` |
 
-```
-target: C:\Users\Administrator\AppData\Local\AgentHub\codex-home
-CREATE: denied -> UnauthorizedAccessException: 对路径"AgentHub"的访问被拒绝。
-```
+**关键区分（曾写错，特此更正）**：
 
-因此这一步**必须由你在自己的终端里执行**（那里可以写 `%LOCALAPPDATA%`）。
-这不是权限配置问题，也不是 Codex 的问题。
+* 这里的"访问被拒"是**本执行沙箱拒绝我的进程写入 `%LOCALAPPDATA%`**，
+  **不是**"目录不存在"，也**不是**登录失效。
+* 早期文档根据一次失败的 `New-Item` 写了"该目录不存在/需由你创建"。**那是错的**：
+  失败的是*我的*写入尝试，而目录与凭证都一直在。
+* 结论：**目录与登录都有效**；只是我这一侧的进程没有写权限。
+  真实探测需要写 `CODEX_HOME`（`logs/state/tmp`），因此要么在你的终端里运行，
+  要么为该命令单独批准更宽的写权限——**不要**因此去改目录位置或重建凭证。
 
-## 3. 你要执行的步骤
+工具 `tools/demo/codex_login.py` 现在会分别报告"存在/凭证存在"与"本进程可写"，
+并且**从不读取凭证内容**。
+
+## 3. 你要执行的步骤（如已登录可跳过）
 
 先看一眼当前状态（不会写任何东西，也不会读取凭证）：
 
@@ -55,7 +66,8 @@ cd E:\plug\agent-hub
 .\.venv\Scripts\python.exe tools\demo\codex_login.py
 ```
 
-然后按它打印的步骤做（等价命令如下）：
+若上面显示"目录存在 / 凭证存在 / credential set: yes"，**你不需要再登录**。
+若确实未登录，再按下面步骤做（等价命令）：
 
 ```powershell
 # 1) 建目录并登录一次（Codex 自己会走浏览器/设备码流程）
@@ -85,7 +97,9 @@ $env:AGENT_HUB_CODEX_HOME = "$env:LOCALAPPDATA\AgentHub\codex-home"
 1. **绝不**把 `auth.json`、token、cookie 粘贴到聊天、Issue、日志或文档中。
 2. **绝不**把凭证复制进仓库（包括 `.gitignore` 忽略的目录）。
 3. 登录是**你本人**的动作：本工具不会替你登录，也不会读取凭证内容。
-4. 一次登录长期有效；需要撤销时删掉该目录下的 `auth.json` 并重新登录。
+4. **绝不**把长期 `CODEX_HOME` 当作"本次运行的临时目录"删除；探测的清理范围只包含
+   探测自己创建的 `var/probes/<probe>-<mode>*` 运行目录。
+5. 一次登录长期有效；需要撤销时删掉该目录下的 `auth.json` 并重新登录。
 
 ## 4. 与真实调用验证的关系
 

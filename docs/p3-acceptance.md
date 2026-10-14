@@ -1,6 +1,6 @@
 # P3 验收：统一控制台与第一个真实适配器（Codex）
 
-日期：2026-10-14。分支：`feat/p3-wrapup`（基于 `feat/p3-codex-probe`）。测试：**289 passed**。
+日期：2026-10-14。分支：`feat/p3-wrapup`（基于 `feat/p3-codex-probe`）。测试：**304 passed**。
 
 P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批和会话映射；登录和敏感配置不暴露给前端"。
 **本轮只接入了一个真实适配器（Codex）**，因此 P3 **未完成**（见 §3）。
@@ -37,11 +37,26 @@ P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批�
 
 | 命令 | 结果 |
 |---|---|
-| `python -m pytest` | **289 passed** |
+| `python -m pytest` | **304 passed** |
 | `python tools/demo/offline_integration.py` | `OFFLINE INTEGRATION PASSED` |
 | `python tools/demo/codex_verify.py --mode stub` | `VERIFICATION PASSED`（12/12 检查） |
 | `python tools/demo/codex_verify.py --mode stub --prompt "...FAIL..."` | `VERIFICATION FAILED`（负对照，证明判定严格） |
-| `python tools/probes/capability_probe.py --probe <4 项> --mode stub` | 见 `docs/p3-permission-probes.md` §5（含正/负对照） |
+| `python tools/probes/capability_probe.py --probe <4 项> --mode stub` | 见 `docs/p3-permission-probes.md` §6（含正/负对照与误判对照） |
+
+### 1.3.1 本轮的口径修正（2026-10-14，第二次）
+
+* **凭据目录不是"不存在"**：长期 `CODEX_HOME`（`%LOCALAPPDATA%\AgentHub\codex-home`）
+  **存在且已登录**（`codex login status` → `Logged in using ChatGPT`）。
+  此前文档把"*我的*进程写入被拒（`os error 5`）"误写为"目录不存在/需由你创建"，已更正；
+  那个"访问被拒"是执行沙箱对**我的进程**的限制，与目录是否存在、登录是否有效无关。
+* **判定口径收紧**：没有实际尝试与策略拒绝证据时一律判**无法判断**——
+  仅有助手自述 `REFUSED` / `NO-SUBAGENT`、仅有"没有文件"、仅有"只有一个 thread"、
+  或错误文本里出现 `sandbox` 等词，都**不再**构成 PASS；启动失败也一律"无法判断"。
+  正对照只能加强证据，**不能替代**只读运行的实际拒绝证据。判定规则共 42 项单元测试。
+* **权限固定**：探测工具显式设定 `--sandbox read-only` 并在启动前**回读核对**实际配置，
+  继承来的沙箱变量被覆盖；`workspace-write` 仅用于获批的正对照；`danger-full-access` 不可达。
+* **清理范围**：只删探测自己创建的 `var/probes/<probe>-<mode>*`；
+  **长期 `CODEX_HOME` 与用户自己的 `~/.codex` 一律保留**。
 
 ### 1.4 能力结论（本轮新增/确认）
 
@@ -68,7 +83,7 @@ P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批�
 
 | 能力 | 为什么没验证 | 方案 |
 |---|---|---|
-| 取消 | `codex exec` 无任何取消选项；协议里的 `turn/interrupt` 只服务 app-server | `docs/p3-permission-probes.md` §4（**当前模式下不具备验证条件**） |
+| 取消 | `codex exec` 无任何取消选项；协议里的 `turn/interrupt` 只服务 app-server | `docs/p3-permission-probes.md` §5（**当前模式下不具备验证条件**） |
 | 工具操作启动前拦截 | exec **拒绝** `-a/--ask-for-approval`，批准通道只服务 app-server 的 `turn/start` | 同上 §3（预期结论：不支持） |
 | 原生子 Agent 阻断 | `--disable multi_agent` 只置功能开关；模型可见提示词里子 Agent 说明**依然存在** | 同上 §2（PASS 只代表"本次未观测到派生"） |
 | 只读沙箱是否真拒绝写入 | 历次提示词都没要求写文件；离线**无法**区分 read-only 与 workspace-write | 同上 §1（含正对照设计；`codex doctor` 曾报 `sandbox backend disabled`） |
@@ -102,7 +117,7 @@ P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批�
 | `docs/p3-ui.md` | 控制台说明 |
 | `tools/demo/codex_verify.py` | 单次调用验证（stub/real，12 项检查） |
 | `tools/probes/capability_probe.py` | 四项权限探测（stub/real，三种判定） |
-| `packages/adapters/agenthub_adapters/codex_probes.py` | 判定规则（纯函数，27 项单元测试） |
+| `packages/adapters/agenthub_adapters/codex_probes.py` | 判定规则（纯函数，42 项单元测试） |
 
 ## 6. 下一步
 

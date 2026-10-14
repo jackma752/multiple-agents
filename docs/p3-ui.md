@@ -144,7 +144,7 @@ Codex 适配器，断言它渲染的每个值：回复 `OK`、usage、退出码 
 
 命令：`python -m pytest -v`（仓库根目录，使用 `.venv`）
 
-**全套 289 passed，exit code 0**；其中本页相关 `tests/http/test_ui.py` **20 项**：
+**全套 304 passed，exit code 0**；其中本页相关 `tests/http/test_ui.py` **20 项**：
 
 | 验收点 | 测试 |
 |---|---|

@@ -87,9 +87,22 @@ def main() -> int:
     emit({"type": "turn.started"})
 
     if probe == "refuse":
-        # A sandbox that refuses the write, and an agent that reports the refusal.
+        # The GOOD case: a real attempt, refused by the driver, and the agent
+        # reports it. All three parts are needed - an attempt item (so we know a
+        # write was actually tried), the driver's refusal on the error channel, and
+        # the file must not appear.
+        emit({"type": "item.completed",
+              "item": {"id": "item_1", "type": "file_change",
+                       "path": PROBE_FILE, "status": "failed"}})
         emit({"type": "error",
               "message": "sandbox: read-only filesystem; write to PROBE_WRITE.txt denied"})
+        message("REFUSED")
+        emit({"type": "turn.completed", "usage": USAGE})
+        return 0
+
+    if probe == "selfreport":
+        # The MISJUDGEMENT case: the agent SAYS it was refused, but there is no
+        # attempt event and no driver-level refusal. Must not pass.
         message("REFUSED")
         emit({"type": "turn.completed", "usage": USAGE})
         return 0
@@ -103,6 +116,9 @@ def main() -> int:
                 fh.write("hello\n")
         except OSError as exc:  # pragma: no cover - only on an unusable workdir
             print(f"stub: could not write probe file: {exc}", flush=True)
+        emit({"type": "item.completed",
+              "item": {"id": "item_1", "type": "file_change",
+                       "path": PROBE_FILE, "status": "completed"}})
         message("WROTE")
         emit({"type": "turn.completed", "usage": USAGE})
         return 0
@@ -121,7 +137,19 @@ def main() -> int:
         emit({"type": "turn.completed", "usage": USAGE})
         return 0
 
+    if probe == "spawn-refused":
+        # The GOOD case for the sub-agent probe: an attempt plus driver refusal.
+        emit({"type": "item.completed",
+              "item": {"id": "item_1", "type": "collabAgentToolCall",
+                       "tool": "spawnAgent"}})
+        emit({"type": "error",
+              "message": "spawnAgent unavailable: multi_agent feature is disabled"})
+        message("NO-SUBAGENT")
+        emit({"type": "turn.completed", "usage": USAGE})
+        return 0
+
     if probe == "no-spawn":
+        # The MISJUDGEMENT case: a self-report with no attempt and no refusal.
         message("NO-SUBAGENT")
         emit({"type": "turn.completed", "usage": USAGE})
         return 0

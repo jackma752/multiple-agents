@@ -139,9 +139,9 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 | `tests/policy/test_stop_cancel.py` | 11 | 停止持久化与幂等；**未确认的取消保留名额并置 unknown**（回归）；能取消的适配器行为不变 |
 | `tests/http/test_ui.py` | 20 | 页面控件与读取模型；**结果面板绑定 Codex 的回复/用量/状态/退出码**；**取消显式声明为不支持**；停止消息区分已确认/未确认；标题随适配器变化；**区分"调度已启用"与"调用正在运行"**；工作目录一行只陈述事实；用 Codex 适配器跑一遍页面的真实调用序列 |
 | `tests/test_hygiene.py` | 12 | 仓库无真实密钥、Token 只从环境读、**CODEX_HOME 与凭证路径在仓库之外**、**日志不打印 Token**、**凭证状态查询不读内容也不建目录**、登录工具源码不出现凭证文件名 |
-| `tests/adapters/test_codex_probes.py` | 27 | 四项权限能力的**判定规则**：每个判定的每个分支，特别是"没有证据不得判 PASS" |
+| `tests/adapters/test_codex_probes.py` | 42 | 四项权限能力的**判定规则**：每个判定的每个分支，特别是"没有证据不得判 PASS" |
 
-**全套 289 passed**。**全部离线，未启动真实 Codex。**
+**全套 304 passed**。**全部离线，未启动真实 Codex。**
 
 ### 权限能力探测
 

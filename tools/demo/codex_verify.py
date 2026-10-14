@@ -128,6 +128,8 @@ def build_env(mode: str, db_path: str, codex_home: str) -> dict:
         # CODEX_HOME stays OUTSIDE the repo: it can hold a credential copy.
         "AGENT_HUB_CODEX_HOME": codex_home,
         "AGENT_HUB_CODEX_TIMEOUT": os.environ.get("AGENT_HUB_CODEX_TIMEOUT", "300"),
+        # Explicit, so an inherited value can never change what this run did.
+        "AGENT_HUB_CODEX_SANDBOX": "read-only",
     })
     if mode == "stub":
         env.update({
@@ -179,6 +181,19 @@ def main() -> int:
         print("A real call from an unauthenticated home would only spend a call to")
         print("learn that it is not logged in. Pass --codex-home <logged-in home>.")
         return 2
+    if mode == "real":
+        # Codex needs a WRITABLE home (logs/state/tmp). A sandbox policy can deny
+        # writes to a directory that exists, so ask instead of assuming - and say
+        # which of the two it is, because "denied" is not "missing".
+        sys.path[:0] = [os.path.join(REPO, "apps", "worker")]
+        from agenthub_kernel import config as kernel_config
+
+        write_ok, write_detail = kernel_config.codex_home_write_check()
+        if not write_ok:
+            print(f"REFUSING: {write_detail}")
+            print("The directory EXISTS - this is an ACCESS denial, not a missing home.")
+            print("Run this command where it can be written, or pass a writable --codex-home.")
+            return 2
 
     # ---- independent, empty database -----------------------------------
     os.makedirs(RUN_DIR, exist_ok=True)
@@ -198,6 +213,9 @@ def main() -> int:
         + ("present; contents are never read or printed" if credential_present
            else "not present (not needed for this mode)")
     )
+    if mode == "real":
+        print("  write check: OK (CODEX_HOME is writable by this process)")
+        print("  sandbox    : read-only (set explicitly for this run)")
     if mode == "real":
         default_home = os.path.abspath(resolve_codex_home("real"))
         if codex_home == default_home and default_home.endswith(os.path.join(".codex")):

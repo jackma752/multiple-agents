@@ -155,6 +155,8 @@ def codex_home_status() -> dict:
 
     Reports presence and permissions ONLY. It never opens ``auth.json``: the
     contents of a credential are not needed to answer "is a login configured?".
+    It also never writes, so calling it has no side effects - use
+    :func:`codex_home_write_check` when an actual write test is needed.
     """
     path = codex_home()
     credential = credential_location()
@@ -168,6 +170,30 @@ def codex_home_status() -> dict:
         "credential_present": os.path.isfile(credential),
         "override_env": ENV_CODEX_HOME if os.environ.get(ENV_CODEX_HOME) else "",
     }
+
+
+def codex_home_write_check() -> tuple[bool, str]:
+    """Can THIS process actually write inside CODEX_HOME?
+
+    ``os.access`` is unreliable on Windows and does not see a sandbox policy, and
+    the distinction matters: Codex has previously failed with ``os error 5`` when
+    it could not write ``$CODEX_HOME/tmp``. A caller about to spend a real call
+    should ask first, so a denied directory is reported as "not writable by this
+    process" instead of being mistaken for a missing credential or a Codex bug.
+
+    Writes one tiny file and removes it. Returns ``(ok, detail)``.
+    """
+    path = codex_home()
+    if not os.path.isdir(path):
+        return False, f"{path} does not exist"
+    probe = os.path.join(path, ".agenthub-write-probe")
+    try:
+        with open(probe, "w", encoding="ascii") as fh:
+            fh.write("ok")
+        os.remove(probe)
+    except OSError as exc:
+        return False, f"{path} is not writable by this process ({exc})"
+    return True, f"{path} is writable by this process"
 
 
 

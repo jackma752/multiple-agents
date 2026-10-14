@@ -74,19 +74,17 @@ USER = {"Authorization": "Bearer " + os.environ.get("AGENT_HUB_USER_TOKEN", "dev
 #: Which stub scripted outcome exercises which probe. Chosen so that the offline
 #: run proves the judge can tell the good case from the bad one.
 STUB_OUTCOMES = {
-    "readonly-write": "refuse",
-    "subagent-block": "no-spawn",
-    "tool-intercept": "command",
+    "readonly-write": "refuse",          # attempt + driver refusal  -> PASS
+    "subagent-block": "spawn-refused",   # attempt + driver refusal  -> PASS
+    "tool-intercept": "command",         # ran with no approval       -> FAIL
     "cancel": "slow",
 }
 
-#: A stub outcome that must NOT pass, used by --selfcheck as a negative control.
-STUB_NEGATIVE = {
-    "readonly-write": "write",
-    "subagent-block": "spawn",
-    "tool-intercept": "approval",
-    "cancel": "refuse",
-}
+#: The read-only probe's paired control must actually write, or it proves nothing.
+CONTROL_OUTCOME = "write"
+#: Everything except an approved control runs with THIS sandbox, explicitly.
+READ_ONLY = "read-only"
+CONTROL_SANDBOX = "workspace-write"
 
 #: Adapter timeout per probe (seconds). The cancel probe needs a window in which
 #: the call is in flight, then a local timeout to end it.
@@ -106,7 +104,7 @@ def print_plan(spec: probes.ProbeSpec) -> None:
     print(f"  验证什么     : {spec.claim}")
     print(f"  提示词       : {spec.prompt}")
     print(f"  权限范围     : {spec.permissions}")
-    print(f"  沙箱         : {spec.sandbox}（不新增可写目录、不放宽任何开关）")
+    print(f"  沙箱         : {spec.sandbox}（由本工具显式设定并在启动前回读核对）")
     print(f"  额外审批     : {spec.extra_approval}")
     print(f"  真实调用次数 : {spec.real_calls}（stub 模式为 0）")
     print(f"  判定=PASS    : {spec.pass_criteria}")
@@ -145,21 +143,23 @@ def resolve_real_home(explicit: str | None) -> str:
 
 
 def build_env(mode: str, probe: str, db_path: str, run_dir: str, home: str,
-              outcome: str = "", sandbox: str = "") -> dict:
+              outcome: str = "", sandbox: str = READ_ONLY) -> dict:
     from agenthub_kernel import config  # imported here: path is set up above
 
     env = dict(os.environ)
+    if sandbox not in (READ_ONLY, CONTROL_SANDBOX):
+        raise SystemExit(f"refusing an unsupported sandbox: {sandbox!r}")
     env.update({
         "AGENT_HUB_ADAPTER": "codex",
         "AGENT_HUB_DB_URL": "sqlite:///" + db_path.replace("\\", "/"),
         "AGENT_HUB_DATA_DIR": run_dir,
         "AGENT_HUB_CODEX_HOME": home,
         "AGENT_HUB_CODEX_TIMEOUT": str(TIMEOUTS.get(probe, DEFAULT_TIMEOUT)),
+        # ALWAYS set explicitly, so an inherited AGENT_HUB_CODEX_SANDBOX (or a typo)
+        # can never quietly widen a probe: the two allowed values are named here and
+        # nothing else is accepted. danger-full-access is not reachable from this tool.
+        "AGENT_HUB_CODEX_SANDBOX": sandbox,
     })
-    if sandbox:
-        # Only the paired control ever sets this. The adapter's own default stays
-        # read-only, and an unknown value falls back to read-only.
-        env["AGENT_HUB_CODEX_SANDBOX"] = sandbox
     if mode == "stub":
         env.update({
             "AGENT_HUB_CODEX_PATH": STUB,
@@ -181,11 +181,12 @@ class Server:
     """A console server for one probe run, stopped by its own handle."""
 
     def __init__(self, mode: str, probe: str, run_dir: str, home: str,
-                 outcome: str = "", port: int = PORT, sandbox: str = "") -> None:
+                 outcome: str = "", port: int = PORT, sandbox: str = READ_ONLY) -> None:
         self.port = port
         self.base = f"http://127.0.0.1:{port}"
         self.db_path = os.path.join(run_dir, f"probe-{probe}-{mode}-{int(time.time())}.db")
         self.env = build_env(mode, probe, self.db_path, run_dir, home, outcome, sandbox)
+        self.expected_sandbox = sandbox
         self.proc: subprocess.Popen | None = None
         self.client = httpx.Client(base_url=self.base, trust_env=False, timeout=180)
 
@@ -197,23 +198,89 @@ class Server:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=self.env, cwd=REPO,
         )
-        for _ in range(60):
-            try:
-                if self.client.get("/ui").status_code == 200:
-                    return self
-            except Exception:  # noqa: BLE001
-                pass
-            time.sleep(0.5)
-        raise SystemExit("server did not come up")
+        try:
+            for _ in range(60):
+                try:
+                    if self.client.get("/ui").status_code == 200:
+                        self.verify_sandbox()
+                        return self
+                except SystemExit:
+                    raise
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(0.5)
+            raise SystemExit("server did not come up")
+        except BaseException:
+            # __exit__ does not run when __enter__ raises, so stop the server here:
+            # a refused probe must not leave a console process behind.
+            self._terminate()
+            self.client.close()
+            raise
 
-    def __exit__(self, *_exc) -> None:
+    def verify_sandbox(self) -> None:
+        """Fail closed unless the running adapter has the sandbox we intended.
+
+        The point of a probe is to describe the configuration it ran under, so the
+        configuration is read back from the server instead of assumed from the
+        environment we passed.
+        """
+        info = self.client.get("/api/adapter", headers=USER).json()
+        actual = str(info.get("sandbox") or "")
+        if actual != self.expected_sandbox:
+            raise SystemExit(
+                f"REFUSING: adapter reports sandbox={actual!r}, probe expected "
+                f"{self.expected_sandbox!r}"
+            )
+        if info.get("kind") != "codex":
+            raise SystemExit(f"REFUSING: adapter kind is {info.get('kind')!r}, not codex")
+        if not info.get("subagents_disabled"):
+            raise SystemExit("REFUSING: the adapter does not report sub-agents disabled")
+        print(f"  已核对实际适配器配置：sandbox={actual} subagents_disabled=True "
+              f"identity_ok={info.get('identity_ok')}")
+
+    def _terminate(self) -> None:
         if self.proc is not None:
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=20)
             except Exception:  # noqa: BLE001
                 self.proc.kill()
+
+    def __exit__(self, *_exc) -> None:
+        self._terminate()
         self.client.close()
+
+
+def read_driver_channel(run_dir: str, invocation_id: str) -> dict:
+    """Read the DRIVER channel for one invocation from the adapter's own store.
+
+    The API deliberately returns only derived, content-free fields, so the refusal
+    evidence a judge needs (JSONL ``error`` messages and the CLI's non-JSON output)
+    is read here, from the store this probe created. The assistant's own words are
+    never used as proof, which is exactly why this is a separate step.
+    """
+    import sqlite3
+
+    path = os.path.join(run_dir, "codex-executions.db")
+    if not os.path.exists(path):
+        return {"errors": [], "unparsed_lines": [], "note": "no execution store to read"}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT payload FROM codex_executions WHERE invocation_id = ?", (invocation_id,)
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error as exc:
+        return {"errors": [], "unparsed_lines": [], "note": f"store unreadable: {exc}"}
+    if row is None:
+        return {"errors": [], "unparsed_lines": [], "note": "no record for this invocation"}
+    payload = json.loads(row["payload"] or "{}")
+    return {
+        "errors": [str(e) for e in (payload.get("errors") or [])],
+        "unparsed_lines": [str(line) for line in (payload.get("unparsed_lines") or [])],
+        "note": "read from the adapter's own record (uses file:...?mode=ro)",
+    }
 
 
 def create_call(client: httpx.Client, prompt: str) -> dict:
@@ -233,11 +300,11 @@ def create_call(client: httpx.Client, prompt: str) -> dict:
 
 
 def run_simple_probe(probe: str, mode: str, home: str, verbose: bool = True,
-                     outcome: str = "", sandbox: str = "") -> dict:
+                     outcome: str = "", sandbox: str = READ_ONLY) -> dict:
     """readonly-write / subagent-block / tool-intercept: one approved call."""
     spec = probes.PROBE_SPECS[probe]
     os.makedirs(RUN_ROOT, exist_ok=True)
-    tag = f"{probe}-{mode}" + ("-control" if sandbox else "")
+    tag = f"{probe}-{mode}" + ("-control" if sandbox != READ_ONLY else "")
     run_dir = os.path.join(RUN_ROOT, tag)
     os.makedirs(run_dir, exist_ok=True)
 
@@ -264,11 +331,15 @@ def run_simple_probe(probe: str, mode: str, home: str, verbose: bool = True,
         view = client.get(f"/api/tasks/{root}/view", headers=USER).json()
         workdir = os.path.join(run_dir, "codex-runs", inv_id)
         disk_entries = sorted(os.listdir(workdir)) if os.path.isdir(workdir) else None
+        driver = read_driver_channel(run_dir, inv_id)
 
         payload = {
             "probe": probe, "mode": mode, "invocation_id": inv_id,
             "drain_outcomes": outcomes, "adapter_result": res, "view": view,
             "workdir": workdir, "workdir_entries_on_disk": disk_entries,
+            "driver_channel": driver,
+            "errors": driver.get("errors") or [],
+            "unparsed_lines": driver.get("unparsed_lines") or [],
         }
         if verbose:
             preview = json.dumps({k: v for k, v in res.get("evidence", {}).items()
@@ -276,6 +347,8 @@ def run_simple_probe(probe: str, mode: str, home: str, verbose: bool = True,
             print(f"  drain outcomes: {json.dumps(outcomes, ensure_ascii=False)}")
             print(f"  adapter status: {res.get('status')}  evidence: {preview}")
             print(f"  workdir on disk: {disk_entries}")
+            print(f"  驱动通道（错误/非 JSON 行）: errors={len(payload['errors'])} "
+                  f"unparsed={len(payload['unparsed_lines'])}  [{driver.get('note')}]")
 
     return payload
 
@@ -390,6 +463,11 @@ def judge(probe: str, payload: dict, scripted: bool) -> probes.ProbeVerdict:
     summary = res.get("summary") or {}
     evidence = res.get("evidence") or {}
     events = evidence_events(evidence)
+    # `launched` is the adapter's own statement that it got past its pre-launch
+    # refusals; without it, no observation in this run is attributable to Codex.
+    launched = bool(res.get("available")) and bool(evidence.get("event_count"))
+    unparsed = list(payload.get("unparsed_lines") or [])
+    driver_errors = list(payload.get("errors") or [])
 
     if probe == "readonly-write":
         # Two independent sources: the adapter's own post-run listing and the disk.
@@ -399,18 +477,22 @@ def judge(probe: str, payload: dict, scripted: bool) -> probes.ProbeVerdict:
             workdir_entries=entries,
             final_message=summary.get("final_message", ""),
             events=events,
-            errors=[res.get("detail", "")],
+            errors=[res.get("detail", "")] + driver_errors,
+            unparsed=unparsed,
             exit_code=evidence.get("exit_code"),
             timed_out=bool(evidence.get("timed_out")),
+            launched=launched,
             target_name="PROBE_WRITE.txt",
         )
     if probe == "subagent-block":
         return probes.judge_subagent_block(
             events=events,
             final_message=summary.get("final_message", ""),
-            errors=[res.get("detail", "")],
+            errors=[res.get("detail", "")] + driver_errors,
+            unparsed=unparsed,
             exit_code=evidence.get("exit_code"),
             timed_out=bool(evidence.get("timed_out")),
+            launched=launched,
             disable_flag_passed=True,
         )
     if probe == "tool-intercept":
@@ -420,6 +502,7 @@ def judge(probe: str, payload: dict, scripted: bool) -> probes.ProbeVerdict:
             errors=[res.get("detail", "")],
             exit_code=evidence.get("exit_code"),
             timed_out=bool(evidence.get("timed_out")),
+            launched=launched,
         )
     if probe == "cancel":
         return probes.judge_cancel(
@@ -451,6 +534,9 @@ def main() -> int:
                     help="STUB MODE ONLY: force one scripted stub outcome "
                          "(refuse|write|lie|spawn|no-spawn|command|approval|slow). "
                          "Used for negative controls: the judge must not pass these")
+    ap.add_argument("--quiet", action="store_true",
+                    help="print the verdict and observations only, not the full plan "
+                         "(the plan is what a reviewer approves; use --list to read it)")
     ap.add_argument("--fail-on-fail", action="store_true",
                     help="exit 1 when the verdict is FAIL (default: a FAIL is a reportable "
                          "capability gap, not a tool error, so the exit code stays 0)")
@@ -464,10 +550,17 @@ def main() -> int:
         print("Nothing was executed. Real mode additionally requires")
         print("--i-understand-this-spends-quota (and, for tool-intercept,")
         print("--i-understand-this-runs-a-shell-command).")
+        print()
+        print("Sandbox policy: every probe except an APPROVED paired control runs with")
+        print("--sandbox read-only, set explicitly by this tool and read back from the")
+        print("running adapter before any call. danger-full-access is not reachable here.")
         return 0
 
     spec = probes.PROBE_SPECS[args.probe]
-    print_plan(spec)
+    if args.quiet:
+        print(f"PROBE {spec.name}: {spec.title}  (mode={args.mode})")
+    else:
+        print_plan(spec)
 
     home = resolve_real_home(args.codex_home) if args.mode == "real" else \
         os.path.join(tempfile.gettempdir(), "agenthub-probe-home")
@@ -495,7 +588,21 @@ def main() -> int:
             print(f"REFUSING: no login credential in {home}")
             print("A real probe from an unauthenticated home would only waste the call.")
             return 2
+        # Codex needs a WRITABLE home (it previously failed with `os error 5` when
+        # it could not write $CODEX_HOME/tmp). A sandbox policy can deny writes to a
+        # directory that exists, so ask instead of assuming - and say which of the
+        # two it is, because "denied" must never be reported as "missing".
+        from agenthub_kernel import config as kernel_config
+
+        write_ok, write_detail = kernel_config.codex_home_write_check()
         print(f"  CODEX_HOME: {home}（仓库之外；凭证存在，内容不读取）")
+        print(f"  写权限检查 : {'OK' if write_ok else 'DENIED'} — {write_detail}")
+        if not write_ok:
+            print("REFUSING: this process cannot write inside CODEX_HOME, and Codex needs to")
+            print("(logs/state/tmp). The directory EXISTS - this is an ACCESS denial, not a")
+            print("missing directory. Run this probe in a terminal that may write there, or")
+            print("point --codex-home at a home this process can write.")
+            return 2
         calls = spec.real_calls + (1 if args.with_write_control and args.probe == "readonly-write" else 0)
         print(f"  本次将发起 {calls} 次真实调用")
     else:
@@ -518,7 +625,7 @@ def main() -> int:
         print("（这一步会让沙箱可写；工作目录是本次专用的空目录，只用于对照）")
         print("-" * 78)
         control_payload = run_simple_probe(
-            args.probe, args.mode, home, outcome="write", sandbox="workspace-write"
+            args.probe, args.mode, home, outcome=CONTROL_OUTCOME, sandbox=CONTROL_SANDBOX
         )
         verdict = probes.judge_readonly_write_control(
             judge("readonly-write", payload, False).observations,
@@ -538,7 +645,14 @@ def main() -> int:
         print(f"  {key} = {json.dumps(value, ensure_ascii=False, default=str)}")
     print()
     print("cleanup:")
-    print(f"  - 本次数据在 {RUN_ROOT}（gitignore）；临时 CODEX_HOME {home} 由你删除")
+    print(f"  - 可删（本探测自己创建的运行目录）: {RUN_ROOT}\\{args.probe}-{args.mode}*")
+    print(f"  - 保留 CODEX_HOME（本次使用）: {home}")
+    if args.mode == "real":
+        print("      真实模式：这是你的长期凭据目录（或你自己的 ~/.codex）。")
+        print("      它含有登录凭证与会话历史，**删除它会破坏你的登录** —— 不要删。")
+    else:
+        print("      stub 模式：这是桩进程的临时 home，与凭据无关，可以删。")
+    print("  - 用户自己的 %USERPROFILE%\\.codex 一律保留；本工具从不写入或删除它。")
     if args.mode == "real" and args.probe == "cancel":
         print("  - 若出现 unknown 调用：由你在裁决入口处理（不要自动重试）")
 
