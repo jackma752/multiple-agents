@@ -459,6 +459,10 @@ def test_adapter_result_reports_launch_evidence(tmp_path):
         assert evidence["verdict"] == "finished"
         assert evidence["event_count"] >= 4
         assert evidence["error_count"] == 0
+        # A capability probe (and the console) needs the session count and the item
+        # types; both are derived, non-content fields.
+        assert evidence["thread_ids"] == ["01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"]
+        assert evidence["item_types"] == {"agent_message": 1}
 
 
 def test_api_adapter_reports_the_agent_ids_it_serves(tmp_path):

@@ -49,6 +49,9 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
             proxy=s["proxy"] or None,
             ca_bundle=s["ca_bundle"] or None,
             timeout_seconds=s["timeout_seconds"],
+            # Defaults to read-only (config.codex_sandbox falls back to read-only on
+            # any unrecognised value); an explicit env var is the only way to widen it.
+            sandbox=s["sandbox"],
             expected_identity=s["expected_identity"],
             version=s["version"],
             command_prefix=s.get("command_prefix") or None,

@@ -74,6 +74,13 @@ ENV_CODEX_VERSION = "AGENT_HUB_CODEX_VERSION"
 ENV_PROXY = "AGENT_HUB_PROXY"
 ENV_CA_BUNDLE = "AGENT_HUB_CA_BUNDLE"
 ENV_CODEX_TIMEOUT = "AGENT_HUB_CODEX_TIMEOUT"
+#: Sandbox policy for real Codex runs. Defaults to "read-only"; the only other
+#: values are Codex's own (`workspace-write`, `danger-full-access`). It exists so a
+#: PAIRED CONTROL can run the same prompt against a writable sandbox to show that a
+#: read-only refusal is caused by the policy - never to make a probe pass.
+ENV_CODEX_SANDBOX = "AGENT_HUB_CODEX_SANDBOX"
+CODEX_SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
+DEFAULT_CODEX_SANDBOX = "read-only"
 #: DEV/TEST ONLY: JSON array prepended to the codex argv, so an offline
 #: integration can drive the whole stack with a STUB process instead of Codex.
 ENV_CODEX_PREFIX = "AGENT_HUB_CODEX_PREFIX"
@@ -174,6 +181,16 @@ def codex_execution_store_path() -> str:
     return os.path.join(DATA_DIR, "codex-executions.db")
 
 
+def codex_sandbox() -> str:
+    """The sandbox policy for real runs. Unknown values fall back to read-only.
+
+    Falling back (rather than accepting anything) matters: a typo must never widen
+    the sandbox.
+    """
+    value = (os.environ.get(ENV_CODEX_SANDBOX) or "").strip().lower()
+    return value if value in CODEX_SANDBOX_MODES else DEFAULT_CODEX_SANDBOX
+
+
 def codex_settings() -> dict:
     """Resolved Codex adapter settings (env override wins)."""
     return {
@@ -185,6 +202,7 @@ def codex_settings() -> dict:
         "version": os.environ.get(ENV_CODEX_VERSION) or PINNED_CODEX_VERSION,
         "codex_home": codex_home(),
         "workdir_root": codex_workdir_root(),
+        "sandbox": codex_sandbox(),
         "store_path": codex_execution_store_path(),
         # The proxy and CA that made the verified probe work. Empty means "no
         # proxy", which is correct only where the endpoints are directly reachable.

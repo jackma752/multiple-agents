@@ -4,11 +4,53 @@
 
 定义、方案与验收标准见 `E:\plug\AGENT_HUB_PLAN.md`。
 
-## 当前状态：P2 阶段性基线（Mock 内核）
+## 当前状态：P3（真实 Codex 适配器已接入并通过真实 HTTP 联调）
 
-阶段：**P2 审批与配额内核（Mock）阶段性基线**。实现的是方案 §10 的"先做能演示审批与限制的 Mock 版本"，仅使用 Mock Agent，不调用任何真实产品接口。
+阶段：**P2 审批与配额内核已验收**，**P3 已接入第一个真实适配器（Codex）**并完成一次
+经用户逐次批准的真实调用。控制台 `/ui` 可切换 Mock 与真实 Codex 适配器。
 
-**已验证的行为**（以 `tests/` 中的自动测试为准）：
+### 已验证（有命令与实际输出）
+
+| 能力 | 证据 |
+|---|---|
+| **未批准不启动** | 网页手工验收 + `tools/demo/codex_verify.py`：未批准时进程启动数 **0**；`test_unapproved_codex_never_launches_a_process` 等 |
+| **批准后执行（恰好一次）** | 同上：批准后启动数 **1**；`test_approved_codex_launches_exactly_one_process` |
+| **最终回复** | 网页验收回复逐字 `OK`；真实联调记录见 `docs/p3-codex-real-run-2026-10-14.md` |
+| **thread_id** | 真实联调 `01a13a77-316d-7b01-a59e-5323a6c0728f`；内核与适配器记录一致（`test_kernel_and_adapter_records_agree_on_the_execution_id`） |
+| **真实用量** | `input_tokens=15094, cached_input_tokens=12544, output_tokens=5`（`turn.completed.usage`） |
+| **成功结算、名额归零** | 内核 `succeeded`、`open_reservations 0→0`、`concurrent 0`；`test_completed_codex_call_does_not_leak_its_slot` |
+| **退出码 / 事件证据** | 退出码 `0`、4 个 JSONL 事件；控制台结果面板逐项显示 |
+| **审批、配额、停止、恢复、unknown 裁决** | `docs/p2-acceptance.md`（Mock 内核，全部自动测试覆盖） |
+
+### 未完成（属后续阶段，本轮未做）
+
+* **网页 SSE / 断线恢复**：事件面板是轮询读取，**不是 SSE**。
+* **会话恢复**：已拿到 `thread_id`，但**按 thread_id 恢复会话既未验证也未接入**。
+* **第二个真实 Agent**：只接了 Codex；CC / WorkBuddy / DSH / Ink Stone 尚未接入。
+* 自动协作开关与任务分解（P4）、worktree 与差异产物（P5）。
+
+### 未验证（**不得当作已支持**）
+
+取消（Codex 侧返回 `unsupported`）、工具操作的**启动前拦截**、
+**原生子 Agent 阻断**（`--disable multi_agent` 目前只是传参）、
+**只读沙箱是否真拒绝写入**（历次提示词都没要求写文件）、app-server 协议。
+四项验证方案、判定条件与清理步骤见 `docs/p3-permission-probes.md`。
+
+**当前 289 个测试全部通过**。P3 验收与逐条证据见 **`docs/p3-acceptance.md`**；
+真实调用记录见 `docs/p3-codex-real-run-2026-10-14.md`；P2 验收矩阵见 **`docs/p2-acceptance.md`**；
+控制台说明见 **`docs/p3-ui.md`**，试用步骤见 **`docs/p3-console-trial-steps.md`**；
+Codex 能力与未决项见 `docs/agent-codex-capabilities.md`；
+进程与启动方式见 **`docs/tooling-diagnostics.md`**；各轮实现说明见
+`docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、
+`docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`、`docs/p3-codex-adapter.md`。
+
+> **这不等于整个项目安全阀全部通过。** 计划 §6 十条中 6 条完全通过、4 条部分通过，
+> 后者的阶段归属与未验证状态：**CLI 拦截**（P3，验证方案已备好、**尚未执行**）、
+> **自动协作开关**（P4）、**真实适配器的远程超时与取消**（P3，未验证）、**SSE 断线恢复**（P3/P5）。
+> 详见 `docs/p2-acceptance.md` §B/§G 与 `docs/p3-acceptance.md`。
+
+<details>
+<summary>P2 内核已实现并逐条验证的行为（点击展开）</summary>
 
 - 数据模型：`tasks`（根任务树，含 `root_task_id`/`depth`）、`invocations`（含不可变输入快照 `payload_hash`）、`approvals`、`quota_reservations`、`policy_versions`、`events`。
 - 调用状态机：`draft → awaiting_approval → queued → starting → running → succeeded/failed/canceled/timed_out/unknown/rejected/invalid`。
@@ -18,7 +60,7 @@
 - **并发消费最多一次**：审批用条件更新（`WHERE status='approved'`）消费，两个 Worker 抢同一审批时只有一个成功，且只产生一条名额预留。
 - **配额预留是原子的**：每棵树一行计数器（`tree_quota`），预留用单条条件更新把上限写进 `WHERE`，多条**不同**调用争抢最后一个名额时也只有一条成功（"先读后写"的检查曾使 4 条全部通过，已修复）。
 - **策略持久化与版本化**：策略存在根任务行，作用于整棵树；每次更新版本递增并保留旧版本与事件。更新会撤销**未消费**的审批，但不重置累计数量、不取消运行中的调用；非法参数不写入任何东西。
-- **停止与取消**：停止请求先**持久化**（带操作者）、再接通适配器 `cancel`；取消或重复停止只释放一次名额（按预留记录 CAS）。适配器不支持取消时返回 `unsupported`。
+- **停止与取消**：停止请求先**持久化**（带操作者）、再接通适配器 `cancel`；只有**确认**停止才结算 `canceled` 并释放名额，未确认则置 `unknown` 并**保留名额**；重复停止只释放一次名额（按预留记录 CAS）。
 - **暂停与恢复**：`POST /api/tasks/{id}/pause` 阻止后续调度但**不取消**运行中的调用；`/resume` 解除。
 - **执行超时**：超过树策略 `run_time_limit_seconds` 的调用——取消**已确认**才置 `timed_out` 并释放名额；**未确认**（不支持取消 / 外部仍报 running / 证据丢失）则置 `unknown` 并**保留名额**，不谎称远程已停。
 - **崩溃恢复**：重启后核对 `starting`/`running`，向外部侧按 `invocation_id` 查询；确认在跑的保留名额，确认终态的结算并释放一次，**无法确认的置 `unknown`、不自动重启、不提前释放名额**。
@@ -29,17 +71,9 @@
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，另有可持久化、按 `invocation_id` 查询的执行记录（用于恢复对账）。
 - **P3 控制台**：`/ui` 提供统一聊天、审批卡片、任务树、配额显示与停止/暂停按钮；界面**自动管理** task_id / invocation_id / approval_id，用户无需复制或填写任何 id（零构建单页，见 `docs/p3-ui.md`）。
+- **P3 真实适配器**：Codex 适配器复用同一套门禁（`gate_token`）与配额，`agent_id` 必须匹配、可执行文件按 sha256+size 固定、只读沙箱、禁用多 Agent 参数；启动期失败按"能否证明进程不存在"分流为终态失败或 `unknown`（见 `docs/p3-codex-adapter.md`）。
 
-**当前 158 个测试全部通过**。完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；
-控制台说明见 **`docs/p3-ui.md`**；本地试用步骤见 **`docs/trial-mock.md`**；
-进程与启动方式见 **`docs/tooling-diagnostics.md`**；各轮实现说明见
-`docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、
-`docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`。
-
-> **这不等于整个项目安全阀全部通过。** 计划 §6 十条中 6 条完全通过、4 条部分通过，
-> 后者的阶段归属与未验证状态：**CLI 拦截**（P3，待真实 Agent 接入时验证）、
-> **自动协作开关**（P4）、**真实适配器远程超时**（P3）、**SSE 断线恢复**（P3/P5）。
-> 详见 `docs/p2-acceptance.md` §B/§G。
+</details>
 
 ## 仓库约定
 
@@ -57,10 +91,12 @@
 
 详细步骤（启动命令、凭证设置、建任务、批准/拒绝/配额/停止/超时/恢复操作、
 数据位置与重置、已知限制）见 **`docs/trial-mock.md`**；
-控制台说明见 **`docs/p3-ui.md`**。
+控制台说明见 **`docs/p3-ui.md`**，逐步试用（含真实模式）见 **`docs/p3-console-trial-steps.md`**。
 
-> **暂未接入任何真实 Agent。** 试用只验证审批与配额这套安全阀本身，
-> Mock 适配器仅记录"被启动次数"与执行记录，不调用真实产品、不发外部网络请求。
+> Mock 试用只验证审批与配额这套安全阀本身：Mock 适配器仅记录"被启动次数"与执行记录，
+> 不调用真实产品、不发外部网络请求。
+> **真实 Codex 模式**另需登录与逐次审批：`.\.venv\Scripts\python.exe tools\demo\serve.py --adapter codex`；
+> 凭据位置与登录步骤见 **`docs/p3-codex-credentials.md`**（凭证放在仓库之外，由你本人登录）。
 
 ## 目录结构
 
@@ -70,10 +106,11 @@ agent-hub/
   AGENTS.md
   .gitignore
   .gitattributes
-  docs/          能力矩阵、架构、审计报告、P2 审批门说明
-  apps/          api（FastAPI）/ worker（调度与 Mock 适配器）
-  packages/      contracts（数据模型与状态机）/ adapters（Mock 适配器）
-  tests/         policy（审批与配额回归测试）；adapters / e2e（待建）
+  docs/          能力矩阵、验收报告、权限验证方案、审计报告
+  apps/          api（FastAPI + 控制台）/ worker（调度、门禁与适配器选择）
+  packages/      contracts（数据模型与状态机）/ adapters（Mock 与 Codex 适配器）
+  tests/         policy / adapters / http / persistence / e2e
+  tools/         demo（控制台、桩进程、验证脚本）/ probes（权限验证工具）
 ```
 
 ## 本地开发（Mock 环境）
@@ -86,8 +123,13 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 # 依赖安装方式，见 fetch_wheels.py / bootstrap_deps.py 及 wheelhouse（本机离线下载）
 
-# 2. 运行策略测试
-python -m pytest tests/policy -v
+# 2. 运行全部测试
+python -m pytest
+
+# 3. 离线跑通完整栈（桩进程，不联网）
+python tools/demo/offline_integration.py
+python tools/demo/codex_verify.py --mode stub
 ```
 
-真实配置放在 `.env`（已 gitignore），不提交。适配器能力矩阵见 `docs/adapter-capabilities.md`。
+真实配置放在 `.env`（已 gitignore），不提交。适配器能力矩阵见 `docs/adapter-capabilities.md`；
+Codex 的实测能力与未决项见 `docs/agent-codex-capabilities.md`。

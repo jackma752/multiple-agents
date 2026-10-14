@@ -144,7 +144,7 @@ Codex 适配器，断言它渲染的每个值：回复 `OK`、usage、退出码 
 
 命令：`python -m pytest -v`（仓库根目录，使用 `.venv`）
 
-**全套 257 passed，exit code 0**；其中本页相关 `tests/http/test_ui.py` **15 项**：
+**全套 289 passed，exit code 0**；其中本页相关 `tests/http/test_ui.py` **20 项**：
 
 | 验收点 | 测试 |
 |---|---|
@@ -158,6 +158,10 @@ Codex 适配器，断言它渲染的每个值：回复 `OK`、usage、退出码 
 | 暂停状态反映到界面 | `test_view_reports_paused_state_for_the_header` |
 | 未知任务 404 | `test_view_404_for_unknown_task` |
 | Agent 选择由适配器声明驱动（不再硬编码） | `test_ui_page_lets_the_user_choose_the_agent` |
+| **浏览器标题随适配器变化**（真实模式不写 Mock） | `test_browser_title_follows_the_adapter`、`test_title_is_labelled_before_the_user_connects` |
+| **工作目录一行只陈述事实**（不再从空目录推断"只读生效"） | `test_workdir_line_states_a_fact_not_a_conclusion` |
+| **区分"调度已启用"与"调用正在运行"** | `test_page_separates_scheduling_from_a_running_call` |
+| 取消不支持 / unknown 保留配额的提示仍在 | `test_cancel_and_unknown_warnings_survive_the_wording_pass` |
 | **结果面板绑定真实回复/用量/状态/退出码** | `test_ui_results_panel_renders_the_codex_reply_usage_and_state` |
 | **取消显式声明为不支持** | `test_ui_states_cancellation_is_unsupported` |
 | 停止消息区分已确认/未确认 | `test_ui_stop_message_separates_confirmed_from_unconfirmed`、`test_stop_api_reports_confirmed_and_unconfirmed` |

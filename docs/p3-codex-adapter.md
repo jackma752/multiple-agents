@@ -137,10 +137,18 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 | `tests/policy/test_codex_gate.py` | 22 | Codex 适配器**插进未改动的内核**：Agent 身份不匹配 → 0 进程；未批准/拒绝/过期 → 0 进程；批准 → 恰好 1 次；总量与并发上限拦得住；停机拦得住；超时→unknown 保留名额；成功不泄漏名额；启动期四类失败的名额归属；**内核与适配器记录的执行 ID 一致**；**任务状态随调用生命周期同步** |
 | `tests/policy/test_task_status.py` | 18 | 任务状态推导规则（优先级矩阵）、写路径同步、读模型覆盖陈旧值 |
 | `tests/policy/test_stop_cancel.py` | 11 | 停止持久化与幂等；**未确认的取消保留名额并置 unknown**（回归）；能取消的适配器行为不变 |
-| `tests/http/test_ui.py` | 15 | 页面控件与读取模型；**结果面板绑定 Codex 的回复/用量/状态/退出码**；**取消显式声明为不支持**；停止消息区分已确认/未确认；用 Codex 适配器跑一遍页面的真实调用序列 |
+| `tests/http/test_ui.py` | 20 | 页面控件与读取模型；**结果面板绑定 Codex 的回复/用量/状态/退出码**；**取消显式声明为不支持**；停止消息区分已确认/未确认；标题随适配器变化；**区分"调度已启用"与"调用正在运行"**；工作目录一行只陈述事实；用 Codex 适配器跑一遍页面的真实调用序列 |
 | `tests/test_hygiene.py` | 12 | 仓库无真实密钥、Token 只从环境读、**CODEX_HOME 与凭证路径在仓库之外**、**日志不打印 Token**、**凭证状态查询不读内容也不建目录**、登录工具源码不出现凭证文件名 |
+| `tests/adapters/test_codex_probes.py` | 27 | 四项权限能力的**判定规则**：每个判定的每个分支，特别是"没有证据不得判 PASS" |
 
-**全套 257 passed**。**全部离线，未启动真实 Codex。**
+**全套 289 passed**。**全部离线，未启动真实 Codex。**
+
+### 权限能力探测
+
+判定规则在 `packages/adapters/agenthub_adapters/codex_probes.py`（纯函数，三种判定：
+PASS / FAIL / **无法判断**），可审阅的工具是 `tools/probes/capability_probe.py`
+（`--list` 打印四份方案；stub 模式离线演练并含正/负对照；real 模式逐项批准、每次 1 次调用）。
+方案、真实调用预算、"不具备验证条件"的说明见 **`docs/p3-permission-probes.md`**。
 
 ## 7. 启动期异常：哪些能释放名额，哪些不能
 

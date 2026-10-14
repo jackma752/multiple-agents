@@ -1,17 +1,22 @@
 # Codex 适配器能力表（P3 受控接入验证 · 第一批）
 
-日期：2026-10-14。**本表的每一行都来自本机实测的自描述输出**，不是记忆或推测。
+日期：2026-10-14。**本表的每一行都来自本机实测的自描述输出或真实调用捕获**，不是记忆或推测。
 凡未能实测的一律标 **未知**，不标"支持"。
 
 - 本机 Codex：`C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\2e5e00daee91c61d\codex.exe`
-- 版本：**codex-cli 0.162.0-alpha.17.2**
-- 复现命令：`.\.venv\Scripts\python.exe tools\probe_codex.py`
-  （输出：`var/probe-codex.json`，含 version / help / exec --help / features list 的**原始文本**）
+- 版本：**codex-cli 0.162.0-alpha.17.2**（sha256 `d13914ce…a7daec`，size 334121776）
+- 复现命令（自描述，无模型调用）：`.\.venv\Scripts\python.exe tools\probe_codex.py`
+  （输出：`var/probe-codex.json`）；本次追加的自描述证据：`codex exec --help`、
+  `codex features list`、**`codex debug prompt-input`（渲染模型可见提示词）**、
+  **`codex app-server generate-json-schema --experimental`（协议 schema）**、
+  以及 parse-time 参数对照（`codex exec <flag> --zzz-bogus-flag`）
 
-> **重要边界**：本次只执行了 CLI 的 `--version` / `--help` / `features list`，
-> 这些是**本地自描述**，**没有发起任何模型调用、没有运行任何 Agent 任务**。
-> 因此本表能确认"接口是否存在"，**不能确认"行为是否如描述"**——后者需要真实调用，
-> 须逐次由用户批准后进行（见 §5）。
+> **重要边界**：自描述（`--help` / `features list` / `debug prompt-input` / schema）
+> 只能确认"接口与开关**存在**"以及"它们如何被渲染"，**不能确认"行为是否如描述"**。
+> 行为验证必须真实调用，且**逐项逐次批准**；方案与判定条件见
+> **`docs/p3-permission-probes.md`**。
+> 另注：`debug prompt-input` 渲染出的 read-only 与 workspace-write 权限档案**完全相同**，
+> 因此离线连"两种沙箱是否不同"都区分不了——这正是必须真实运行的理由。
 
 ---
 
@@ -21,11 +26,11 @@
 |---|---|---|
 | 发消息 | **已验证** | `codex exec` 实测**成功**（退出码 0，11.3s），提示词要求"只回复 OK"，最终回复 `agent_message.text = "OK"` |
 | 流式输出 | **已验证（成功路径）** | 一次成功运行的完整 JSONL 序列（4 事件）：`thread.started` → `turn.started` → `item.completed`（agent_message）→ `turn.completed`。输出为可解析 JSONL，可被适配器消费 |
-| 恢复会话 | **接口存在 + 句柄已实测获得** | `codex exec resume` / `--last`、`codex resume` / `fork`；成功调用实测返回 `thread_id = 01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce`。**但"用该 id 恢复"本身尚未实测** |
-| 取消任务 | **未知** | `--help` 未列出取消/中断命令；`instant_interrupt`（under development, false）、`code_mode_interrupt`（under development, false）。**未做取消实测** |
-| 限制文件目录 | **部分验证（证据偏弱）** | `-C/--cd`、`--add-dir`、`-s/--sandbox {read-only,...}` 存在；只读沙箱实测**工作目录事后仍为空（0 条目）**。**但该次提示词并未要求写文件**，故"拒绝写入"未被真正考验 |
-| 拦截工具操作 | **未知** | `guardian_approval`（stable, true）、`write_stdin_approval`（stable, true）；`exec_permission_approvals`（under development, false）。**未做"启动前拦截 shell 命令"的实测** |
-| 控制内部子 Agent | **开关可关闭已本地验证；行为未验证** | `multi_agent`（stable, **true**）；`--disable multi_agent` / `-c features.multi_agent=false` 实测可翻为 **false**。本次调用已**禁用**；但提示词极简、本不会触发派生，故**"关闭后是否真能阻止派生"仍未验证** |
+| 恢复会话 | **接口存在 + 句柄已实测获得；恢复本身未验证** | `codex exec resume [SESSION_ID] [PROMPT]` / `--last`、`codex resume` / `fork`（自描述确认）；成功调用实测返回 `thread_id = 01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce`。**"用该 id 恢复"尚未实测，适配器也未接入** |
+| 取消任务 | **未知 / 当前模式不具备验证条件** | `exec --help` 与 `exec resume --help` 中**没有任何**取消/中断选项；协议里唯一的取消是 app-server 的 `turn/interrupt {threadId, turnId}`，我们不用 app-server。适配器 `cancel` 如实返回 `unsupported`。方案见 `docs/p3-permission-probes.md` §4 |
+| 限制文件目录 | **部分验证（证据偏弱）** | `-C/--cd`、`--add-dir`、`-s/--sandbox {read-only,...}` 存在；只读沙箱实测**工作目录事后仍为空（0 条目）**。**但该次提示词并未要求写文件**，故"拒绝写入"未被真正考验。反向线索：`codex doctor`（旧捕获）报 **`sandbox backend disabled`**，且 `debug prompt-input` 渲染出的 read-only 与 workspace-write 权限档案**完全相同** → 离线无法区分，必须真实运行（`docs/p3-permission-probes.md` §1） |
+| 拦截工具操作 | **未知，且强烈提示"exec 模式不支持"** | 批准通道 `item/commandExecution/requestApproval` 在 schema 中明确写着只服务 **`turn/start`**（app-server）；`codex exec` **拒绝** `-a` / `--ask-for-approval`（parse-time 实测）且没有读决策的输入通道。**未做真实调用实测**（方案见 probes §3） |
+| 控制内部子 Agent | **开关可关闭已本地验证；行为未验证** | `multi_agent`（stable, **true**）；`--disable multi_agent` / `-c features.multi_agent=false` 实测可翻为 **false**。**但**：`debug prompt-input` 显示禁用后模型可见提示词里的 `<multi_agent_role>`（含 `spawn_agent` / `followup_task` / `send_message`）**依然存在** → 不是结构性阻断。已禁用但**"是否真能阻止派生"仍未验证**（方案见 probes §2） |
 | 返回真实用量 | **已验证** | 成功调用返回 `turn.completed.usage`：`input_tokens=14481`、`cached_input_tokens=12544`、`cache_write_input_tokens=0`、`output_tokens=5`、`reasoning_output_tokens=0`（**真实字段，非推测**） |
 
 ---

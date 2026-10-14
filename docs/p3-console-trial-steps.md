@@ -113,9 +113,11 @@ cd E:\plug\agent-hub
 
 ## 7. 本机已完成的离线核对（可复现）
 
-* `python -m pytest` → **257 passed**
+* `python -m pytest` → **289 passed**
 * `tools/demo/offline_integration.py` → `OFFLINE INTEGRATION PASSED`
 * `tools/demo/codex_verify.py --mode stub` → **VERIFICATION PASSED**（12/12 检查）
+* `tools/probes/capability_probe.py --probe <四项> --mode stub` → 判定矩阵见
+  `docs/p3-permission-probes.md` §5（含正/负对照）
 * 真实服务冒烟（端口 8147，`--adapter codex`，独立库，**未批准任何调用**）实测：
   `GET /ui → 200（25931 bytes）`、`/api/adapter` → `kind=codex, agent_ids=[codex],
   identity_ok=True, cancel=False`、创建调用后未批准 drain → `adapter-result.available=false`

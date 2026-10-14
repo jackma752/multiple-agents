@@ -46,7 +46,9 @@ def test_ui_page_is_served(client):
     # The controls the P3 brief requires must be present.
     for needle in (
         "Agent Hub 控制台",
-        "Mock 模式",          # clearly states no real agent
+        "正在识别适配器",      # neutral until the real adapter is known (no Mock flash)
+        "Mock 模式",           # ...and the Mock case is still labelled by the JS
+        'id="adapter-badge"',
         'id="chat"',           # unified chat
         'id="approvals"',      # approval cards
         'id="tree"',           # task status
@@ -405,4 +407,54 @@ def test_simulated_console_session_with_the_real_codex_adapter(tmp_path):
         assert res["evidence"]["exit_code"] == 0
         assert res["evidence"]["event_count"] >= 4
         assert res["evidence"]["timed_out"] is False
+
+
+# --------------------------------------------------------------------------- #
+# wording: the page must not claim more than it knows
+# --------------------------------------------------------------------------- #
+
+
+def test_browser_title_follows_the_adapter(client):
+    """A REAL run must never sit under a title that says Mock."""
+    html = client.get("/ui").text
+    assert "<title>Agent Hub 控制台</title>" in html, "the static title is not generic"
+    assert "<title>Agent Hub 控制台（Mock）</title>" not in html
+    assert 'document.title = "Agent Hub 控制台 · REAL Codex"' in html
+    assert 'document.title = "Agent Hub 控制台 · Mock"' in html
+
+
+def test_title_is_labelled_before_the_user_connects(client):
+    """Opening the page against a Codex server must not show a Mock label first."""
+    html = client.get("/ui").text
+    assert "labelAdapterQuietly" in html
+    assert 'applyAdapter(await api("GET", "/api/adapter"))' in html
+
+
+def test_workdir_line_states_a_fact_not_a_conclusion(client):
+    """An empty workdir does not prove read-only: the prompt never asked to write."""
+    html = client.get("/ui").text
+    assert "（只读生效）" not in html, "the page still claims read-only from an empty workdir"
+    assert "事后为空" in html
+    assert "不足以" in html and "证明只读生效" in html
+
+
+def test_page_separates_scheduling_from_a_running_call(client):
+    """After a synchronous success the tree is still scheduling, but not busy."""
+    html = client.get("/ui").text
+    assert "调度已启用（未停止）" in html
+    assert "当前没有运行中的调用" in html
+    assert "个调用正在运行" in html
+    assert "已批准待调度" in html
+    assert 'S.view.stopped ? "已停止（不再调度新调用）" : "运行中"' not in html, (
+        "the old conflated label is back"
+    )
+
+
+def test_cancel_and_unknown_warnings_survive_the_wording_pass(client):
+    """The honest capability statements must not be lost in a text change."""
+    html = client.get("/ui").text
+    assert "取消：<b>不支持</b>" in html
+    assert "保留配额" in html
+    assert "unknown" in html
+
 

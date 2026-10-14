@@ -508,6 +508,21 @@ def create_app(
         last = getattr(adapter, "last_result", None)
         summary = last(invocation_id) if callable(last) else None
         payload = record.get("payload") or {}
+        events = payload.get("events") or []
+        # Derived, non-content fields. A capability probe (and the console) needs to
+        # know how many agent sessions a run announced and which item types it
+        # produced - never the text inside them.
+        thread_ids: list[str] = []
+        item_types: dict[str, int] = {}
+        for event in events:
+            if str(event.get("type")) == "thread.started":
+                tid = str(event.get("thread_id") or "")
+                if tid and tid not in thread_ids:
+                    thread_ids.append(tid)
+            elif str(event.get("type")) == "item.completed":
+                item_type = str((event.get("item") or {}).get("type") or "")
+                if item_type:
+                    item_types[item_type] = item_types.get(item_type, 0) + 1
         return {
             "available": True,
             "status": record.get("status"),
@@ -529,6 +544,11 @@ def create_app(
                 # the prompt, and prompts are user content.
                 "error_count": len(payload.get("errors") or []),
                 "unparsed_count": len(payload.get("unparsed_lines") or []),
+                # One entry per announced agent session: more than one means an
+                # additional agent session existed. Item types are how a sub-agent
+                # tool call or an intercepted command would show up.
+                "thread_ids": thread_ids,
+                "item_types": item_types,
             },
         }
 
