@@ -19,14 +19,14 @@
 
 | 能力 | 判定 | 证据 |
 |---|---|---|
-| 发消息 | **接口存在** | `codex exec [PROMPT]`，或 stdin 传入指令；`codex [OPTIONS] [PROMPT]` |
-| 流式输出 | **接口存在，且已实测产生 JSONL** | `codex exec --json`；第 2 次真实调用实测输出 14 个可解析 JSON 事件（`thread.started` / `turn.started` / `error` / `item.completed` / `turn.failed`）。**注意**：这些事件来自一次**失败**的 turn，成功路径的事件序列**仍未验证** |
-| 恢复会话 | **接口存在** | `codex exec resume`（`--last` 取最近）；顶层 `codex resume` / `codex fork`；实测事件含 `thread_id`（可用作恢复句柄） |
-| 取消任务 | **未知** | `--help` 未列出取消/中断命令。存在 `instant_interrupt`（under development, **false**）与 `code_mode_interrupt`（under development, false）。**是否可取消未验证** |
-| 限制文件目录 | **接口存在；行为未验证** | `-C/--cd <DIR>`；`--add-dir <DIR>`；`-s/--sandbox {read-only,workspace-write,danger-full-access}`。两次真实调用**均未进入执行阶段**，故"限制是否真生效"未验证 |
-| 拦截工具操作 | **部分可见，行为未知** | `guardian_approval`（stable, **true**）、`write_stdin_approval`（stable, true）；`exec_permission_approvals`（under development, **false**）、`request_permissions_tool`（under development, false） |
-| 控制内部子 Agent | **存在开关且已本地验证可关闭；行为未验证** | `multi_agent`（stable, **true**）；`-c features.multi_agent=false` 与 `--disable multi_agent` 均实测把它翻为 **false**（退出码 0）。**"关闭后是否真能阻止派生"未验证** |
-| 返回真实用量 | **未知** | 两次真实调用**均未产生 usage 事件**（一次在初始化失败，一次在网络层失败）。**成功路径的用量输出仍未验证** |
+| 发消息 | **已验证** | `codex exec` 实测**成功**（退出码 0，11.3s），提示词要求"只回复 OK"，最终回复 `agent_message.text = "OK"` |
+| 流式输出 | **已验证（成功路径）** | 一次成功运行的完整 JSONL 序列（4 事件）：`thread.started` → `turn.started` → `item.completed`（agent_message）→ `turn.completed`。输出为可解析 JSONL，可被适配器消费 |
+| 恢复会话 | **接口存在 + 句柄已实测获得** | `codex exec resume` / `--last`、`codex resume` / `fork`；成功调用实测返回 `thread_id = 01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce`。**但"用该 id 恢复"本身尚未实测** |
+| 取消任务 | **未知** | `--help` 未列出取消/中断命令；`instant_interrupt`（under development, false）、`code_mode_interrupt`（under development, false）。**未做取消实测** |
+| 限制文件目录 | **部分验证（证据偏弱）** | `-C/--cd`、`--add-dir`、`-s/--sandbox {read-only,...}` 存在；只读沙箱实测**工作目录事后仍为空（0 条目）**。**但该次提示词并未要求写文件**，故"拒绝写入"未被真正考验 |
+| 拦截工具操作 | **未知** | `guardian_approval`（stable, true）、`write_stdin_approval`（stable, true）；`exec_permission_approvals`（under development, false）。**未做"启动前拦截 shell 命令"的实测** |
+| 控制内部子 Agent | **开关可关闭已本地验证；行为未验证** | `multi_agent`（stable, **true**）；`--disable multi_agent` / `-c features.multi_agent=false` 实测可翻为 **false**。本次调用已**禁用**；但提示词极简、本不会触发派生，故**"关闭后是否真能阻止派生"仍未验证** |
+| 返回真实用量 | **已验证** | 成功调用返回 `turn.completed.usage`：`input_tokens=14481`、`cached_input_tokens=12544`、`cache_write_input_tokens=0`、`output_tokens=5`、`reasoning_output_tokens=0`（**真实字段，非推测**） |
 
 ---
 
@@ -240,6 +240,66 @@ Codex 自身网络栈问题。
 
 ---
 
+### 5.5 第 3 次调用（**成功**）：一次最小真实探测
+
+**批准范围**：一次最小真实调用；`--codex` 固定为预检通过的同一可执行文件；
+只读沙箱、禁用子 Agent、工作区外空目录、进程专用代理与证书；失败/超时即停、
+不切换模型、不放宽权限、不额外重试。
+
+**可执行文件身份核对（执行前，先确认一致）**：
+
+| 项 | 值 |
+|---|---|
+| 绝对路径 | `C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\2e5e00daee91c61d\codex.exe` |
+| 版本 | `codex-cli 0.162.0-alpha.17.2` |
+| 大小 / SHA-256 | `334121776` / `d13914ced6c7af174d8d638db938284231227312104b06a25e9608c632a7daec` |
+| 本机 `bin\*\codex.exe` 数量 | **1**（无第二个候选） |
+| 与预检是否同一文件 | **一致（True）** |
+
+**实际 argv**（`var/codex_onecall_result.json` 可核对）：
+
+```
+codex.exe exec --json --disable multi_agent --sandbox read-only
+           --skip-git-repo-check
+           -C C:\Users\Administrator\AppData\Local\Temp\dsh-NDA5C5\codex-onecall-20261014-193754
+           "Reply with exactly: OK. Do not modify any files."
+```
+
+进程专用环境（**仅本进程**，未改注册表 / 系统代理 / `~/.codex/config.toml`）：
+`CODEX_HOME=var\codex-home`、`HTTPS_PROXY=HTTP_PROXY=http://127.0.0.1:8090`、
+`NO_PROXY=localhost,127.0.0.1`、`CODEX_CA_CERTIFICATE=<certifi cacert.pem>`。
+
+**结果：成功**
+
+| 项 | 值 |
+|---|---|
+| **退出码** | **0** |
+| 耗时 | 11.3s |
+| **事件序列** | `thread.started` → `turn.started` → `item.completed`(agent_message) → `turn.completed`（共 4 个，全部为合法 JSONL） |
+| **thread_id** | `01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce` |
+| **最终回复** | `OK`（与提示词要求完全一致） |
+| **实际 usage 字段** | `input_tokens=14481`、`cached_input_tokens=12544`、`cache_write_input_tokens=0`、`output_tokens=5`、`reasoning_output_tokens=0` |
+| **目录变化** | **工作目录事后仍为空（0 条目）**；仓库工作区未被改动 |
+| 内部重连 / DLL 错误 | **原始捕获中 0 次**：`Reconnecting` / `DLL` / `c0000142` / `error` / `fatal` / `UnknownIssuer` / `timed out` / `os error` 全部 0 命中 |
+
+**原始捕获（逐字）**：
+
+```
+Reading additional input from stdin...
+{"type":"thread.started","thread_id":"01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":14481,"cached_input_tokens":12544,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}
+```
+
+**本次未能回答的（需另行批准）**：取消能力、工具栏截、
+`multi_agent` 关闭是否真能阻止子 Agent 派生、用 `thread_id` 实际恢复会话。
+
+**证据强度提示**：本次提示词**未要求写文件**，因此"只读沙箱拒绝写入"只得到
+**弱证据**（目录为空是必要但非充分条件）。要强验证需让 Codex 尝试写文件并观察是否被拒——**需另行批准**。
+
+---
+
 ## 6. 副作用：Codex 常驻后台 daemon（实测）
 
 即使在**没有发起任何模型调用**的情况下，仅执行自描述命令
@@ -269,20 +329,20 @@ Codex 自身网络栈问题。
 
 ## 7. 结论
 
-- 本机**唯一可用的真实 Agent 是 Codex**（0.162.0-alpha.17.2）；
-  PATH 上没有 claude / gemini / workbuddy 等，`.claude` 目录不存在。
-- Codex **接口层面具备**：非交互执行、JSONL 事件流、会话恢复、目录限定 flag、
-  沙箱模式 flag、`multi_agent` 特性开关（**已本地验证可关闭**）。
-- **真实调用仍未成功**（两次尝试，退出码均为 1）：
-  - 第 1 次在**初始化阶段**失败：沙箱拒绝其写 `~/.codex/tmp`（`os error 5`）。
-  - 第 2 次用专用 `CODEX_HOME` **消除了该初始化失败**（可复现的改进），
-    随后失败于**网络连接**：`chatgpt.com` / `api.openai.com` **连接失败**。
-  - **网络失败的原因待确定**，不能仅凭"缺少 sandbox 标记"排除执行环境限制（见 §5.4）。
-  - 两次均**未进入模型调用**，无用量、无费用；失败后**均按批准范围停止，未重试**。
+- 本机**唯一可用的真实 Agent 是 Codex**（`codex-cli 0.162.0-alpha.17.2`，
+  SHA-256 `d13914ce…2daec`）；PATH 上没有 claude / gemini / workbuddy 等。
+- **三次真实调用**：两次失败（初始化、网络），**第三次成功**（退出码 0）。
+- **失败原因已定位并解决**：Codex 此前**未走代理**（无代理环境变量），
+  加上代理的证书需要显式信任。解法为**进程专用**的两个环境变量
+  （见 `docs/codex-proxy-setup.md`）：
+  `HTTPS_PROXY=http://127.0.0.1:8090` 与 `CODEX_CA_CERTIFICATE=<可读 PEM>`。
+  注意 `-c network.proxy_url` **无效**（doctor：`session-flags: network is ignored`）。
+- **已验证**：`exec` 发消息、JSONL 事件流（成功路径序列）、**真实用量返回**、
+  `thread_id` 句柄、只读沙箱下目录保持为空（弱证据）。
+- **仍为未知（不得当作支持）**：**取消任务**、**工具启动前拦截**、
+  **关闭 `multi_agent` 是否真能阻止子 Agent 派生**、用 `thread_id` 恢复会话、
+  写文件是否真被拒、以及 app-server 协议。
 - Codex 会**常驻并自动重启后台 daemon**（实测），其生命周期不在我们的控制面内。
-- **仍为未知（不得当作支持）**：取消能力、工具启动前拦截是否可强制、
-  **关闭 `multi_agent` 是否真能阻止子 Agent**、**真实用量返回**、
-  目录限制在 Windows 上是否真生效、app-server 协议。
-  **流式事件仅在一次"失败 turn"上观测到，成功路径未验证。**
-- 真实适配器整体状态：**未验证**。后续验证**须逐次经用户批准**；
-  手工执行工具与结果模板见 `docs/p3-codex-manual-run.md`。
+- **真实适配器整体状态：仍未验收。** 一次成功的极简探测**不等于**适配器可接入；
+  适配器代码、审批对接、取消与配额联动**均未实现**。
+- 后续验证**须逐次经用户批准**。
