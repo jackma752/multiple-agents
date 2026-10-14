@@ -194,8 +194,10 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 - **只读沙箱是否真拒绝写入**：弱证据（提示词从未要求写文件）。
 - **台账/用量字段的稳定性**：仅一次真实调用观测到 usage 字段。
 - **app-server 路线**：未评估。
-- **真实调用次数**：截至本文件，**成功 1 次**（极简探测，走的是 `tools/codex_one_call.py`，
-  不是本适配器）。**本适配器尚未用真实 Codex 跑过**——这正是下一节要申请的那一次。
+- **真实调用次数**：截至本文件，**成功 2 次**——1 次极简探测（`tools/codex_one_call.py`，
+  不经过适配器）与 1 次**经本适配器的真实联调**（2026-10-14，`codex_verify.py --mode real`，
+  12/12 检查通过；完整记录见 `docs/p3-codex-real-run-2026-10-14.md`）。
+  适配器本身的能力结论见那一份记录；取消、拦截、子 Agent 阻断、只读拒写**仍未验证**。
 
 ## 9. 下一步：一次经审批的真实调用
 
@@ -206,8 +208,12 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 # 离线自检（桩进程，不联网、不花费额度）——已执行通过
 .\.venv\Scripts\python.exe tools/demo/codex_verify.py --mode stub
 
-# 真实调用（需操作者逐次批准；没有这个开关会直接拒绝执行）
-.\.venv\Scripts\python.exe tools/demo/codex_verify.py --mode real --i-understand-this-spends-quota
+# 反向对照：桩进程输出 turn.failed，必须判为 FAILED（证明判定确实严格）——已执行
+.\.venv\Scripts\python.exe tools/demo/codex_verify.py --mode stub --prompt "please FAIL this turn"
+
+# 真实调用（需操作者逐次批准；没有这个开关会直接拒绝执行）——已执行一次并记录
+.\.venv\Scripts\python.exe tools/demo/codex_verify.py --mode real --i-understand-this-spends-quota `
+    --codex-home "$env:TEMP\agenthub-codex-verify-home"
 ```
 
 脚本的判定顺序即为安全阀：**未批准 → 进程启动数必须为 0**；
@@ -249,7 +255,7 @@ JSONL 事件 > 0、`verdict = finished`、退出码 0、未超时、`thread_id` 
   见 `docs/codex-proxy-setup.md`）；
 * **未获批准不会发起任何真实调用。**
 
-判定"启动了进程"的证据分两层：`adapter-result` 的 `launch_attempted` 表示**已越过
-启动前拒绝**（即真的去启动进程了），`evidence.exit_code` / `evidence.event_count`
-才表示**进程确实跑起来并输出了 JSONL**。真实模式两者都会打印，不做推断。
+> 已知代价（2026-10-14 实测）：把 `CODEX_HOME` 放在 `%TEMP%` 下时，Codex 会
+> **拒绝**在临时目录创建 helper binaries（PATH 别名）并打印 WARNING，但**继续执行**，
+> 调用仍成功。要完整功能就把 `CODEX_HOME` 放在临时目录之外的普通目录。
 
