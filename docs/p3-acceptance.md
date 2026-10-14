@@ -84,9 +84,9 @@ P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批�
 | 能力 | 为什么没验证 | 方案 |
 |---|---|---|
 | 取消 | `codex exec` 无任何取消选项；协议里的 `turn/interrupt` 只服务 app-server | `docs/p3-permission-probes.md` §5（**当前模式下不具备验证条件**） |
-| 工具操作启动前拦截 | exec **拒绝** `-a/--ask-for-approval`，批准通道只服务 app-server 的 `turn/start` | 同上 §3（预期结论：不支持） |
-| 原生子 Agent 阻断 | `--disable multi_agent` 只置功能开关；模型可见提示词里子 Agent 说明**依然存在** | 同上 §2（PASS 只代表"本次未观测到派生"） |
-| 只读沙箱是否真拒绝写入 | 历次提示词都没要求写文件；离线**无法**区分 read-only 与 workspace-write | 同上 §1（含正对照设计；`codex doctor` 曾报 `sandbox backend disabled`） |
+| 工具操作启动前拦截 | exec **拒绝** `-a/--ask-for-approval`，批准通道只服务 app-server 的 `turn/start` | 同上 §4（预期结论：不支持） |
+| 原生子 Agent 阻断 | `--disable multi_agent` 只置功能开关；模型可见提示词里子 Agent 说明**依然存在** | 同上 §3（PASS 只代表"本次未观测到派生"） |
+| 只读沙箱是否真拒绝写入 | 离线**无法**区分 read-only 与 workspace-write（权限档案渲染相同；`codex doctor` 曾报 `sandbox backend disabled`） | 同上 §2。**已执行 1 次真实探测（2026-10-14）：结果 = 无法判断**——文件未创建，但 JSONL 里**没有任何工具/文件类 item**，驱动通道也无相关拒绝证据；`codex exec --json` 可能根本不输出尝试信号。逐项记录见 `docs/p3-probe-readonly-write-2026-10-14.md`。**仍未验证** |
 | app-server 协议 | 未使用 | 未评估 |
 | 按 `thread_id` 恢复会话 | 未接入（见 §2） | 未评估 |
 
@@ -104,6 +104,7 @@ P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批�
 | 关闭自动协作后无新自动分派；全部停止后无新启动 | ⚠️ 停止部分已验证；自动协作属 P4 |
 | 崩溃 / 远程超时 / 重复事件：不盲目重跑、不错误宣称远程停止 | ⚠️ 部分：本地已实现并验证；**真实远程超时/取消未验证** |
 | SSE 断线恢复一致；仓库与日志不含真实密钥 | ⚠️ 密钥部分已验证（`tests/test_hygiene.py`）；**SSE 未实现** |
+| 只读沙箱是否真拒绝写入 | ⚠️ **1 次真实探测（2026-10-14）结果 = 无法判断；能力仍未验证**（文件未创建，但无任何尝试信号与驱动拒绝证据；助手自述 `REFUSED` 不算证据）。见 `docs/p3-probe-readonly-write-2026-10-14.md` |
 
 ## 5. 交付物
 

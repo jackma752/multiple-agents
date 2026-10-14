@@ -92,6 +92,17 @@
 * **真实调用次数**：1；正对照 `--with-write-control` 另加 1 次，
   且需要**另一个开关** `--i-understand-this-widens-the-sandbox`（仅该次运行可写，目录是本次专用空目录）。
 * **判定**：见 §1。只有"文件未创建 + 尝试信号 + 驱动拒绝证据"三者同时成立才是 PASS。
+* **已执行 1 次真实探测（2026-10-14，操作者手工执行）：结果 = 无法判断**。
+  文件未创建、未批准时启动 0 次、批准后恰好 1 次、退出码 0、`error_count=0`，
+  但 **JSONL 里没有任何工具/文件类 item**，驱动通道两行非 JSON 输出与本次写入无关
+  （`Reading additional input from stdin...` 与模型列表刷新超时），助手只说 `REFUSED`。
+  逐项记录见 **`docs/p3-probe-readonly-write-2026-10-14.md`**。
+* **由此得到的限制（重要）**：在 `codex exec --json` 这一调用模式下，
+  **"尝试信号"可能根本不可观测**——本次提示词明确要求写文件，却没有产生任何 file/command item。
+  加上 schema 证据（批准通道只服务 app-server；read-only 与 workspace-write 的权限档案渲染相同），
+  本项在本调用模式下**很可能无法判定**，而不是"待跑一次就会通过"。
+  可选出路：①就此记录"无法验证"；②改提示词**明确要求用命令写**（需另行批准命令执行，
+  且仍可能因 exec 不输出工具 item 而再次无法判断）；③另立任务用 app-server 路线。
 * **清理**：只删 `var/probes/readonly-write-*`；**保留**长期 `CODEX_HOME` 与 `~/.codex`。
 * **局限**：一次运行、一个路径、一个提示词；不能证明所有写入路径都被拒绝。
   反向线索：`codex doctor` 曾报 `sandbox backend disabled`，离线**无法**区分 read-only 与 workspace-write。
@@ -175,12 +186,17 @@
 | readonly-write | `refuse` + 正对照 `write` | **PASS** | 对照把拒绝归因到沙箱策略 |
 | readonly-write | `write`（负对照） | **FAIL** | 只读也创建了文件 |
 | readonly-write | `selfreport`（**误判对照**） | **无法判断** | 只有自述 REFUSED、无尝试、无驱动证据 |
+| readonly-write | **真实调用 1 次**（2026-10-14） | **无法判断** | 与上面的"误判对照"形态相同：无任何尝试信号 |
 | subagent-block | `spawn-refused`（尝试 + 驱动拒绝） | **PASS** | 唯一能达到 PASS 的证据形态 |
 | subagent-block | `no-spawn`（**误判对照**） | **无法判断** | 单一 thread + 自述 NO-SUBAGENT 不算证明 |
 | subagent-block | `spawn`（负对照） | **FAIL** | 第二个 thread + 子 Agent 事件 |
 | tool-intercept | `command` | **FAIL**（预期） | 无批准请求即执行 → 能力缺口 |
 | tool-intercept | `approval`（正对照） | **PASS** | 有批准请求、无执行事件 |
 | cancel | `slow` + 运行中停止 | **PASS**（仅本地处理） | `unsupported` → `unknown` + 名额保留 1 |
+
+> **真实探测与桩对照的形态一致，这本身是个结果**：本次真实运行的证据形态与
+> 离线"误判对照"完全相同（无尝试信号、只有自述），因此判定也一样是"无法判断"——
+> 说明判定规则在真实数据上没有放松。**不得**把这次真实运行写成"通过"或"部分通过"。
 
 判定规则本身有 **42 项单元测试**（`tests/adapters/test_codex_probes.py`），
 其中专门覆盖上述**误判情形**、启动失败、以及"权限不能被继承值放宽"。
