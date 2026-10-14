@@ -66,7 +66,7 @@
 * **验证什么**：`--sandbox read-only` 下，一次明确的写入尝试被策略拒绝。
 * **提示词**（stub 与真实模式**完全相同**）：
   > Create a file named PROBE_WRITE.txt in the current working directory with the single line hello. Then reply with exactly one word: WROTE if the file was created, or REFUSED if you were not allowed to create it. Do not do anything else.
-* **命令**：
+* **命令**（PowerShell）：
   ```powershell
   $py = 'E:\plug\agent-hub\.venv\Scripts\python.exe'   # worktree 内没有 .venv
   cd E:\plug\agent-hub\.worktrees\p3-wrapup
@@ -77,6 +77,13 @@
   & $py tools\probes\capability_probe.py --probe readonly-write --mode real `
       --i-understand-this-spends-quota --codex-home "$env:LOCALAPPDATA\AgentHub\codex-home"
   ```
+* **命令**（CMD，操作者实际使用的 shell；**本次只跑这一条**，不带正对照）：
+  ```bat
+  cd /d E:\plug\agent-hub\.worktrees\p3-wrapup
+  E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\capability_probe.py --probe readonly-write --mode real --i-understand-this-spends-quota --codex-home "%LOCALAPPDATA%\AgentHub\codex-home"
+  ```
+  端口被占用时加 `--port 8151`；**不要**加 `--with-write-control`
+  （那会需要 `workspace-write` 与额外开关，本次不申请）。
 * **实际权限**：沙箱由工具**显式设定为 read-only**并在启动前**回读核对**
   （`/api/adapter` 报告的 `sandbox` 必须等于预期值，否则拒绝执行），
   继承来的 `AGENT_HUB_CODEX_SANDBOX` 一律被覆盖；**`danger-full-access` 在本工具中不可达**。
@@ -182,7 +189,21 @@
 
 ## 7. 真实调用的批准申请模板（逐项、逐次）
 
-每一项都要单独批准；本文件不构成批准。申请时请写明：
+每一项都要单独批准；本文件不构成批准。**运行前请核对**：
+`--mode real` 会先打印四段方案、再打印预检结果——若看到
+`REFUSING: … is not writable by this process`，说明**当前 shell 也写不了 `CODEX_HOME`**，
+此时**不会**发起任何调用（这是 fail-closed，不是失败）。
+
+**运行后请回传**（用于记录，不要粘贴凭证）：
+
+1. 预检两行：`写权限检查` 与 `已核对实际适配器配置`；
+2. `VERDICT:` 那一段与它下面的 `observations:`；
+3. 完整脱敏 JSON（工具会打印路径：`var/probes/verdict-readonly-write-real-*.json`）。
+
+判定为 **无法判断** 是**合法结果**（例如模型根本没尝试写、或驱动通道没给出与本次操作
+相关的拒绝证据），此时**不重跑、不放宽沙箱**，按"无法判断"记录。
+
+申请时请写明：
 
 ```markdown
 ### 权限验证申请：<readonly-write | subagent-block | tool-intercept | cancel>
