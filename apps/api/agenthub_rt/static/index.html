@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Hub 控制台（Mock）</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e6e9ef; --dim: #9aa3b2; --accent: #4c8dff; --ok: #35c48a;
+    --warn: #e8b339; --bad: #e2565b; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.5 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+           background: var(--panel); border-bottom: 1px solid var(--line);
+           position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  .mock-badge { background: #3a2a12; color: var(--warn); border: 1px solid #5a4020;
+                padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+  main { display: grid; grid-template-columns: 300px 1fr 360px; gap: 12px;
+         padding: 12px; align-items: start; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: var(--radius); padding: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em;
+       color: var(--dim); margin: 0 0 10px; font-weight: 600; }
+  button { background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+           border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: #3a1a1d; border-color: #5c2a2e; color: #ffb4b7; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, textarea, select { background: var(--panel2); color: var(--fg);
+      border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+      font: inherit; width: 100%; }
+  textarea { min-height: 58px; resize: vertical; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row > * { margin: 0; }
+  .muted { color: var(--dim); font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px;
+          font-size: 11px; border: 1px solid var(--line); background: var(--panel2); }
+  .pill.draft { color: var(--dim); }
+  .pill.awaiting_approval { color: var(--warn); border-color: #5a4020; }
+  .pill.queued { color: var(--accent); border-color: #26406e; }
+  .pill.starting, .pill.running { color: var(--ok); border-color: #1f5c43; }
+  .pill.succeeded { color: var(--ok); }
+  .pill.failed, .pill.rejected, .pill.invalid { color: var(--bad); border-color: #5c2a2e; }
+  .pill.canceled, .pill.timed_out, .pill.unknown, .pill.revoked, .pill.expired { color: var(--warn); }
+  .card { background: var(--panel2); border: 1px solid var(--line);
+          border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+  .card.approval { border-left: 3px solid var(--warn); }
+  .card h3 { font-size: 13px; margin: 0 0 6px; }
+  .kv { display: grid; grid-template-columns: 88px 1fr; gap: 2px 8px; font-size: 12px; }
+  .kv div:nth-child(odd) { color: var(--dim); }
+  code { font-family: Consolas, monospace; font-size: 12px; color: #b9c6dd; }
+  .tree { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+  .tree li { padding: 3px 0; border-bottom: 1px dashed #232833; }
+  .tree .d1 { padding-left: 14px; } .tree .d2 { padding-left: 28px; }
+  .gauge { height: 8px; background: var(--panel2); border-radius: 4px;
+           overflow: hidden; border: 1px solid var(--line); }
+  .gauge > i { display: block; height: 100%; background: var(--accent); }
+  .gauge.warn > i { background: var(--warn); }
+  .log { max-height: 240px; overflow: auto; font-size: 12px; }
+  .log div { padding: 2px 0; border-bottom: 1px dashed #232833; }
+  #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px;
+           background: #22262f; border: 1px solid var(--line); border-radius: 8px;
+           padding: 10px 12px; display: none; z-index: 20; font-size: 13px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Agent Hub 控制台</h1>
+  <span class="mock-badge">Mock 模式 · 未接入真实 Agent</span>
+  <div class="row" style="margin:0; flex: 1; min-width: 260px;">
+    <input id="token" type="password" placeholder="用户 token（默认 dev-user-token）" />
+    <button id="connect" class="primary">连接</button>
+  </div>
+  <div class="row" style="margin:0;">
+    <button id="drain">推进调度</button>
+    <button id="recover">恢复核对</button>
+    <button id="reap">超时检查</button>
+  </div>
+</header>
+
+<div id="toast"></div>
+
+<main>
+  <!-- 左：会话与任务列表 -->
+  <section>
+    <h2>会话 / 任务</h2>
+    <div class="row">
+      <button id="new-conv" class="primary">新建会话</button>
+    </div>
+    <div id="tasks" class="muted">尚未连接</div>
+  </section>
+
+  <!-- 中：聊天 + 审批 + 任务树 -->
+  <section>
+    <h2>聊天</h2>
+    <div id="chat" class="log"></div>
+    <div class="row" style="margin-top:8px;">
+      <textarea id="msg" placeholder="输入任务目标，例如：做一个登录页面"></textarea>
+    </div>
+    <div class="row">
+      <button id="send" class="primary" disabled>发送并创建调用（先创建会话）</button>
+      <span id="conv-label" class="muted">未选择会话</span>
+    </div>
+
+    <h2 style="margin-top:16px;">审批队列</h2>
+    <div id="approvals" class="muted">无</div>
+
+    <h2 style="margin-top:16px;">任务树</h2>
+    <ul id="tree" class="tree"><li class="muted">无</li></ul>
+  </section>
+
+  <!-- 右：配额、停止、事件 -->
+  <section>
+    <h2>配额</h2>
+    <div id="quota" class="muted">—</div>
+
+    <h2 style="margin-top:16px;">控制</h2>
+    <div class="row"><button id="stop" class="danger" disabled>停止整棵树</button>
+      <button id="pause" disabled>暂停</button>
+      <button id="resume" disabled>恢复</button></div>
+    <div id="state-label" class="muted">—</div>
+
+    <h2 style="margin-top:16px;">修改配额（仅登录用户）</h2>
+    <div class="row">
+      <input id="p-total" type="number" min="0" placeholder="子 Agent 总量" />
+      <input id="p-conc" type="number" min="0" placeholder="并发" />
+    </div>
+    <div class="row">
+      <input id="p-depth" type="number" min="0" placeholder="最大深度" />
+      <input id="p-inv" type="number" min="1" placeholder="总调用数" />
+    </div>
+    <div class="row"><button id="apply-policy" disabled>应用（版本 +1）</button></div>
+
+    <h2 style="margin-top:16px;">事件</h2>
+    <div id="events" class="log"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// The console remembers every id (task / invocation / approval). The user never
+// copies or types an id, and there are no placeholder values to fill in.
+const S = {
+  token: "",
+  conversationId: null,
+  taskId: null,          // root task of the selected tree
+  view: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, kind) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.borderColor = kind === "bad" ? "var(--bad)" : kind === "ok" ? "var(--ok)" : "var(--line)";
+  t.style.display = "block";
+  clearTimeout(toast._h);
+  toast._h = setTimeout(() => { t.style.display = "none"; }, 4000);
+}
+
+async function api(method, path, body) {
+  const headers = { "Authorization": "Bearer " + S.token };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, {
+    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (!res.ok) {
+    const detail = data && data.detail ? (data.detail.message || data.detail.code || JSON.stringify(data.detail)) : res.statusText;
+    throw new Error(res.status + " " + detail);
+  }
+  return data;
+}
+
+function pill(status) { return `<span class="pill ${status}">${status}</span>`; }
+
+/* ---------------- connection ---------------- */
+$("connect").onclick = async () => {
+  S.token = $("token").value.trim() || "dev-user-token";
+  try {
+    await api("GET", "/api/dev/mock-activity");
+    toast("已连接（Mock 模式，未接入真实 Agent）", "ok");
+    await loadTasks();
+  } catch (e) { toast("连接失败：" + e.message, "bad"); }
+};
+
+/* ---------------- tasks ---------------- */
+async function loadTasks() {
+  const list = await api("GET", "/api/tasks");
+  if (!list.length) { $("tasks").innerHTML = '<span class="muted">还没有任务。新建会话后发送一条消息即可创建。</span>'; return; }
+  $("tasks").innerHTML = list.map(t => `
+    <div class="card" style="cursor:pointer" data-task="${t.id}">
+      <h3>${escapeHtml(t.goal || "(无目标)")}</h3>
+      <div class="muted">调用 ${t.invocations} · 运行 ${t.running} · 待批 ${t.pending_approvals}
+        ${t.stopped ? ' · <b>已停止</b>' : ''}</div>
+      <div class="muted">配额 已用 ${t.quota.launched_total} · 并发 ${t.quota.concurrent}</div>
+      <code>${t.id}</code>
+    </div>`).join("");
+  document.querySelectorAll("[data-task]").forEach(el => {
+    el.onclick = () => selectTask(el.getAttribute("data-task"));
+  });
+}
+
+async function selectTask(taskId) {
+  S.taskId = taskId;
+  $("stop").disabled = $("pause").disabled = $("resume").disabled = $("apply-policy").disabled = false;
+  await refresh();
+}
+
+async function refresh() {
+  if (!S.taskId) return;
+  S.view = await api("GET", `/api/tasks/${S.taskId}/view`);
+  render();
+}
+
+/* ---------------- chat ---------------- */
+$("new-conv").onclick = async () => {
+  try {
+    const r = await api("POST", "/api/conversations", {});
+    S.conversationId = r.conversation_id;
+    $("conv-label").textContent = "会话 " + S.conversationId;
+    $("send").disabled = false;
+    $("chat").innerHTML = "";
+    log("已创建会话 " + S.conversationId);
+  } catch (e) { toast("创建会话失败：" + e.message, "bad"); }
+};
+
+function log(text) {
+  const d = document.createElement("div");
+  d.textContent = text;
+  $("chat").appendChild(d);
+  $("chat").scrollTop = $("chat").scrollHeight;
+}
+
+$("send").onclick = async () => {
+  const goal = $("msg").value.trim();
+  if (!goal) { toast("请输入任务目标", "bad"); return; }
+  if (!S.conversationId) { toast("请先新建会话", "bad"); return; }
+  try {
+    await api("POST", `/api/conversations/${S.conversationId}/messages`, { text: goal });
+    log("我：" + goal);
+    // The API returns task_id / invocation_id / approval_id; we keep them.
+    const inv = await api("POST", "/api/invocations", {
+      task_id: "-", agent_id: "mock", task_input: goal,
+    });
+    S.taskId = inv.task_id;
+    $("stop").disabled = $("pause").disabled = $("resume").disabled = $("apply-policy").disabled = false;
+    log(`已创建调用 ${inv.invocation_id}（待审批 ${inv.approval_id}）`);
+    $("msg").value = "";
+    await loadTasks();
+    await refresh();
+    toast("调用已创建，请在右侧审批队列中批准", "ok");
+  } catch (e) { toast("发送失败：" + e.message, "bad"); }
+};
+
+/* ---------------- approvals ---------------- */
+async function act(path) {
+  try { await api("POST", path); await refresh(); await loadTasks(); }
+  catch (e) { toast(e.message, "bad"); }
+}
+
+function renderApprovals() {
+  const byId = Object.fromEntries(S.view.invocations.map(i => [i.id, i]));
+  const pending = S.view.approvals.filter(a => a.status === "pending" || a.status === "approved");
+  if (!pending.length) { $("approvals").innerHTML = '<span class="muted">无待处理审批</span>'; return; }
+  $("approvals").innerHTML = pending.map(a => {
+    const inv = byId[a.invocation_id] || {};
+    const task = S.view.tasks.find(t => t.id === inv.task_id) || {};
+    return `<div class="card approval">
+      <h3>${escapeHtml(task.goal || "(任务)")}</h3>
+      <div class="kv">
+        <div>调用</div><div><code>${a.invocation_id}</code></div>
+        <div>审批</div><div><code>${a.id}</code> ${pill(a.status)}</div>
+        <div>深度</div><div>${task.depth ?? "?"}</div>
+        <div>过期</div><div>${a.expires_at ? a.expires_at.replace("T", " ").slice(0, 19) : "—"}</div>
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="primary" onclick="act('/api/approvals/${a.id}/approve')">同意并允许执行</button>
+        <button onclick="act('/api/approvals/${a.id}/reject')">拒绝</button>
+        <button class="danger" onclick="act('/api/approvals/${a.id}/revoke')">撤销</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* ---------------- tree / quota / events ---------------- */
+function renderTree() {
+  const invByTask = {};
+  S.view.invocations.forEach(i => { (invByTask[i.task_id] ||= []).push(i); });
+  const ordered = [...S.view.tasks].sort((a, b) => a.depth - b.depth);
+  $("tree").innerHTML = ordered.map(t => {
+    const invs = invByTask[t.id] || [];
+    const badges = invs.map(i => pill(i.status)).join(" ");
+    return `<li class="d${Math.min(t.depth, 2)}">
+      <b>d${t.depth}</b> ${escapeHtml(t.goal)}
+      <span class="muted">· ${t.agent_id}${t.kind === "auto" ? " · 自动" : ""}</span>
+      <div class="muted">${badges || '<span class="pill draft">无调用</span>'}</div>
+      ${invs.map(i => `<code>${i.id}</code>`).join("<br/>")}
+    </li>`;
+  }).join("") || '<li class="muted">无</li>';
+}
+
+function renderQuota() {
+  const q = S.view.quota, p = S.view.policy || {};
+  const cap = (v) => (v === undefined || v === null) ? "—" : v;
+  const bar = (used, max) => {
+    if (!max) return "";
+    const pct = Math.min(100, Math.round((used / max) * 100));
+    return `<div class="gauge ${pct >= 100 ? "warn" : ""}"><i style="width:${pct}%"></i></div>`;
+  };
+  $("quota").innerHTML = `
+    <div class="kv">
+      <div>总量</div><div>${q.launched_total} / ${cap(p.max_subagents_total)}</div>
+      <div>并发</div><div>${q.concurrent} / ${cap(p.max_subagents_concurrent)}</div>
+      <div>深度</div><div>最大 ${cap(p.max_depth)}</div>
+      <div>调用数</div><div>${q.total_invocations} / ${cap(p.max_agent_invocations)}</div>
+      <div>名额占用</div><div>${q.open_reservations}</div>
+      <div>策略版本</div><div>v${S.view.root.policy_version}（历史 ${S.view.policy_versions.join(", ") || "—"}）</div>
+    </div>
+    <div style="margin-top:8px">${bar(q.launched_total, p.max_subagents_total)}</div>
+    <div style="margin-top:4px">${bar(q.concurrent, p.max_subagents_concurrent)}</div>`;
+  $("state-label").textContent =
+    (S.view.stopped ? "已停止（不再调度新调用）" : "运行中") + (S.view.paused ? " · 已暂停" : "");
+}
+
+function renderEvents() {
+  $("events").innerHTML = (S.view.events || []).map(e =>
+    `<div>#${e.seq} <b>${e.type}</b> <span class="muted">${escapeHtml(JSON.stringify(e.payload)).slice(0, 90)}</span></div>`
+  ).join("") || '<span class="muted">无</span>';
+}
+
+function render() { renderApprovals(); renderTree(); renderQuota(); renderEvents(); }
+
+/* ---------------- controls ---------------- */
+$("stop").onclick = async () => {
+  if (!S.taskId) return;
+  if (!confirm("停止整棵树？运行中的调用会被取消，累计用量不会返还。")) return;
+  try {
+    const r = await api("POST", `/api/tasks/${S.taskId}/stop`);
+    log(`已停止：取消 ${r.cancelled} 个运行中调用`);
+    await refresh(); await loadTasks();
+  } catch (e) { toast(e.message, "bad"); }
+};
+$("pause").onclick = async () => { try { await api("POST", `/api/tasks/${S.taskId}/pause`); await refresh(); } catch (e) { toast(e.message, "bad"); } };
+$("resume").onclick = async () => { try { await api("POST", `/api/tasks/${S.taskId}/resume`); await refresh(); } catch (e) { toast(e.message, "bad"); } };
+
+$("apply-policy").onclick = async () => {
+  if (!S.taskId) return;
+  const body = {};
+  const cur = S.view.policy || {};
+  for (const [el, key] of [["p-total", "max_subagents_total"], ["p-conc", "max_subagents_concurrent"],
+                           ["p-depth", "max_depth"], ["p-inv", "max_agent_invocations"]]) {
+    const v = $(el).value;
+    if (v !== "") body[key] = parseInt(v, 10);
+  }
+  const merged = {
+    max_subagents_total: body.max_subagents_total ?? cur.max_subagents_total ?? 3,
+    max_subagents_concurrent: body.max_subagents_concurrent ?? cur.max_subagents_concurrent ?? 2,
+    max_depth: body.max_depth ?? cur.max_depth ?? 1,
+    max_agent_invocations: body.max_agent_invocations ?? cur.max_agent_invocations ?? 10,
+  };
+  try {
+    const r = await api("PATCH", `/api/tasks/${S.taskId}/policy`, merged);
+    log(`策略已更新到 v${r.version}，撤销未消费审批 ${r.revoked_approvals} 个`);
+    await refresh(); await loadTasks();
+  } catch (e) { toast("策略被拒绝：" + e.message, "bad"); }
+};
+
+$("drain").onclick = async () => {
+  try {
+    const out = await api("POST", "/api/worker/drain");
+    const started = out.filter(o => o.ok).length;
+    const refused = out.filter(o => !o.ok);
+    log(`推进调度：启动 ${started}，拒绝 ${refused.length}` + (refused.length ? "（" + refused.map(r => r.code).join(", ") + "）" : ""));
+    await refresh(); await loadTasks();
+  } catch (e) { toast(e.message, "bad"); }
+};
+$("recover").onclick = async () => {
+  try { const r = await api("POST", "/api/worker/recover"); log(`恢复核对：确认运行 ${r.confirmed_running.length}，结算 ${r.settled.length}，未知 ${r.unknown.length}`); await refresh(); }
+  catch (e) { toast(e.message, "bad"); }
+};
+$("reap").onclick = async () => {
+  try { const r = await api("POST", "/api/worker/reap"); log(`超时检查：${r.examined} 个超时，${r.timed_out.filter(t => t.outcome === "unknown").length} 个进入 unknown（保留名额）`); await refresh(); }
+  catch (e) { toast(e.message, "bad"); }
+};
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+$("token").value = "dev-user-token";
+</script>
+</body>
+</html>

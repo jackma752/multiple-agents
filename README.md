@@ -28,16 +28,18 @@
 - 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，另有可持久化、按 `invocation_id` 查询的执行记录（用于恢复对账）。
+- **P3 控制台**：`/ui` 提供统一聊天、审批卡片、任务树、配额显示与停止/暂停按钮；界面**自动管理** task_id / invocation_id / approval_id，用户无需复制或填写任何 id（零构建单页，见 `docs/p3-ui.md`）。
 
-**当前 141 个测试全部通过**。分布：`e2e` 2、`http` 33、`persistence` 6、
-`policy` 97、`hygiene` 3。完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；
-本地试用步骤见 **`docs/trial-mock.md`**；各轮实现说明见
+**当前 158 个测试全部通过**。完整验收矩阵与逐条证据见 **`docs/p2-acceptance.md`**；
+控制台说明见 **`docs/p3-ui.md`**；本地试用步骤见 **`docs/trial-mock.md`**；
+进程与启动方式见 **`docs/tooling-diagnostics.md`**；各轮实现说明见
 `docs/p2-approval-gate.md`、`docs/p2-auth-and-atomicity.md`、`docs/p2-shared-persistence.md`、
 `docs/p2-policy-versioning.md`、`docs/p2-stop-and-recovery.md`。
 
 > **这不等于整个项目安全阀全部通过。** 计划 §6 十条中 6 条完全通过、4 条部分通过，
-> 后者的阶段归属与未验证状态：**CLI 拦截**（P3）、**自动协作开关**（P4）、
-> **真实适配器远程超时**（P3）、**SSE 断线恢复**（P3/P5）。详见 `docs/p2-acceptance.md` §B/§G。
+> 后者的阶段归属与未验证状态：**CLI 拦截**（P3，待真实 Agent 接入时验证）、
+> **自动协作开关**（P4）、**真实适配器远程超时**（P3）、**SSE 断线恢复**（P3/P5）。
+> 详见 `docs/p2-acceptance.md` §B/§G。
 
 ## 仓库约定
 
@@ -46,13 +48,16 @@
 ## 本地试用（Mock，无需真实 Agent 账号）
 
 ```powershell
-.\.venv\Scripts\python.exe tools\demo\serve.py     # 启动 Mock API
-# 交互式 API 页： http://127.0.0.1:8080/docs   （右上角 Authorize 填用户 token）
-.\.venv\Scripts\python.exe tools\demo\demo_flow.py # 一键跑完整演示流程
+.\.venv\Scripts\python.exe tools\demo\serve.py      # 启动 Mock API
+# 控制台（统一聊天 / 审批卡片 / 任务树 / 配额 / 停止）： http://127.0.0.1:8080/ui
+# 交互式 API 页：                                      http://127.0.0.1:8080/docs
+.\.venv\Scripts\python.exe tools\demo\demo_flow.py  # 一键跑完整演示流程
+.\.venv\Scripts\python.exe tools\demo\stop.py       # 按 PID 精确停止（勿按名强杀）
 ```
 
 详细步骤（启动命令、凭证设置、建任务、批准/拒绝/配额/停止/超时/恢复操作、
-数据位置与重置、已知限制）见 **`docs/trial-mock.md`**。
+数据位置与重置、已知限制）见 **`docs/trial-mock.md`**；
+控制台说明见 **`docs/p3-ui.md`**。
 
 > **暂未接入任何真实 Agent。** 试用只验证审批与配额这套安全阀本身，
 > Mock 适配器仅记录"被启动次数"与执行记录，不调用真实产品、不发外部网络请求。

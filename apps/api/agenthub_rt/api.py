@@ -100,6 +100,11 @@ def create_app(
     app.state.db = db
     app.state.worker = Worker(db, MockAdapter())
 
+    # Read-model endpoints + the zero-build console page (see ui.py).
+    from agenthub_rt.ui import register_ui
+
+    register_ui(app, db)
+
     @app.get("/api/agents")
     def list_agents() -> list[dict[str, Any]]:
         return [{"id": "mock", "name": "Mock Agent", "version": "0.1.0"}]
