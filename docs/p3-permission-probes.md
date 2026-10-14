@@ -97,12 +97,14 @@
   但 **JSONL 里没有任何工具/文件类 item**，驱动通道两行非 JSON 输出与本次写入无关
   （`Reading additional input from stdin...` 与模型列表刷新超时），助手只说 `REFUSED`。
   逐项记录见 **`docs/p3-probe-readonly-write-2026-10-14.md`**。
-* **由此得到的限制（重要）**：在 `codex exec --json` 这一调用模式下，
-  **"尝试信号"可能根本不可观测**——本次提示词明确要求写文件，却没有产生任何 file/command item。
-  加上 schema 证据（批准通道只服务 app-server；read-only 与 workspace-write 的权限档案渲染相同），
-  本项在本调用模式下**很可能无法判定**，而不是"待跑一次就会通过"。
-  可选出路：①就此记录"无法验证"；②改提示词**明确要求用命令写**（需另行批准命令执行，
-  且仍可能因 exec 不输出工具 item 而再次无法判断）；③另立任务用 app-server 路线。
+* **准确的表述（不得外推为"整个模式不可观测"）**：
+  **本次探针未取得实际尝试及拒绝证据，因此无法判断**。
+  官方文档列出了 `exec --json` 的**工具事件**，而本机这次运行**没有**出现；
+  这既可能是提示词/模型行为（根本没尝试），也可能是**本机版本与文档存在差异**。
+  该差异**需要核实**（对照官方文档 + 本机 schema/help 捕获），**不能**据此推断
+  "`codex exec` 模式下工具事件一律不可观测"。
+  可选出路：①核实版本差异后重跑或改进提示词（需另批真实调用与命令执行）；
+  ②改用命令式提示词制造 `command_execution` 证据；③另立任务用 app-server 路线。
 * **清理**：只删 `var/probes/readonly-write-*`；**保留**长期 `CODEX_HOME` 与 `~/.codex`。
 * **局限**：一次运行、一个路径、一个提示词；不能证明所有写入路径都被拒绝。
   反向线索：`codex doctor` 曾报 `sandbox backend disabled`，离线**无法**区分 read-only 与 workspace-write。

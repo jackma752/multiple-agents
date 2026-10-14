@@ -34,7 +34,7 @@
 取消（Codex 侧返回 `unsupported`）、工具操作的**启动前拦截**、
 **原生子 Agent 阻断**（`--disable multi_agent` 目前只是传参）、
 **只读沙箱是否真拒绝写入**（2026-10-14 已做 **1 次真实探测：结果 = 无法判断**——
-文件未创建，但 JSONL 里没有任何工具/文件类 item、驱动通道无相关拒绝证据，
+文件未创建，但 JSONL 里没有任何工具/文件类 item、驱动通道无相关拒绝证据（即**探针未取得实际尝试及拒绝证据**；官方文档列出 exec JSON 工具事件，本机版本差异需核实），
 助手自述 `REFUSED` 不算证据；见 `docs/p3-probe-readonly-write-2026-10-14.md`）、app-server 协议。
 四项验证方案、判定条件与清理步骤见 `docs/p3-permission-probes.md`。
 
