@@ -94,6 +94,24 @@ def run_one(args: argparse.Namespace) -> int:
         print(f"ERROR: CODEX_HOME {home} does not exist; run --init-home first")
         return 2
 
+    if args.proxy:
+        # Codex reads the proxy from the environment (verified with codex doctor:
+        # 'proxy env vars present'), NOT from the WinINET system setting and NOT
+        # from '-c network.proxy_url' (which doctor reports as ignored).
+        for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+            os.environ[k] = args.proxy
+        os.environ.setdefault("NO_PROXY", "localhost,127.0.0.1")
+        os.environ.setdefault("no_proxy", "localhost,127.0.0.1")
+
+    if args.ca_bundle:
+        ca = os.path.abspath(args.ca_bundle)
+        if not os.path.isfile(ca):
+            print(f"ERROR: --ca-bundle {ca} is not a readable file")
+            return 2
+        # Without this, an intercepting proxy yields
+        # 'invalid peer certificate: UnknownIssuer'.
+        os.environ["CODEX_CA_CERTIFICATE"] = ca
+
     workdir = os.path.abspath(args.workdir) if args.workdir else os.path.join(
         os.environ.get("TEMP", REPO_ROOT), "codex-onecall-" + time.strftime("%Y%m%d-%H%M%S")
     )
@@ -173,6 +191,8 @@ def run_one(args: argparse.Namespace) -> int:
         "argv": argv,
         "codex_home": home,
         "workdir": workdir,
+        "proxy": args.proxy or "(none)",
+        "ca_bundle": os.path.abspath(args.ca_bundle) if args.ca_bundle else "(none)",
         "json_events": len(events),
         "event_types": types,
         "usage_events": len(usage),
@@ -210,6 +230,19 @@ def main() -> int:
     p.add_argument("--model", default=None)
     p.add_argument("--timeout", type=int, default=300)
     p.add_argument("--out-dir", default=os.path.join(REPO_ROOT, "var"))
+    p.add_argument(
+        "--proxy",
+        default=None,
+        help="HTTP proxy for THIS process only, e.g. http://127.0.0.1:8090 "
+             "(sets HTTPS_PROXY/HTTP_PROXY; Codex ignores the WinINET setting "
+             "and '-c network.proxy_url')",
+    )
+    p.add_argument(
+        "--ca-bundle",
+        default=None,
+        help="readable PEM bundle set as CODEX_CA_CERTIFICATE; required when the "
+             "proxy intercepts TLS (otherwise: UnknownIssuer)",
+    )
     p.add_argument("--disable-subagents", dest="disable_subagents", action="store_true",
                    default=True, help="disable the multi_agent feature (default)")
     p.add_argument("--allow-subagents", dest="disable_subagents", action="store_false",
