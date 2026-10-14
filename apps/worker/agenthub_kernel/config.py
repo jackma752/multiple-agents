@@ -67,6 +67,7 @@ def ensure_data_dir() -> str:
 
 ENV_ADAPTER = "AGENT_HUB_ADAPTER"                 # "mock" (default) or "codex"
 ENV_CODEX_PATH = "AGENT_HUB_CODEX_PATH"
+ENV_CODEX_HOME = "AGENT_HUB_CODEX_HOME"
 ENV_CODEX_SHA256 = "AGENT_HUB_CODEX_SHA256"
 ENV_CODEX_SIZE = "AGENT_HUB_CODEX_SIZE"
 ENV_CODEX_VERSION = "AGENT_HUB_CODEX_VERSION"
@@ -94,9 +95,45 @@ def adapter_kind() -> str:
 
 
 def codex_home() -> str:
-    path = os.path.join(DATA_DIR, "codex-home")
-    os.makedirs(path, exist_ok=True)
+    """Where Codex keeps its own config and, if copied, its login credential.
+
+    Pure path resolution: this function NEVER touches the filesystem, so merely
+    reading the settings cannot fail - or create a directory - as a side effect.
+    Use :func:`ensure_codex_home` at the point of an actual launch.
+
+    Defaults to a location OUTSIDE the repository (``%LOCALAPPDATA%\\AgentHub``),
+    because it can contain a login credential. Nothing under the repo should hold
+    one, even in a gitignored directory: a stray ``git add -f``, an archive or a
+    backup would leak it. Override with ``AGENT_HUB_CODEX_HOME``.
+    """
+    override = os.environ.get(ENV_CODEX_HOME)
+    if override:
+        return override
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "AgentHub", "codex-home")
+
+
+def ensure_codex_home() -> str:
+    """Create CODEX_HOME and return it; raises RuntimeError if it is unusable.
+
+    Called only where a real Codex process is about to be launched, because
+    Codex needs a writable home (it failed with ``os error 5`` when it could not
+    write ``$CODEX_HOME/tmp``).
+    """
+    path = codex_home()
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"CODEX_HOME {path!r} is not usable ({exc}). Codex needs a writable "
+            "home directory; point AGENT_HUB_CODEX_HOME at one."
+        ) from exc
     return path
+
+
+def credential_location() -> str:
+    """Where a copied login credential would live (reported, never read)."""
+    return os.path.join(codex_home(), "auth.json")
 
 
 def codex_workdir_root() -> str:

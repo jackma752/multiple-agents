@@ -259,7 +259,8 @@ def test_timeout_keeps_record_running_so_the_kernel_cannot_release(tmp_path):
     a = make_adapter(tmp_path, script=script)
     result = a.start("inv-1", snapshot(), gate_token="tok")
     assert result.ok is False
-    assert "unknown" in result.detail
+    assert result.terminal is False, "a timeout must not be reported as terminal"
+    assert "timed out" in result.detail
     rec = a.store.get("inv-1")
     assert rec["status"] == RUNNING, "timeout must not look terminal to the kernel"
     assert "not confirmed stopped" in rec["detail"]
@@ -296,6 +297,140 @@ def test_capabilities_mark_unverified_items():
     assert caps["intercept_tool"] is False
     assert caps["limit_dir"] == "unknown"
     assert caps["control_subagent"] == "unknown"
+
+
+# --------------------------------------------------------------------------- #
+# agent identity matching (regression)
+# --------------------------------------------------------------------------- #
+
+
+def test_start_refuses_when_agent_id_does_not_match(tmp_path):
+    """A call registered for another agent must not launch Codex.
+
+    Without this, an invocation created as e.g. agent_id='mock' would quietly
+    boot a real Codex process - executing something the user never approved.
+    """
+    a = make_adapter(tmp_path)
+    wrong = InvocationSnapshot(
+        agent_id="mock", task_input="hi", parent_task_id=None, depth=0
+    )
+    result = a.start("inv-1", wrong, gate_token="tok")
+
+    assert result.ok is False
+    assert result.terminal is True
+    assert "agent_id" in result.detail and "not served" in result.detail
+    assert a.start_count == 0, "a mismatched agent id still reached the process"
+    assert a.runner.calls == []
+    assert a.store.get("inv-1") is None
+
+
+@pytest.mark.parametrize("agent_id", ["", "  ", "Codex", "codexx", "claude"])
+def test_start_refuses_various_non_matching_agent_ids(tmp_path, agent_id):
+    a = make_adapter(tmp_path)
+    snap = InvocationSnapshot(agent_id=agent_id, task_input="x", parent_task_id=None, depth=0)
+    result = a.start("inv-1", snap, gate_token="tok")
+    assert result.ok is False
+    assert a.start_count == 0
+
+
+def test_start_accepts_the_declared_agent_id(tmp_path):
+    a = make_adapter(tmp_path)
+    ok_snap = InvocationSnapshot(agent_id="codex", task_input="x", parent_task_id=None, depth=0)
+    assert a.start("inv-1", ok_snap, gate_token="tok").ok is True
+    assert a.start_count == 1
+
+
+def test_agent_ids_declared_on_the_adapter():
+    assert CodexAdapter.AGENT_IDS == frozenset({"codex"})
+
+
+# --------------------------------------------------------------------------- #
+# abnormal terminal states (regression)
+# --------------------------------------------------------------------------- #
+
+
+def _run(exit_code, text, timed_out=False):
+    def script(argv, env):
+        return CodexRun(exit_code, timed_out, 1.0, text, argv)
+
+    return script
+
+
+def test_turn_started_without_any_outcome_is_unconfirmed(tmp_path):
+    """THE abnormal end: the work began and we never learned its result.
+
+    Treating this as a terminal failure would free a slot for work that may still
+    be running; it must stay unconfirmed instead.
+    """
+    text = '{"type":"thread.started","thread_id":"t1"}\n{"type":"turn.started"}\n'
+    a = make_adapter(tmp_path, script=_run(0, text))
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    assert result.ok is False
+    assert result.terminal is False, "an unreported turn outcome must not be terminal"
+    assert "abnormal end" in result.detail
+    assert a.store.get("inv-1")["status"] == RUNNING
+
+
+def test_turn_completed_but_nonzero_exit_is_contradictory(tmp_path):
+    """Conflicting evidence: the turn says done, the process says failure."""
+    text = "\n".join(VERIFIED_LINES) + "\n"
+    a = make_adapter(tmp_path, script=_run(3, text))
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    assert result.ok is False
+    assert result.terminal is False, "contradictory evidence must not be settled"
+    assert "contradictory" in result.detail
+    assert a.store.get("inv-1")["status"] == RUNNING
+
+
+def test_turn_failed_is_a_definitive_failure(tmp_path):
+    text = "\n".join([
+        '{"type":"thread.started","thread_id":"t1"}',
+        '{"type":"turn.started"}',
+        '{"type":"turn.failed","error":{"message":"boom"}}',
+    ]) + "\n"
+    a = make_adapter(tmp_path, script=_run(1, text))
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    assert result.ok is False
+    assert result.terminal is True
+    assert "boom" in result.detail
+    assert a.store.get("inv-1")["status"] == FAILED
+
+
+def test_no_events_at_all_is_failed_and_flagged_abnormal(tmp_path):
+    a = make_adapter(tmp_path, script=_run(0, ""))
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    assert result.ok is False
+    assert result.terminal is True
+    assert "abnormal end" in result.detail and "no events" in result.detail
+    assert a.store.get("inv-1")["status"] == FAILED
+
+
+def test_success_path_is_terminal(tmp_path):
+    a = make_adapter(tmp_path)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+    assert result.ok is True and result.terminal is True
+    assert a.store.get("inv-1")["status"] == FINISHED
+
+
+def test_classify_outcome_matrix():
+    """The decision table, asserted directly."""
+    from agenthub_adapters.codex import classify_outcome
+
+    ok = parse_events(VERIFIED_CAPTURE)
+    started_only = parse_events('{"type":"turn.started"}\n')
+    failed = parse_events('{"type":"turn.started"}\n{"type":"turn.failed"}\n')
+    empty = parse_events("")
+
+    assert classify_outcome(CodexRun(0, False, 1, "", []), ok)[:2] == (FINISHED, True)
+    assert classify_outcome(CodexRun(9, False, 1, "", []), ok)[:2] == (RUNNING, False)
+    assert classify_outcome(CodexRun(None, True, 1, "", []), ok)[:2] == (RUNNING, False)
+    assert classify_outcome(CodexRun(0, False, 1, "", []), started_only)[:2] == (RUNNING, False)
+    assert classify_outcome(CodexRun(1, False, 1, "", []), failed)[:2] == (FAILED, True)
+    assert classify_outcome(CodexRun(0, False, 1, "", []), empty)[:2] == (FAILED, True)
 
 
 # --------------------------------------------------------------------------- #

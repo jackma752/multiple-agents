@@ -100,11 +100,11 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 用桩进程驱动**完整栈**，不调用 Codex、不联网：
 
 ```powershell
-.\.venv\Scripts\python.exe var\offline_integration.py
+.\.venv\Scripts\python.exe tools\demo\offline_integration.py
 ```
 
-桩程序 `var/stub-codex.py` 输出与**真实探测捕获完全相同**的 JSONL；
-通过 `AGENT_HUB_CODEX_PREFIX`（仅测试用）以 `python stub-codex.py` 形式启动，
+桩程序 `tools/demo/stub_codex.py` 输出与**真实探测捕获完全相同**的 JSONL；
+通过 `AGENT_HUB_CODEX_PREFIX`（仅测试用）以 `python stub_codex.py` 形式启动，
 从而**真实走通** argv/env 构建、子进程启动、文件捕获、JSONL 解析与存储。
 
 **实测结果（节选）**：
@@ -133,12 +133,58 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 
 | 文件 | 数量 | 内容 |
 |---|---|---|
-| `tests/adapters/test_codex_adapter.py` | 20 | 事件解析（真实捕获作 fixture）、argv/env 安全断言、门禁、身份固定、超时、**桩子进程**真实走通捕获与超时 |
-| `tests/policy/test_codex_gate.py` | 12 | Codex 适配器**插进未改动的内核**：未批准/拒绝/过期 → 0 进程；批准 → 恰好 1 次；总量与并发上限拦得住；停机拦得住；超时→unknown 保留名额；成功不泄漏名额 |
+| `tests/adapters/test_codex_adapter.py` | 34 | 事件解析（真实捕获作 fixture）、argv/env 安全断言、门禁、**Agent 身份匹配**、身份固定、超时、启动期异常分类、**桩子进程**真实走通捕获与超时 |
+| `tests/policy/test_codex_gate.py` | 17 | Codex 适配器**插进未改动的内核**：Agent 身份不匹配 → 0 进程；未批准/拒绝/过期 → 0 进程；批准 → 恰好 1 次；总量与并发上限拦得住；停机拦得住；超时→unknown 保留名额；成功不泄漏名额；启动期四类失败的名额归属 |
+| `tests/test_hygiene.py` | 10 | 仓库无真实密钥、Token 只从环境读、**CODEX_HOME 与凭证路径在仓库之外**、**日志不打印 Token** |
 
-**全套 190 passed**（原 158 + 32）。**全部离线，未启动真实 Codex。**
+**全套 216 passed**。**全部离线，未启动真实 Codex。**
 
-## 7. 仍未验证（不得当作已实现）
+## 7. 启动期异常：哪些能释放名额，哪些不能
+
+`start()` 被调用时，内核**已经**消费了审批并预留了名额（Phase 1 已提交）。
+所以 `start()` 如何处理失败，直接决定这个名额是否会被释放——**抛异常是最坏的选择**：
+它会让调用永远停在 `starting` 并占着名额。
+
+| 情形 | 产物是否存在 | ok | terminal | 内核动作 | 名额 |
+|---|---|---|---|---|---|
+| 无 `gate_token`（未经批准） | 否 | False | True | FAILED | 释放 |
+| `agent_id` 与本适配器不符 | 否 | False | True | FAILED | 释放 |
+| `codex_path` 未配置（**不再抛异常**） | 否 | False | True | FAILED | 释放 |
+| 固定身份（sha256/size）不符 | 否 | False | True | FAILED | 释放 |
+| `CODEX_HOME` 无法创建 | 否 | False | True | FAILED | 释放 |
+| `Popen` 被系统拒绝（`CodexLaunchFailed`） | 否 | False | True | FAILED | 释放 |
+| **其它异常（进程可能已存在）** | **不确定** | False | **False** | **UNKNOWN** | **保留** |
+| 适配器抛出未捕获异常（Worker 兜底） | **不确定** | False | **False** | **UNKNOWN**（写入 `invocation.error`） | **保留** |
+
+判定依据只有一条：**能不能证明进程不存在**。
+`subprocess.Popen` 抛出的 `OSError` 证明"操作系统没有创建进程"，因此是确定的；
+其余任何异常（例如启动后读管道失败）都无法区分"没跑"和"跑着"，**一律按 unknown 处理**。
+
+测试：`test_missing_executable_is_a_terminal_refusal_not_an_exception`、
+`test_unusable_codex_home_is_a_terminal_refusal`、
+`test_refused_process_creation_is_terminal_and_frees_the_slot`、
+`test_ambiguous_launch_error_keeps_the_slot`、
+`test_adapter_crash_keeps_the_slot_and_records_why`。
+
+### Agent 身份匹配
+
+`CodexAdapter.AGENT_IDS = {"codex"}`：快照里记录的 `agent_id` 必须是 `codex`，
+否则**拒绝启动**（确定性失败，释放名额）。否则一个登记为其它 Agent 的调用
+可能悄悄跑起真实的 Codex 进程。测试：`test_start_refuses_when_agent_id_does_not_match`、
+`test_start_refuses_various_non_matching_agent_ids`、`test_start_accepts_the_declared_agent_id`。
+
+### 凭证与日志卫生
+
+* `CODEX_HOME` 默认**在仓库之外**（`%LOCALAPPDATA%\AgentHub\codex-home`，
+  可用 `AGENT_HUB_CODEX_HOME` 覆盖）。它可能存放 `auth.json` 副本，
+  放在仓库内即使被 gitignore，也只需一次 `git add -f`/打包/备份就会泄露。
+* `config.codex_home()` **只做路径解析、不创建目录**（纯函数）；
+  只有真正要启动进程时才由适配器创建（`config.ensure_codex_home()` 供工具使用）。
+  否则"读一下设置"都会产生仓库外的写入副作用。
+* 启动横幅**不打印 Token**，只说明它的来源（`value not shown`）。
+  回归测试在源码层面断言，防止以后又打出来。
+
+## 8. 仍未验证（不得当作已实现）
 
 - **取消**：`cancel` 返回 `unsupported`；Codex 的取消语义完全未验证。
 - **工具的启动前拦截**：未验证。
@@ -146,10 +192,30 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 - **只读沙箱是否真拒绝写入**：弱证据（提示词从未要求写文件）。
 - **台账/用量字段的稳定性**：仅一次真实调用观测到 usage 字段。
 - **app-server 路线**：未评估。
-- **真实调用次数**：截至本文件，**成功 1 次**（极简探测）。适配器本身**尚未**用真实 Codex 跑过。
+- **真实调用次数**：截至本文件，**成功 1 次**（极简探测，走的是 `tools/codex_one_call.py`，
+  不是本适配器）。**本适配器尚未用真实 Codex 跑过**——这正是下一节要申请的那一次。
 
-## 8. 下一步（需逐次批准）
+## 9. 下一步：一次经审批的真实调用
 
-用**控制台**提交一次真实 Codex 验证：`--adapter codex` 启动，走
-"创建调用 → 未批准不启动 → 批准 → 启动 → 查看 thread_id/usage/最终回复"。
-**未获批准不会发起任何真实调用。**
+验证脚本 `tools/demo/codex_verify.py` 用**独立的空数据库**跑完整链路，
+并且**只创建一个 `agent_id="codex"` 的调用**（脚本会断言"该库中只有它一个调用/任务树"）：
+
+```powershell
+# 离线自检（桩进程，不联网、不花费额度）——已执行通过
+.\.venv\Scripts\python.exe tools/demo/codex_verify.py --mode stub
+
+# 真实调用（需操作者逐次批准；没有这个开关会直接拒绝执行）
+.\.venv\Scripts\python.exe tools/demo/codex_verify.py --mode real --i-understand-this-spends-quota
+```
+
+脚本的判定顺序即为安全阀：**未批准 → 进程启动数必须为 0**；
+批准后 → **恰好为 1**；然后打印 DIFF（任务树 / 调用数 / 启动数 / 适配器记录 /
+thread_id / usage / 未释放预留）。
+
+真实模式的前置条件：
+
+* `CODEX_HOME` 必须是**可写**目录且**在仓库之外**（默认 `%LOCALAPPDATA%\AgentHub\codex-home`）；
+* 需要放行 `chatgpt.com:443` 与 `api.openai.com:443`（或走已验证的本地回环代理，
+  见 `docs/codex-proxy-setup.md`）；
+* **未获批准不会发起任何真实调用。**
+

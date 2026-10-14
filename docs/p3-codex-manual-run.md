@@ -5,6 +5,29 @@
 
 ---
 
+## 0. 更新（2026-10-14，晚于下文）
+
+本文档 §1 的诊断仍然有效（直连确实失败），但后半段的**操作方式已被取代**，
+原因有二：
+
+1. **直连失败已定位并绕过**：失败来自 Codex 没有使用代理；把代理与 CA
+   注入子进程后，一次真实调用**成功**（退出码 0，含 `thread_id` 与 `usage`）。
+   经过与命令见 `docs/codex-proxy-setup.md`；能力结论见 `docs/agent-codex-capabilities.md`。
+2. **凭证位置已移到仓库之外**：下文 §2/§3 里的 `--codex-home var\codex-home`
+   **不要再用**。`CODEX_HOME` 可能存放 `auth.json` 副本，必须位于仓库之外：
+   默认 `%LOCALAPPDATA%\AgentHub\codex-home`，或设置 `AGENT_HUB_CODEX_HOME`。
+   代码层回归测试见 `tests/test_hygiene.py`。
+
+**待清理（需操作者确认）**：早期探测遗留的 `E:\plug\agent-hub\var\codex-home\`
+仍在仓库内（已被 Git 忽略，其中**已无** `auth.json`），但它包含 Codex 的
+`sessions\` 会话记录。建议删除；删除属于破坏性操作，**未擅自执行**。
+
+真实调用的当前入口是 `tools/demo/codex_verify.py`
+（`--mode stub` 离线自检 / `--mode real --i-understand-this-spends-quota` 真实调用），
+说明见 `docs/p3-codex-adapter.md` §9。
+
+---
+
 ## 1. 为什么必须手工执行：实测网络诊断
 
 | 目标 | DNS | TCP 443（本机观测） | 判定 |

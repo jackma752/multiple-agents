@@ -71,6 +71,119 @@ def test_user_token_is_read_from_environment_not_hardcoded():
     assert "os.environ" in src
 
 
+# --------------------------------------------------------------------------- #
+# credentials must not live under the repo, and tokens must not be logged
+# --------------------------------------------------------------------------- #
+
+
+def _load_config():
+    import importlib
+
+    import agenthub_kernel.config as cfg
+
+    return importlib.reload(cfg)
+
+
+def test_codex_home_defaults_outside_the_repository(monkeypatch):
+    """CODEX_HOME can hold a login credential, so it must not sit in the repo.
+
+    Even inside a gitignored directory it would be one ``git add -f``, archive or
+    backup away from leaking.
+    """
+    monkeypatch.delenv("AGENT_HUB_CODEX_HOME", raising=False)
+    cfg = _load_config()
+    home = os.path.abspath(cfg.codex_home())
+    repo = os.path.abspath(REPO_ROOT)
+    assert not home.lower().startswith(repo.lower() + os.sep), (
+        f"CODEX_HOME is inside the repository: {home}"
+    )
+
+
+def test_credential_location_is_outside_the_repository(monkeypatch):
+    monkeypatch.delenv("AGENT_HUB_CODEX_HOME", raising=False)
+    cfg = _load_config()
+    cred = os.path.abspath(cfg.credential_location())
+    repo = os.path.abspath(REPO_ROOT)
+    assert os.path.basename(cred) == "auth.json"
+    assert not cred.lower().startswith(repo.lower() + os.sep), (
+        f"credential path is inside the repository: {cred}"
+    )
+
+
+def test_codex_home_honours_the_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_HUB_CODEX_HOME", str(tmp_path / "custom-home"))
+    cfg = _load_config()
+    assert os.path.abspath(cfg.codex_home()) == os.path.abspath(str(tmp_path / "custom-home"))
+
+
+def test_resolving_codex_home_has_no_side_effects(monkeypatch, tmp_path):
+    """Reading settings must not create directories.
+
+    Resolving used to call os.makedirs, so merely building the settings (or
+    describing the adapter) could fail - or write - outside the workspace. Path
+    resolution is now pure; only an actual launch creates the directory.
+    """
+    target = tmp_path / "resolved-but-not-created"
+    monkeypatch.setenv("AGENT_HUB_CODEX_HOME", str(target))
+    cfg = _load_config()
+    assert os.path.abspath(cfg.codex_home()) == os.path.abspath(str(target))
+    assert not target.exists(), "resolving CODEX_HOME must not create it"
+    assert os.path.abspath(cfg.credential_location()) == os.path.abspath(
+        str(target / "auth.json")
+    )
+    assert not target.exists()
+
+
+def test_ensure_codex_home_creates_the_directory(monkeypatch, tmp_path):
+    target = tmp_path / "to-be-created"
+    monkeypatch.setenv("AGENT_HUB_CODEX_HOME", str(target))
+    cfg = _load_config()
+    assert os.path.abspath(cfg.ensure_codex_home()) == os.path.abspath(str(target))
+    assert target.is_dir()
+
+
+def test_serve_banner_never_prints_the_token():
+    """The startup banner lands in scrollback, logs and screenshots.
+
+    Guard at source level: serve.py must not interpolate a token value into any
+    print/echo. It may only report WHERE the token came from.
+    """
+    import re
+
+    path = os.path.join(REPO_ROOT, "tools", "demo", "serve.py")
+    with open(path, "r", encoding="utf-8") as fh:
+        src = fh.read()
+    offenders = [
+        line.strip()
+        for line in src.splitlines()
+        if re.search(r"print\(", line) and re.search(r"token", line, re.IGNORECASE)
+        and "not shown" not in line
+        and "value not shown" not in line
+    ]
+    assert not offenders, f"serve.py prints a token value: {offenders}"
+    assert "value not shown" in src or "not shown" in src
+
+
+def test_no_tool_prints_the_user_token():
+    """Same guard across every script under tools/."""
+    import re
+
+    bad = []
+    for dirpath, dirnames, filenames in os.walk(os.path.join(REPO_ROOT, "tools")):
+        dirnames[:] = [d for d in dirnames if d not in ("__pycache__",)]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            p = os.path.join(dirpath, name)
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                for i, line in enumerate(fh, 1):
+                    if re.search(r"print\(", line) and re.search(r"token", line, re.IGNORECASE):
+                        if "not shown" in line or "token=" in line:
+                            continue
+                        bad.append(f"{os.path.relpath(p, REPO_ROOT)}:{i}: {line.strip()}")
+    assert not bad, f"scripts print a token: {bad}"
+
+
 def test_gitignore_excludes_runtime_artifacts():
     """The SQLite file, wheel cache and venv must be ignored, not committed."""
     gitignore = os.path.join(REPO_ROOT, ".gitignore")

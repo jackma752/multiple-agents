@@ -430,11 +430,30 @@ class Worker:
         # ---- Phase 2: only now start the adapter, outside that transaction ----
         # The gate token proves an approval was consumed and a slot reserved; an
         # adapter that launches a real process requires it.
-        start = self.adapter.start(
-            invocation_id,
-            _snapshot_from_dict(snapshot_data),
-            gate_token=gate_token,
-        )
+        try:
+            start = self.adapter.start(
+                invocation_id,
+                _snapshot_from_dict(snapshot_data),
+                gate_token=gate_token,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Last-resort guard. By now the approval is consumed and the slot
+            # reserved, so letting the exception escape would leave a call stuck
+            # in `starting` holding that slot forever, with no explanation. An
+            # exception tells us nothing about whether remote work began, so the
+            # honest outcome is `unknown`: keep the slot, record why, and let a
+            # human resolve it. (Adapters are expected to handle their own
+            # pre-launch errors; this is the backstop.)
+            reason = f"adapter start raised {type(exc).__name__}: {exc}"
+            with self.db.session() as session:
+                PolicyService(session).mark_unknown(invocation_id, reason=reason[:400])
+            return {
+                "invocation_id": invocation_id,
+                "ok": False,
+                "terminal": False,
+                "adapter_invocation_id": "",
+                "error": reason,
+            }
 
         # ---- Phase 3: record the outcome ----
         with self.db.session() as session:

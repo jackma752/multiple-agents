@@ -66,7 +66,23 @@ SUBAGENT_FEATURE = "multi_agent"
 
 
 class CodexNotConfigured(RuntimeError):
-    """Raised when the adapter is asked to run without a pinned executable."""
+    """Misconfiguration of the Codex adapter.
+
+    ``start()`` used to RAISE this when no executable was pinned. It now returns
+    a terminal refusal instead: an exception thrown out of a start happens after
+    the kernel has already consumed the approval and reserved the quota slot, so
+    raising leaks the slot. Kept for import compatibility.
+    """
+
+
+class CodexLaunchFailed(RuntimeError):
+    """``subprocess.Popen`` itself failed: provably nothing was launched.
+
+    This is the one start-time error whose consequences are knowable. The
+    operating system refused to create the process, so no Codex work exists and
+    the quota slot may safely be freed. Every OTHER exception is ambiguous - the
+    process may or may not be running - and must not be treated as terminal.
+    """
 
 
 @dataclass
@@ -103,6 +119,17 @@ class ParsedRun:
     @property
     def turn_completed(self) -> bool:
         return any(e.get("type") == EVENT_TURN_COMPLETED for e in self.events)
+
+    @property
+    def turn_started(self) -> bool:
+        return any(e.get("type") == EVENT_TURN_STARTED for e in self.events)
+
+    @property
+    def has_turn_events(self) -> bool:
+        return any(
+            e.get("type") in (EVENT_TURN_STARTED, EVENT_TURN_COMPLETED, EVENT_TURN_FAILED)
+            for e in self.events
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -174,6 +201,68 @@ def file_identity(path: str) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def classify_outcome(run: CodexRun, parsed: ParsedRun) -> tuple[str, bool, str]:
+    """Decide the outcome of a finished (or killed) Codex run.
+
+    Returns ``(verdict, terminal, detail)`` where ``verdict`` is one of
+    ``FINISHED`` / ``FAILED`` / ``RUNNING`` (the last meaning "unconfirmed").
+
+    ``terminal=False`` is a safety statement, not a detail: it tells the kernel
+    NOT to free the quota slot, because we cannot show the work is over. Being
+    conservative here is deliberate - freeing early could hand a second call a
+    slot the first one still occupies.
+
+    The cases, in order:
+
+    1. the process had to be killed (timeout) -> unconfirmed;
+    2. an explicit ``turn.failed`` -> definitive failure;
+    3. a turn STARTED but reported neither completion nor failure -> unconfirmed
+       (an *abnormal* end: the work began and we never learned its result);
+    4. ``turn.completed`` AND a non-zero exit code -> contradictory evidence ->
+       unconfirmed (the two reports disagree, so neither can be trusted alone);
+    5. ``turn.completed`` AND exit code 0 -> success;
+    6. no turn events at all -> failure (nothing ran), reported as abnormal.
+    """
+    if run.timed_out:
+        return (
+            RUNNING,
+            False,
+            "timed out locally; remote turn not confirmed stopped (cancel unsupported)",
+        )
+
+    if parsed.turn_failed:
+        reason = "; ".join(parsed.errors) or "turn.failed"
+        return FAILED, True, reason
+
+    if parsed.turn_started and not parsed.turn_completed:
+        return (
+            RUNNING,
+            False,
+            "abnormal end: turn started but never reported completion or failure; "
+            f"exit={run.exit_code}",
+        )
+
+    if parsed.turn_completed and run.exit_code != 0:
+        return (
+            RUNNING,
+            False,
+            "contradictory evidence: turn.completed reported but the process exited "
+            f"with {run.exit_code}",
+        )
+
+    if parsed.turn_completed and run.exit_code == 0:
+        return FINISHED, True, parsed.final_message
+
+    if not parsed.events:
+        return (
+            FAILED,
+            True,
+            f"abnormal end: no events at all; exit={run.exit_code}",
+        )
+
+    return FAILED, True, f"no completed turn; exit={run.exit_code}"
+
+
 def parse_events(text: str) -> ParsedRun:
     """Parse the JSONL stream. Non-JSON lines are kept, not silently dropped."""
     parsed = ParsedRun()
@@ -224,8 +313,8 @@ class SubprocessCodexRunner:
         start = time.time()
         timed_out = False
         exit_code: Optional[int] = None
-        try:
-            with open(out_path, "w", encoding="utf-8", errors="replace") as fh:
+        with open(out_path, "w", encoding="utf-8", errors="replace") as fh:
+            try:
                 proc = subprocess.Popen(
                     argv,
                     stdout=fh,
@@ -234,21 +323,22 @@ class SubprocessCodexRunner:
                     env=env,
                     cwd=self.scratch_dir,
                 )
+            except OSError as exc:
+                # The OS refused to create the process: NOTHING is running, so
+                # this error is definitively terminal. (Seen in practice as
+                # "Access is denied" under a restricted sandbox.)
+                raise CodexLaunchFailed(f"could not launch {argv[0]!r}: {exc}") from exc
+            try:
+                exit_code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.kill()
                 try:
-                    exit_code = proc.wait(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=10)
-                    except Exception:  # noqa: BLE001
-                        pass
-        except Exception:  # noqa: BLE001
-            # Never swallow: a launch failure must surface as a failed run.
-            raise
-        finally:
-            elapsed = time.time() - start
+                    proc.wait(timeout=10)
+                except Exception:  # noqa: BLE001
+                    pass
 
+        elapsed = time.time() - start
         try:
             with open(out_path, "r", encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
@@ -325,6 +415,11 @@ class CodexAdapter(AdapterContract):
     """Minimal real adapter. Gated: cannot start without a kernel gate token."""
 
     name = "codex"
+
+    #: Agent ids this adapter is allowed to serve. An invocation created for a
+    #: different agent must NEVER be run by it - otherwise a call registered as
+    #: e.g. "mock" could quietly launch a real Codex process.
+    AGENT_IDS = frozenset({"codex"})
 
     def __init__(
         self,
@@ -429,17 +524,52 @@ class CodexAdapter(AdapterContract):
             return AdapterStartResult(
                 adapter_invocation_id="",
                 ok=False,
+                terminal=True,
                 detail="refused: no kernel gate token (invocation not approved)",
             )
+        # Agent identity must match. The snapshot records which agent the user
+        # approved; running a different one would execute something that was
+        # never consented to.
+        agent_id = (snapshot.agent_id or "").strip()
+        if agent_id not in self.AGENT_IDS:
+            return AdapterStartResult(
+                adapter_invocation_id="",
+                ok=False,
+                terminal=True,
+                detail=(
+                    f"refused: agent_id {agent_id!r} is not served by this adapter "
+                    f"(expected one of {sorted(self.AGENT_IDS)})"
+                ),
+            )
         if not self.codex_path:
-            raise CodexNotConfigured("codex_path is not configured")
+            # Terminal refusal, NOT an exception: the kernel has already consumed
+            # the approval and reserved a slot by the time start() is called, so
+            # raising here would leak that slot. Nothing was launched, so the
+            # outcome is definitive and the slot may be freed.
+            return AdapterStartResult(
+                "", ok=False, terminal=True, detail="refused: codex_path is not configured"
+            )
         ok, why = self.identity_matches()
         if not ok:
             return AdapterStartResult("", ok=False, detail=f"refused: {why}")
 
+        # Pre-launch preparation. Every failure in this block happens BEFORE a
+        # process exists, so it is definitively terminal. CODEX_HOME is created
+        # here rather than in config: resolving settings must have no side
+        # effects, and a home we cannot create is a real launch blocker.
+        try:
+            if self.codex_home:
+                os.makedirs(self.codex_home, exist_ok=True)
+            workdir = os.path.join(self.workdir_root, invocation_id)
+            os.makedirs(workdir, exist_ok=True)
+        except OSError as exc:
+            return AdapterStartResult(
+                "", ok=False, terminal=True, detail=f"refused: launch preparation failed ({exc})"
+            )
+
+        # Past this line a launch is being attempted, so start_count reflects a
+        # real launch attempt rather than a preparation failure.
         self._start_count += 1
-        workdir = os.path.join(self.workdir_root, invocation_id)
-        os.makedirs(workdir, exist_ok=True)
         argv = build_argv(
             self.codex_path,
             snapshot.task_input,
@@ -459,7 +589,22 @@ class CodexAdapter(AdapterContract):
         # still exists, so recovery sees "may be running" instead of "never ran".
         self.store.record_start(invocation_id, adapter_invocation_id="")
 
-        run = self.runner.run(argv, env, self.timeout_seconds)
+        try:
+            run = self.runner.run(argv, env, self.timeout_seconds)
+        except CodexLaunchFailed as exc:
+            # The OS refused to create the process: nothing is running, so the
+            # outcome is definitive and the slot may be freed.
+            self.store.set_status(invocation_id, FAILED, str(exc)[:400])
+            return AdapterStartResult("", ok=False, terminal=True, detail=str(exc)[:200])
+        except Exception as exc:  # noqa: BLE001
+            # Anything else is AMBIGUOUS: the runner may have started a process
+            # before failing. terminal=False keeps the quota slot and turns the
+            # call into `unknown` for a human, instead of possibly handing a
+            # second call a slot a live run still occupies.
+            detail = f"adapter start raised {type(exc).__name__}: {exc}"
+            self.store.set_status(invocation_id, RUNNING, detail[:400])
+            return AdapterStartResult("", ok=False, terminal=False, detail=detail[:200])
+
         parsed = parse_events(run.stdout_text)
 
         local_id = parsed.thread_id or f"codex-{invocation_id}"
@@ -478,25 +623,13 @@ class CodexAdapter(AdapterContract):
             "workdir_entries_after": sorted(os.listdir(workdir)) if os.path.isdir(workdir) else [],
         }
         self.store.set_payload(invocation_id, payload)
+        verdict, terminal, detail = classify_outcome(run, parsed)
+        payload["verdict"] = verdict
+        payload["terminal"] = terminal
+        payload["detail"] = detail
+        self.store.set_payload(invocation_id, payload)
 
-        if run.timed_out:
-            # We killed the LOCAL process, but we cannot prove the REMOTE turn
-            # ended, and cancellation is unverified. Keep the record 'running' so
-            # the kernel treats this as unconfirmed: status unknown, slot kept.
-            # terminal=False is what tells the Worker not to free the slot.
-            self.store.set_status(
-                invocation_id,
-                RUNNING,
-                "timed out locally; remote turn not confirmed stopped (cancel unsupported)",
-            )
-            return AdapterStartResult(
-                local_id,
-                ok=False,
-                terminal=False,
-                detail="timeout: remote stop not confirmed; treated as unknown",
-            )
-
-        if run.ok and parsed.turn_completed:
+        if verdict == FINISHED:
             self.store.set_status(
                 invocation_id,
                 FINISHED,
@@ -510,11 +643,16 @@ class CodexAdapter(AdapterContract):
                 local_id, ok=True, terminal=True, detail=parsed.final_message[:200]
             )
 
-        reason = "; ".join(parsed.errors) or f"exit={run.exit_code}"
-        self.store.set_status(invocation_id, FAILED, reason[:400])
-        return AdapterStartResult(
-            local_id, ok=False, terminal=True, detail=reason[:200]
-        )
+        if verdict == FAILED:
+            reason = "; ".join(parsed.errors) or detail
+            self.store.set_status(invocation_id, FAILED, reason[:400])
+            return AdapterStartResult(local_id, ok=False, terminal=True, detail=reason[:200])
+
+        # UNCONFIRMED: keep the record non-terminal so the kernel cannot free the
+        # slot. This covers a local timeout, a turn that started but reported no
+        # outcome, and contradictory evidence (turn completed yet a non-zero exit).
+        self.store.set_status(invocation_id, RUNNING, detail[:400])
+        return AdapterStartResult(local_id, ok=False, terminal=False, detail=detail[:200])
 
     # -- cancel: honestly unsupported ---------------------------------------
 

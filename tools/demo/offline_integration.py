@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 import httpx
@@ -55,6 +56,10 @@ def main() -> int:
         "AGENT_HUB_DB_URL": "sqlite:///"
         + os.path.join(SCRATCH, "offline-integration.db").replace("\\", "/"),
         "AGENT_HUB_DATA_DIR": SCRATCH,
+        # Keep CODEX_HOME outside the repo too: it can hold a credential copy, and
+        # nothing holding one belongs under the repo tree. This stub run needs no
+        # credential, so a temp directory is enough.
+        "AGENT_HUB_CODEX_HOME": tempfile.mkdtemp(prefix="agenthub-offline-home-"),
     })
     for f in ("offline-integration.db", "codex-executions.db"):
         p = os.path.join(SCRATCH, f)

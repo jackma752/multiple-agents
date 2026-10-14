@@ -107,11 +107,22 @@ def main() -> None:
         s = config.codex_settings()
         print(f"  codex    : {s['codex_path']}")
         print(f"  version  : {s['version']}")
+        print(f"  CODEX_HOME: {s['codex_home']}")
         print(f"  sandbox  : read-only, sub-agents disabled (--disable multi_agent)")
         print(f"  proxy    : {s['proxy'] or '(none)'}")
         print(f"  ca bundle: {s['ca_bundle'] or '(none)'}")
-    token = os.environ.get("AGENT_HUB_USER_TOKEN", "dev-user-token")
-    print(f"  User token (from AGENT_HUB_USER_TOKEN or default): {token}")
+        cred = config.credential_location()
+        print(
+            "  credential: "
+            + ("present (contents never printed)" if os.path.exists(cred) else "not present")
+            + f"  at {cred}"
+        )
+    # NEVER print the token itself: the startup banner ends up in scrollback,
+    # logs and screenshots. Report only where it came from.
+    if os.environ.get("AGENT_HUB_USER_TOKEN"):
+        print("  User token: from $env:AGENT_HUB_USER_TOKEN (value not shown)")
+    else:
+        print("  User token: using the built-in development default (not shown)")
     if not args.no_pid_file:
         pf = write_pid_file(args.port)
         print(f"  PID      : {os.getpid()}  (recorded in {os.path.relpath(pf, REPO_ROOT)})")

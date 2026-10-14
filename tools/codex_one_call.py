@@ -17,12 +17,12 @@ shape so the capability table can be filled in.
 
 Usage
 -----
-    # 1) dedicated, writable HOME (keeps Codex from writing ~/.codex/tmp)
-    .\.venv\Scripts\python.exe tools\codex_one_call.py --init-home var\codex-home
+    # 1) dedicated, writable HOME (keeps Codex from writing ~/.codex/tmp).
+    #    Defaults OUTSIDE the repo because it receives a credential copy.
+    .\.venv\Scripts\python.exe tools\codex_one_call.py --init-home "$env:LOCALAPPDATA\AgentHub\codex-home"
 
-    # 2) the single call
-    .\.venv\Scripts\python.exe tools\codex_one_call.py \
-        --codex-home var\codex-home \
+    # 2) the single call (uses the same default home)
+    .\.venv\Scripts\python.exe tools\codex_one_call.py ^
         --prompt "Reply with exactly: OK. Do not modify any files."
 
 Exit codes: 0 the call succeeded, 1 the call failed, 2 setup/config problem.
@@ -44,6 +44,20 @@ DEFAULT_CODEX_GLOB = os.path.join(
     os.environ.get("LOCALAPPDATA", ""), "OpenAI", "Codex", "bin", "*", "codex.exe"
 )
 DEFAULT_CODEX_HOME = os.path.join(os.environ["USERPROFILE"], ".codex")
+
+
+def default_home() -> str:
+    """Where this tool keeps CODEX_HOME by default.
+
+    OUTSIDE the repository on purpose: this directory receives a copy of the
+    Codex login credential, and nothing holding a credential belongs under the
+    repo tree - a stray ``git add -f``, an archive or a backup would leak it.
+    """
+    override = os.environ.get("AGENT_HUB_CODEX_HOME")
+    if override:
+        return override
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "AgentHub", "codex-home")
 
 # Sub-agent feature that must stay off for a controlled single call.
 SUBAGENT_FEATURE = "multi_agent"
@@ -222,7 +236,11 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Run one real Codex call (no retries).")
     p.add_argument("--init-home", metavar="DIR", help="create a dedicated CODEX_HOME and exit")
     p.add_argument("--codex", default=None, help="path to codex.exe")
-    p.add_argument("--codex-home", default=os.path.join(REPO_ROOT, "var", "codex-home"))
+    p.add_argument(
+        "--codex-home",
+        default=default_home(),
+        help="CODEX_HOME; defaults outside the repo (may hold a credential copy)",
+    )
     p.add_argument("--workdir", default=None, help="empty working root for the call")
     p.add_argument("--prompt", default="Reply with exactly: OK. Do not modify any files.")
     p.add_argument("--sandbox", default="read-only",

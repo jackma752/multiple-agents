@@ -14,8 +14,15 @@ import pytest
 from sqlalchemy import func, select
 
 from agenthub.contracts import InvocationStatus, Policy
-from agenthub_adapters.codex import CodexAdapter, CodexRun, FakeCodexRunner, success_script
-from agenthub_adapters.store import FINISHED, ExecutionStore
+from agenthub_adapters.codex import (
+    CodexAdapter,
+    CodexLaunchFailed,
+    CodexRun,
+    FakeCodexRunner,
+    success_script,
+)
+from agenthub_adapters.mock import MockAdapter
+from agenthub_adapters.store import FINISHED, RUNNING, ExecutionStore
 from agenthub_kernel.db import InvocationRow, QuotaReservationRow, TreeQuotaRow
 from agenthub_kernel.service import PolicyService
 from tests.helpers import KernelHarness
@@ -44,8 +51,9 @@ def harness_with_codex(tmp_path, policy=None, script=None, **kw):
 
 
 def _approved_sub(h, goal="real codex call"):
-    root = h.create_root()
-    sub = h.create_subtask(root.id, goal)
+    """A sub-task registered for agent_id='codex', with an approved invocation."""
+    root = h.create_root(agent_id="codex")
+    sub = h.create_subtask(root.id, goal, agent_id="codex")
     inv = h.create_invocation(sub.id)
     appr = h.create_approval(inv.id)
     h.approve(appr.id)
@@ -281,7 +289,7 @@ def test_completed_codex_call_does_not_leak_its_slot(tmp_path):
     assert h.worker.reap_timeouts()["examined"] == 0
 
     # And a second call can use the freed slot.
-    sub2 = h.create_subtask(root.id, "second")
+    sub2 = h.create_subtask(root.id, "second", agent_id="codex")
     inv2 = h.create_invocation(sub2.id)
     appr2 = h.create_approval(inv2.id)
     h.approve(appr2.id)
@@ -309,3 +317,138 @@ def test_codex_failure_is_recorded_and_slot_released(tmp_path):
         assert s.get(InvocationRow, inv.id).status == InvocationStatus.FAILED.value
     assert _quota(h, root.root_task_id).concurrent == 0
     assert codex.store.get(inv.id)["payload"]["errors"]
+
+
+# --------------------------------------------------------------------------- #
+# abnormal start-time outcomes: which ones may free the slot?
+#
+# The kernel has already consumed the approval and reserved the slot by the time
+# start() runs, so what start() does about a failure decides whether that slot is
+# ever freed. Every test here pins one of those outcomes.
+# --------------------------------------------------------------------------- #
+
+
+def _open_reservations(h) -> int:
+    with h.open_session() as s:
+        return s.scalar(
+            select(func.count())
+            .select_from(QuotaReservationRow)
+            .where(QuotaReservationRow.released_at.is_(None))
+        )
+
+
+def test_missing_executable_is_a_terminal_refusal_not_an_exception(tmp_path):
+    """No pinned executable => nothing launched => the slot must be freed.
+
+    Raising instead would escape with the approval already consumed and the
+    reservation still open, leaving a call stuck in ``starting`` forever.
+    """
+    h, codex = harness_with_codex(tmp_path)
+    codex.codex_path = None
+    root, _sub, inv, _appr = _approved_sub(h)
+
+    outcomes = h.drain()
+
+    assert outcomes[0]["ok"] is False
+    assert outcomes[0]["terminal"] is True
+    assert codex.start_count == 0 and codex.runner.calls == []
+    with h.open_session() as s:
+        assert s.get(InvocationRow, inv.id).status == InvocationStatus.FAILED.value
+    assert _quota(h, root.root_task_id).concurrent == 0
+    assert _open_reservations(h) == 0
+
+
+def test_unusable_codex_home_is_a_terminal_refusal(tmp_path):
+    """A CODEX_HOME we cannot create fails BEFORE any process exists."""
+    h, codex = harness_with_codex(tmp_path)
+    blocker = tmp_path / "home-is-a-file"
+    blocker.write_text("not a directory", encoding="utf-8")
+    codex.codex_home = str(blocker)
+    root, _sub, inv, _appr = _approved_sub(h)
+
+    outcomes = h.drain()
+
+    assert outcomes[0]["terminal"] is True, "a pre-launch failure is definitive"
+    assert codex.start_count == 0, "no launch attempt was made"
+    assert codex.runner.calls == []
+    assert _quota(h, root.root_task_id).concurrent == 0
+
+
+def test_refused_process_creation_is_terminal_and_frees_the_slot(tmp_path):
+    """Popen itself failing means provably nothing is running."""
+
+    def refused(argv, env):
+        raise CodexLaunchFailed("could not launch 'codex.exe': Access is denied")
+
+    h, codex = harness_with_codex(tmp_path, script=refused)
+    root, _sub, inv, _appr = _approved_sub(h)
+
+    outcomes = h.drain()
+
+    assert outcomes[0]["terminal"] is True
+    record = codex.store.get(inv.id)
+    assert record["status"] == "failed"
+    assert "Access is denied" in (record.get("detail") or ""), record
+    assert _quota(h, root.root_task_id).concurrent == 0
+    assert codex.store.get(inv.id)["status"] != RUNNING
+
+
+def test_ambiguous_launch_error_keeps_the_slot(tmp_path):
+    """An unexpected error after the launch point is NOT definitive.
+
+    The runner may already have created the process, so the call must become
+    ``unknown`` with its slot retained rather than reported as a clean failure.
+    """
+
+    def ambiguous(argv, env):
+        raise RuntimeError("stdout capture failed after spawn")
+
+    h, codex = harness_with_codex(tmp_path, script=ambiguous)
+    root, _sub, inv, _appr = _approved_sub(h)
+
+    outcomes = h.drain()
+
+    assert outcomes[0]["ok"] is False
+    assert outcomes[0]["terminal"] is False, "an ambiguous error must not look terminal"
+    with h.open_session() as s:
+        assert s.get(InvocationRow, inv.id).status == InvocationStatus.UNKNOWN.value
+    assert _quota(h, root.root_task_id).concurrent == 1, "slot must be kept"
+    assert _open_reservations(h) == 1
+    assert codex.store.get(inv.id)["status"] == RUNNING
+
+
+class ExplodingAdapter(MockAdapter):
+    """An adapter that raises where a real one would launch something."""
+
+    name = "exploding"
+
+    def start(self, invocation_id, snapshot, *, gate_token=None):  # noqa: D102
+        assert gate_token, "the kernel must still hand over a gate token first"
+        raise RuntimeError("simulated adapter crash")
+
+
+def test_adapter_crash_keeps_the_slot_and_records_why(tmp_path):
+    """Worker backstop: an escaping adapter exception must not leak silently."""
+    adapter = ExplodingAdapter(store_path=str(tmp_path / "mock.db"))
+    h = KernelHarness(
+        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1),
+        url=f"sqlite:///{(tmp_path / 'kernel.db').as_posix()}",
+        adapter=adapter,
+    )
+    root = h.create_root()
+    sub = h.create_subtask(root.id, "boom")
+    inv = h.create_invocation(sub.id)
+    appr = h.create_approval(inv.id)
+    h.approve(appr.id)
+
+    outcomes = h.drain()
+
+    assert outcomes[0]["ok"] is False
+    assert outcomes[0]["terminal"] is False
+    assert "RuntimeError" in outcomes[0]["error"]
+    with h.open_session() as s:
+        row = s.get(InvocationRow, inv.id)
+        assert row.status == InvocationStatus.UNKNOWN.value
+        assert "RuntimeError" in (row.error or ""), row.error
+    assert _quota(h, root.root_task_id).concurrent == 1, "slot must be kept"
+    assert _open_reservations(h) == 1
