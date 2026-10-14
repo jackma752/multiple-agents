@@ -21,9 +21,8 @@ Usage
     #    Defaults OUTSIDE the repo because it receives a credential copy.
     .\.venv\Scripts\python.exe tools\codex_one_call.py --init-home "$env:LOCALAPPDATA\AgentHub\codex-home"
 
-    # 2) the single call (uses the same default home)
-    .\.venv\Scripts\python.exe tools\codex_one_call.py ^
-        --prompt "Reply with exactly: OK. Do not modify any files."
+    # 2) the single call (uses the same default home, outside the repo)
+    .\.venv\Scripts\python.exe tools\codex_one_call.py --prompt "Reply with exactly: OK. Do not modify any files."
 
 Exit codes: 0 the call succeeded, 1 the call failed, 2 setup/config problem.
 """
@@ -92,8 +91,9 @@ def init_home(home: str) -> int:
             pass
         print(f"copied auth.json into {home} ({os.path.getsize(dst)} bytes; contents not shown)")
     print(f"CODEX_HOME ready: {home}")
-    print("NOTE: this directory holds a credential copy. Keep it gitignored, and")
-    print("      delete auth.json when you are done verifying.")
+    print("NOTE: this directory holds a credential copy. Keep it OUTSIDE the repo")
+    print("      (and gitignored if it ever lands inside), and delete auth.json")
+    print("      when you are done verifying.")
     return 0
 
 
