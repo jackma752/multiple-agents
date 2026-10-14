@@ -142,6 +142,24 @@ class MockExecutionStore:
                 conn.close()
             return [dict(r) for r in rows]
 
+    def delete(self, invocation_id: str) -> int:
+        """Remove one execution record. TEST/MOCK-ONLY.
+
+        Exists so tests can reproduce "the external side has no record for a call
+        the kernel knows it started" - the lost-evidence case, which must NOT be
+        mistaken for proof that nothing is running. A real adapter would not
+        offer this.
+        """
+        with self._lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM mock_executions WHERE invocation_id=?", (invocation_id,)
+            )
+            conn.commit()
+            if self.path != ":memory:":
+                conn.close()
+            return cur.rowcount
+
 
 class MockAdapter(AdapterContract):
     """In-memory adapter that counts how many times it was asked to start.

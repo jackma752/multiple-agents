@@ -154,22 +154,39 @@ class Worker:
         execution record. Confirmed means either:
 
         * the external side reports a terminal state (finished/failed/cancelled);
-        * the external side has NO record at all AND the kernel does not believe
-          the call was running. The Mock writes its record synchronously before
-          ``start()`` returns, so for a ``starting``/``unknown`` invocation an
-          absent record positively means it never reached the adapter.
+        * the external side has NO record at all AND the kernel has **no durable
+          evidence that this call ever reached an adapter**. The Mock writes its
+          record synchronously before ``start()`` returns, so for a call that was
+          never started an absent record positively means nothing is running.
 
-        A missing record for an invocation the kernel believes is RUNNING is
-        *lost evidence*, not proof of stopping, so it is NOT confirmation.
+        The "ever started" test uses durable columns
+        (``started_at`` / ``adapter_invocation_id``), NOT the current status.
+        Status is not durable evidence: a running call can be moved to
+        ``unknown`` (e.g. a timeout whose cancellation could not be confirmed),
+        which would otherwise erase the only trace that it started and let us
+        free a slot that is still occupied.
+
+        A missing record for a call we know started is *lost evidence*, not proof
+        of stopping, so it is NOT confirmation.
 
         Anything else (record still running, unrecognised state, unreadable
         store, adapter without cancel) is also NOT confirmation, and callers
         must withhold both the slot release and any retry.
         """
+        ever_started = False
         if kernel_status is None:
             with self.db.session() as session:
                 row = session.get(InvocationRow, invocation_id)
-                kernel_status = row.status if row is not None else ""
+                if row is not None:
+                    kernel_status = row.status
+                    ever_started = bool(row.started_at) or bool(row.adapter_invocation_id)
+                else:
+                    kernel_status = ""
+        else:
+            with self.db.session() as session:
+                row = session.get(InvocationRow, invocation_id)
+                if row is not None:
+                    ever_started = bool(row.started_at) or bool(row.adapter_invocation_id)
 
         cancel_result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
         cancel_fn = getattr(self.adapter, "cancel_invocation", None)
@@ -188,6 +205,14 @@ class Worker:
             return False, f"status lookup failed: {type(exc).__name__}", cancel_result
 
         if record is None:
+            if ever_started:
+                return (
+                    False,
+                    "no execution record, but the kernel has durable evidence "
+                    "this call started (started_at/adapter_invocation_id): "
+                    "evidence lost, cannot confirm it stopped",
+                    cancel_result,
+                )
             if kernel_status == InvocationStatus.RUNNING.value:
                 return (
                     False,
@@ -197,7 +222,7 @@ class Worker:
                 )
             return (
                 True,
-                "no execution record and the call was not confirmed running: "
+                "no execution record and no evidence the call ever started: "
                 "it never reached the adapter",
                 cancel_result,
             )
@@ -407,6 +432,15 @@ class Worker:
         # ---- Phase 3: record the outcome ----
         with self.db.session() as session:
             svc = PolicyService(session)
+            inv = session.get(InvocationRow, invocation_id)
+            # Persist the adapter's own id in BOTH branches. Together with
+            # ``started_at`` this is the durable "this call really reached the
+            # adapter" evidence that recovery and reaping depend on. Without it,
+            # a crash between the adapter start and the status update would be
+            # indistinguishable from a call that never started at all - and we
+            # could then wrongly free a slot that is still occupied.
+            if inv is not None and start.adapter_invocation_id:
+                inv.adapter_invocation_id = start.adapter_invocation_id
             if start.ok:
                 svc.transition_invocation(invocation_id, InvocationStatus.RUNNING)
             else:
