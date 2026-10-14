@@ -400,8 +400,24 @@ def test_shutdown_invokes_the_hook_when_installed(client):
 
 
 # --------------------------------------------------------------------------- #
-# adapter-result: launch evidence
+# adapter-result: launch evidence, and which agent_id the API will serve
 # --------------------------------------------------------------------------- #
+
+
+def _codex_app(tmp_path, name: str = "codex.db", adapter_name: str = "codex-exec.db"):
+    """An app whose adapter is the real Codex adapter driven by a fake runner."""
+    from agenthub_adapters.codex import CodexAdapter, FakeCodexRunner, success_script
+    from agenthub_adapters.store import ExecutionStore
+
+    adapter = CodexAdapter(
+        codex_path=__file__,  # any existing file; identity is not pinned here
+        codex_home=str(tmp_path / "home"),
+        workdir_root=str(tmp_path / "runs"),
+        store=ExecutionStore(path=str(tmp_path / adapter_name), table="codex_executions"),
+        runner=FakeCodexRunner(success_script()),
+    )
+    app = create_app(db=Database(f"sqlite:///{(tmp_path / name).as_posix()}"), adapter=adapter)
+    return adapter, app
 
 
 def test_adapter_result_reports_launch_evidence(tmp_path):
@@ -411,27 +427,7 @@ def test_adapter_result_reports_launch_evidence(tmp_path):
     this endpoint, so "an execution record exists" alone is not enough: it also
     needs the fields that prove a process produced output.
     """
-    from agenthub_adapters.codex import (
-        CodexAdapter,
-        FakeCodexRunner,
-        success_script,
-    )
-    from agenthub_adapters.store import ExecutionStore
-
-    def make(store_path, adapter_path):
-        adapter = CodexAdapter(
-            codex_path=__file__,  # any existing file; identity is not pinned here
-            codex_home=str(tmp_path / "home"),
-            workdir_root=str(tmp_path / "runs"),
-            store=ExecutionStore(path=store_path, table="codex_executions"),
-            runner=FakeCodexRunner(success_script()),
-        )
-        app = create_app(
-            db=Database(f"sqlite:///{(tmp_path / adapter_path).as_posix()}"), adapter=adapter
-        )
-        return adapter, app
-
-    adapter, app = make(str(tmp_path / "codex-exec.db"), "evidence.db")
+    adapter, app = _codex_app(tmp_path)
     with TestClient(app) as c:
         created = c.post(
             "/api/invocations",
@@ -439,6 +435,8 @@ def test_adapter_result_reports_launch_evidence(tmp_path):
             headers=USER,
         ).json()
         inv_id, appr_id = created["invocation_id"], created["approval_id"]
+        assert created["adapter_agent_ids"] == ["codex"]
+        assert created["adapter_warning"] is None, created["adapter_warning"]
 
         # Before approval: no record at all, so nothing can be counted as a launch.
         assert c.get(f"/api/invocations/{inv_id}/adapter-result", headers=USER).json()[
@@ -460,3 +458,48 @@ def test_adapter_result_reports_launch_evidence(tmp_path):
         assert evidence["timed_out"] is False
         assert evidence["verdict"] == "finished"
         assert evidence["event_count"] >= 4
+        assert evidence["error_count"] == 0
+
+
+def test_api_adapter_reports_the_agent_ids_it_serves(tmp_path):
+    """The console fills its agent field from here instead of hardcoding one."""
+    _adapter, app = _codex_app(tmp_path)
+    with TestClient(app) as c:
+        info = c.get("/api/adapter", headers=USER).json()
+    assert info["kind"] == "codex"
+    assert info["agent_ids"] == ["codex"]
+
+
+def test_mock_adapter_declares_no_agent_restriction(client):
+    """The inert Mock adapter serves any agent id, so it warns about none."""
+    info = client.get("/api/adapter", headers=USER).json()
+    assert info["agent_ids"] == []
+
+    created = client.post(
+        "/api/invocations",
+        json={"task_id": "-", "agent_id": "whatever", "task_input": "x"},
+        headers=USER,
+    ).json()
+    assert created["adapter_agent_ids"] == []
+    assert created["adapter_warning"] is None
+
+
+def test_creating_a_call_for_an_unserved_agent_warns_before_the_approval(tmp_path):
+    """A call the adapter cannot serve must be flagged at creation time.
+
+    It is still created (the adapter refuses it at launch, loudly and terminally),
+    but a user must not have to approve a call that can never run to find out.
+    """
+    _adapter, app = _codex_app(tmp_path)
+    with TestClient(app) as c:
+        r = c.post(
+            "/api/invocations",
+            json={"task_id": "-", "agent_id": "mock", "task_input": "wrong agent"},
+            headers=USER,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "awaiting_approval"
+        assert body["adapter_agent_ids"] == ["codex"]
+        assert "mock" in body["adapter_warning"]
+        assert "codex" in body["adapter_warning"]

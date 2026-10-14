@@ -136,8 +136,10 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 | `tests/adapters/test_codex_adapter.py` | 34 | 事件解析（真实捕获作 fixture）、argv/env 安全断言、门禁、**Agent 身份匹配**、身份固定、超时、启动期异常分类、**桩子进程**真实走通捕获与超时 |
 | `tests/policy/test_codex_gate.py` | 17 | Codex 适配器**插进未改动的内核**：Agent 身份不匹配 → 0 进程；未批准/拒绝/过期 → 0 进程；批准 → 恰好 1 次；总量与并发上限拦得住；停机拦得住；超时→unknown 保留名额；成功不泄漏名额；启动期四类失败的名额归属 |
 | `tests/test_hygiene.py` | 10 | 仓库无真实密钥、Token 只从环境读、**CODEX_HOME 与凭证路径在仓库之外**、**日志不打印 Token** |
+| `tests/http/test_contract_api.py` | +4 | `adapter-result` 的启动证据（exit_code / 事件数 / verdict）、`agent_ids` 暴露、未服务 agent 的创建期告警 |
+| `tests/http/test_ui.py` | +1 | 页面不再硬编码 agent_id，且读取 `agent_ids` / `adapter_warning` |
 
-**全套 216 passed**。**全部离线，未启动真实 Codex。**
+**全套 221 passed**。**全部离线，未启动真实 Codex。**
 
 ## 7. 启动期异常：哪些能释放名额，哪些不能
 
@@ -209,8 +211,32 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 ```
 
 脚本的判定顺序即为安全阀：**未批准 → 进程启动数必须为 0**；
-批准后 → **恰好为 1**；然后打印 DIFF（任务树 / 调用数 / 启动数 / 适配器记录 /
-thread_id / usage / 未释放预留）。
+批准后 → **恰好为 1**；然后逐项打印 CHECKS 与 DIFF（任务树 / 调用数 / 启动数 /
+适配器记录 / thread_id / usage / 未释放预留）。
+
+**"通过"的判定是严格的**（2026-10-14 收紧）：只看"启动了进程且发生了点什么"
+**不算通过**。必须同时满足 12 项：未批准时启动数 0、批准后启动尝试恰好 1 次、
+JSONL 事件 > 0、`verdict = finished`、退出码 0、未超时、`thread_id` 非空、
+最终回复非空、返回真实 `usage`、内核状态 `succeeded`、未释放预留 0、并发名额 0。
+任一项不满足即打印 `VERIFICATION FAILED` 并列出未满足项、以非零码退出。
+
+**反向对照（证明判定确实严格）**：用桩进程跑一次注定失败的调用
+（`--prompt "... FAIL ..."`，桩会输出 `turn.failed` 并以退出码 1 结束）：
+
+```powershell
+.\.venv\Scripts\python.exe tools\demo\codex_verify.py --mode stub --prompt "please FAIL this turn"
+# [4] 启动 0  [5] 启动 1  → 但 verdict=finished / 退出码=0 / 最终回复 / usage / succeeded 五项 FAIL
+# → VERIFICATION FAILED
+```
+
+这一次**确实启动了进程、也拿到了 `thread_id`**，但被正确判为失败——旧判定
+（只看 `thread_id` 与"终态"）会把它误报为 PASSED。
+
+判定"启动了进程"的证据也分两层：`adapter-result` 的 `launch_attempted` 表示
+**已越过启动前拒绝**（即真的去启动进程了），`evidence.exit_code` /
+`evidence.event_count` 才表示**进程确实跑起来并输出了 JSONL**。
+真实模式两者都会打印，不做推断；`evidence` 只返回计数，不返回 argv 或错误原文
+（错误原文可能引用提示词，而提示词属用户内容）。
 
 真实模式的前置条件（脚本会在**发起任何调用之前**检查，不满足就直接拒绝）：
 

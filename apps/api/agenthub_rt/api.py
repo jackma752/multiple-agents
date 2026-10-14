@@ -196,6 +196,19 @@ def create_app(
                 # made through the API could never be approved.
                 approval = svc.create_approval(invocation_id=inv.id)
                 session.commit()
+                served = sorted(getattr(app.state.adapter, "AGENT_IDS", ()) or ())
+                # Do not reject the request: the invocation is valid and the
+                # adapter refuses it later, loudly and terminally. But say so up
+                # front, because a call created for an agent the adapter does not
+                # serve can never launch, and silently creating it wastes an
+                # approval and a slot reservation.
+                warning = None
+                if served and body.agent_id not in served:
+                    warning = (
+                        f"agent_id {body.agent_id!r} is not served by the current "
+                        f"adapter (accepts {served}); this call would be refused at "
+                        f"launch time."
+                    )
                 return {
                     "task_id": task.id,
                     "depth": task.depth,
@@ -203,6 +216,8 @@ def create_app(
                     "approval_id": approval.id,
                     "payload_hash": inv.payload_hash,
                     "status": "awaiting_approval",
+                    "adapter_agent_ids": served,
+                    "adapter_warning": warning,
                 }
             except QuotaError as exc:
                 session.rollback()
@@ -505,6 +520,10 @@ def create_app(
                 "event_count": len(payload.get("events") or []),
                 "event_types": payload.get("event_types") or {},
                 "elapsed": payload.get("elapsed"),
+                # Counts, never the messages themselves: a driver error can quote
+                # the prompt, and prompts are user content.
+                "error_count": len(payload.get("errors") or []),
+                "unparsed_count": len(payload.get("unparsed_lines") or []),
             },
         }
 

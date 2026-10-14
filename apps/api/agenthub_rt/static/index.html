@@ -105,6 +105,12 @@
       <textarea id="msg" placeholder="输入任务目标，例如：做一个登录页面"></textarea>
     </div>
     <div class="row">
+      <label class="muted" for="agent-id">调用哪个 Agent</label>
+      <input id="agent-id" list="agent-options" value="mock" style="max-width:180px" />
+      <datalist id="agent-options"></datalist>
+      <span id="agent-note" class="muted"></span>
+    </div>
+    <div class="row">
       <button id="send" class="primary" disabled>发送并创建调用（先创建会话）</button>
       <span id="conv-label" class="muted">未选择会话</span>
     </div>
@@ -231,6 +237,37 @@ async function loadAdapter() {
     badge.style.borderColor = "#5a4020";
     $("adapter-note").textContent = "Mock 适配器只记录启动次数，不启动任何真实进程。";
   }
+  applyAgentOptions(a);
+}
+
+/* Which agent_id may this call be created for?
+ *
+ * The adapter serves a fixed set of agent ids, and it REFUSES anything else at
+ * launch time (a real Codex process must never run for a call that was approved
+ * under a different agent). So the field must never be hardcoded: fill it from
+ * the adapter and say so when the typed value cannot be served.
+ */
+function applyAgentOptions(a) {
+  const ids = (a && a.agent_ids) || [];
+  const input = $("agent-id");
+  const list = $("agent-options");
+  list.innerHTML = ids.map(id => `<option value="${escapeHtml(id)}"></option>`).join("");
+  // An empty list means the adapter declares no restriction (the Mock adapter).
+  S.agentIds = ids;
+  input.value = ids.length ? ids[0] : "mock";
+  noteAgentChoice();
+}
+
+function noteAgentChoice() {
+  const ids = S.agentIds || [];
+  const value = $("agent-id").value.trim();
+  if (!ids.length) {
+    $("agent-note").textContent = "当前适配器不限制 agent_id。";
+    return;
+  }
+  $("agent-note").textContent = ids.includes(value)
+    ? "当前适配器只服务：" + ids.join(", ")
+    : "⚠ 当前适配器不服务 " + (value || "(空)") + "，该调用会在启动时被拒绝（只服务：" + ids.join(", ") + "）";
 }
 
 /* ---------------- tasks ---------------- */
@@ -285,22 +322,32 @@ $("send").onclick = async () => {
   const goal = $("msg").value.trim();
   if (!goal) { toast("请输入任务目标", "bad"); return; }
   if (!S.conversationId) { toast("请先新建会话", "bad"); return; }
+  const agentId = $("agent-id").value.trim() || "mock";
+  const served = S.agentIds || [];
+  if (served.length && !served.includes(agentId)) {
+    // Warn, but still send: the backend reports the same thing and refuses at
+    // launch. Blocking here would hide the authoritative answer.
+    toast(`注意：当前适配器只服务 ${served.join(", ")}，${agentId} 会在启动时被拒绝`, "bad");
+  }
   try {
     await api("POST", `/api/conversations/${S.conversationId}/messages`, { text: goal });
     log("我：" + goal);
     // The API returns task_id / invocation_id / approval_id; we keep them.
     const inv = await api("POST", "/api/invocations", {
-      task_id: "-", agent_id: "mock", task_input: goal,
+      task_id: "-", agent_id: agentId, task_input: goal,
     });
     S.taskId = inv.task_id;
     $("stop").disabled = $("pause").disabled = $("resume").disabled = $("apply-policy").disabled = false;
-    log(`已创建调用 ${inv.invocation_id}（待审批 ${inv.approval_id}）`);
+    log(`已创建调用 ${inv.invocation_id}（agent_id=${agentId}，待审批 ${inv.approval_id}）`);
+    if (inv.adapter_warning) { log("⚠ " + inv.adapter_warning); toast(inv.adapter_warning, "bad"); }
     $("msg").value = "";
     await loadTasks();
     await refresh();
     toast("调用已创建，请在右侧审批队列中批准", "ok");
   } catch (e) { toast("发送失败：" + e.message, "bad"); }
 };
+
+$("agent-id").oninput = noteAgentChoice;
 
 /* ---------------- approvals ---------------- */
 async function act(path) {

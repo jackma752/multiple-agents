@@ -61,10 +61,15 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
 
 def describe(adapter: Any) -> dict:
     """Small, safe summary for the console header."""
+    # Which agent_id values this adapter will serve. The console uses this to
+    # pre-fill its agent field: a call created for an agent the adapter does not
+    # serve can never launch, so the UI must not silently hardcode one. An empty
+    # list means "no declared restriction" (the inert Mock adapter).
     info = {
         "name": getattr(adapter, "name", type(adapter).__name__),
         "kind": CODEX if getattr(adapter, "name", "") == "codex" else MOCK,
         "real_process": getattr(adapter, "name", "") == "codex",
+        "agent_ids": sorted(getattr(adapter, "AGENT_IDS", ()) or ()),
     }
     if info["kind"] == CODEX:
         ok, why = adapter.identity_matches()

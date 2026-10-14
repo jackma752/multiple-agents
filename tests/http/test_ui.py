@@ -59,6 +59,21 @@ def test_ui_page_is_served(client):
         assert needle in html, f"missing UI element: {needle}"
 
 
+def test_ui_page_lets_the_user_choose_the_agent(client):
+    """The console must not hardcode an agent_id.
+
+    A hardcoded id is unrunnable as soon as the adapter serves a different one:
+    the call is created, approved, and then refused at launch. The field is filled
+    from `/api/adapter`'s `agent_ids` instead.
+    """
+    html = client.get("/ui").text
+    assert 'agent_id: "mock"' not in html, "the console still hardcodes agent_id"
+    assert 'id="agent-id"' in html, "no agent field in the composer"
+    assert 'id="agent-options"' in html, "no datalist for the served agent ids"
+    assert "agent_ids" in html, "the page never reads the adapter's agent ids"
+    assert "adapter_warning" in html, "the page ignores the creation-time warning"
+
+
 def test_ui_page_has_no_placeholder_ids_to_fill_in(client):
     """No input asks the user to type a task/invocation/approval id."""
     html = client.get("/ui").text

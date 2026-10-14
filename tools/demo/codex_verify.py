@@ -43,6 +43,13 @@ import time
 
 import httpx
 
+# This console is not UTF-8 by default on Windows, so a Chinese check label would
+# come out as mojibake exactly where the operator reads the verdict.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001  (not available on every stream type)
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 SCRATCH = os.path.join(REPO, "var")
@@ -141,6 +148,9 @@ def main() -> int:
                     help="required for --mode real")
     ap.add_argument("--codex-home", default=None,
                     help="CODEX_HOME for the server (must be outside the repo)")
+    ap.add_argument("--prompt", default=PROMPT,
+                    help="task text; in stub mode 'FAIL'/'SLEEP' switch the outcome "
+                         "(used as a negative control for the PASS conditions)")
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args()
 
@@ -231,7 +241,7 @@ def main() -> int:
 
         # ---- 3. exactly one invocation, agent_id="codex" ---------------
         created = c.post("/api/invocations", json={
-            "task_id": "-", "agent_id": "codex", "task_input": PROMPT,
+            "task_id": "-", "agent_id": "codex", "task_input": args.prompt,
         }).json()
         root, inv_id, appr_id = created["task_id"], created["invocation_id"], created["approval_id"]
         print(f"\n[3] created exactly one invocation:")
@@ -239,6 +249,8 @@ def main() -> int:
         print(f"      task_id    = {root}")
         print(f"      invocation = {inv_id}")
         print(f"      approval   = {appr_id}  status={created['status']}")
+        if created.get("adapter_warning"):
+            print(f"      !! adapter_warning: {created['adapter_warning']}")
 
         tasks1 = c.get("/api/tasks", headers=USER).json()
         assert len(tasks1) == 1, f"expected exactly one task tree, got {len(tasks1)}"
@@ -249,9 +261,9 @@ def main() -> int:
 
         # ---- 4. unapproved must launch nothing -------------------------
         c.post("/api/worker/drain", headers=USER)
-        launches = launch_attempts(c, inv_id, mode)
-        print(f"\n[4] drain WITHOUT approval -> process launches = {launches}   (must be 0)")
-        assert launches == 0, "SAFETY FAILURE: a process launched without approval"
+        unapproved_launches = launch_attempts(c, inv_id, mode)
+        print(f"\n[4] drain WITHOUT approval -> process launches = {unapproved_launches}   (must be 0)")
+        assert unapproved_launches == 0, "SAFETY FAILURE: a process launched without approval"
 
         # ---- 5. approve, then exactly one launch -----------------------
         c.post(f"/api/approvals/{appr_id}/approve", headers=USER)
@@ -280,46 +292,73 @@ def main() -> int:
         s = res.get("summary") or {}
         print(f"\n[6] adapter result")
         print(f"      status       = {res.get('status')}")
+        print(f"      detail       = {res.get('detail')}")
         print(f"      thread_id    = {s.get('thread_id')}")
         print(f"      final reply  = {s.get('final_message')!r}")
         print(f"      usage        = {json.dumps(s.get('usage'), ensure_ascii=False)}")
         print(f"      event_types  = {json.dumps(s.get('event_types'), ensure_ascii=False)}")
         print(f"      workdir after= {s.get('workdir_entries_after')}")
+        print(f"      driver errors= {evidence.get('error_count')}   "
+              f"unparsed lines= {evidence.get('unparsed_count')}")
 
         # ---- 7. kernel state and quota ---------------------------------
         view2 = c.get(f"/api/tasks/{root}/view", headers=USER).json()
         inv_state = view2["invocations"][0]["status"]
+        quota = view2["quota"]
         print(f"\n[7] kernel state")
         print(f"      invocation status = {inv_state}")
-        print(f"      quota             = {json.dumps(view2['quota'], ensure_ascii=False)}")
+        print(f"      quota             = {json.dumps(quota, ensure_ascii=False)}")
         print(f"      stopped={view2['stopped']}  paused={view2['paused']}")
 
-        # ---- 8. diff summary -------------------------------------------
-        process_ran = bool(evidence.get("event_count")) or mode == "stub"
-        ok = (
-            launch_ok
-            and bool(s.get("thread_id"))
-            and inv_state in ("succeeded", "failed", "canceled", "timed_out", "unknown")
-            and process_ran
-        )
+        # ---- 8. what counts as a PASS or FAIL ---------------------------
+        # Deliberately strict: "a process was launched and something happened" is
+        # NOT a pass. A pass requires a completed turn, a clean exit, a delivered
+        # reply, real usage, a settled invocation and no leaked reservation.
+        checks = [
+            ("未批准时启动数 = 0", unapproved_launches == 0),
+            ("批准后启动尝试 = 恰好 1 次", launches == 1),
+            ("进程确实运行（JSONL 事件 > 0）", bool(evidence.get("event_count"))),
+            ("适配器判定 verdict = finished", evidence.get("verdict") == "finished"),
+            ("进程退出码 = 0", evidence.get("exit_code") == 0),
+            ("未发生本地超时", evidence.get("timed_out") is False),
+            ("thread_id 非空", bool(s.get("thread_id"))),
+            ("最终回复非空", bool((s.get("final_message") or "").strip())),
+            ("返回真实 usage", bool(s.get("usage"))),
+            ("内核状态 = succeeded", inv_state == "succeeded"),
+            ("未释放的配额预留 = 0", quota.get("open_reservations") == 0),
+            ("并发名额已释放 = 0", quota.get("concurrent") == 0),
+        ]
+        print("\n" + "=" * 78)
+        print("CHECKS")
+        print("=" * 78)
+        for label, passed in checks:
+            print(f"  [{'PASS' if passed else 'FAIL'}] {label}")
+        failed = [label for label, passed in checks if not passed]
+        ok = not failed
+
         print("\n" + "=" * 78)
         print("DIFF (before -> after)")
         print("=" * 78)
         print(f"  task trees        : 0 -> {len(tasks1)}")
         print(f"  invocations       : 0 -> 1")
         print(f"  process launches  : 0 (unapproved) -> {launches} (approved)"
-              f"{'' if launch_ok else '   <-- expected 1'}")
+              f"{'' if launches == 1 else '   <-- expected 1'}")
         print(f"  adapter record    : none -> {res.get('status')}")
         print(f"  thread_id         : none -> {s.get('thread_id') or 'none'}")
         print(f"  usage             : none -> {json.dumps(s.get('usage') or {}, ensure_ascii=False)}")
-        print(f"  open reservations : 0 -> {view2['quota'].get('open_reservations')}")
+        print(f"  open reservations : 0 -> {quota.get('open_reservations')}")
         if mode == "real":
             print(f"  exit code         : none -> {evidence.get('exit_code')}")
             print(f"  jsonl events      : none -> {evidence.get('event_count')}")
             print(f"  verdict           : none -> {evidence.get('verdict')}")
         print("=" * 78)
-        print("VERIFICATION PASSED" if ok else "VERIFICATION COMPLETED WITH CAVEATS")
-        return 0 if ok else 1
+        if ok:
+            print("VERIFICATION PASSED")
+            return 0
+        print("VERIFICATION FAILED - unmet conditions:")
+        for label in failed:
+            print(f"  - {label}")
+        return 1
     finally:
         server.terminate()
         try:

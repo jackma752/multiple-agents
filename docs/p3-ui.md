@@ -67,7 +67,29 @@ cd E:\plug\agent-hub
 | 任务状态 | `#tree` 按深度缩进的树，每个节点带状态 pill |
 | 配额显示 | `#quota`（含进度条）+ `#p-total` 等输入 + `#apply-policy` |
 | 停止按钮 | `#stop`（另有 `#pause` / `#resume`） |
+| Agent 选择 | `#agent-id`（`list=#agent-options`）+ 说明 `#agent-note` |
 | Mock 标识 | 顶部 `Mock 模式 · 未接入真实 Agent` 徽标 |
+
+### Agent 选择为什么必须可改（2026-10-14 修正）
+
+早期版本在 `send()` 里**硬编码** `agent_id: "mock"`。接入真实适配器后这是错的：
+`CodexAdapter` 只服务 `agent_id="codex"`，对别的 id **在启动时拒绝**。于是从界面
+创建的调用会被批准、然后在启动时被拒——既浪费一次审批，也占了一次名额预留。
+
+修正后：
+
+* `GET /api/adapter` 增加 `agent_ids`（该适配器服务的 agent 列表；Mock 为 `[]`，
+  表示"不限制"）；
+* 界面把 `#agent-id` 的下拉候选填成 `agent_ids`，并默认选第一个；不是候选值时
+  在 `#agent-note` 里**当场提示**"该调用会在启动时被拒绝"；
+* `POST /api/invocations` 的响应增加 `adapter_agent_ids` 与 `adapter_warning`：
+  agent 不在服务列表时仍**创建**调用（后端拒绝发生在启动时，这是权威判定），
+  但**提前告知**，界面同时显示在聊天区与 toast。
+
+测试：`test_ui_page_lets_the_user_choose_the_agent`（页面不得再硬编码 agent_id、
+必须读取 `agent_ids`/`adapter_warning`）、`test_api_adapter_reports_the_agent_ids_it_serves`、
+`test_mock_adapter_declares_no_agent_restriction`、
+`test_creating_a_call_for_an_unserved_agent_warns_before_the_approval`。
 
 ---
 
