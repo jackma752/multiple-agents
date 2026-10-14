@@ -20,13 +20,13 @@
 | 能力 | 判定 | 证据 |
 |---|---|---|
 | 发消息 | **接口存在** | `codex exec [PROMPT]`，或 stdin 传入指令；`codex [OPTIONS] [PROMPT]` |
-| 流式输出 | **接口存在** | `codex exec --json` — "Print events to stdout as JSONL" |
-| 恢复会话 | **接口存在** | `codex exec resume`（`--last` 取最近）；顶层 `codex resume` / `codex fork` |
+| 流式输出 | **接口存在，且已实测产生 JSONL** | `codex exec --json`；第 2 次真实调用实测输出 14 个可解析 JSON 事件（`thread.started` / `turn.started` / `error` / `item.completed` / `turn.failed`）。**注意**：这些事件来自一次**失败**的 turn，成功路径的事件序列**仍未验证** |
+| 恢复会话 | **接口存在** | `codex exec resume`（`--last` 取最近）；顶层 `codex resume` / `codex fork`；实测事件含 `thread_id`（可用作恢复句柄） |
 | 取消任务 | **未知** | `--help` 未列出取消/中断命令。存在 `instant_interrupt`（under development, **false**）与 `code_mode_interrupt`（under development, false）。**是否可取消未验证** |
-| 限制文件目录 | **接口存在** | `-C/--cd <DIR>` 指定工作根；`--add-dir <DIR>` 追加可写目录；`-s/--sandbox {read-only,workspace-write,danger-full-access}` |
-| 拦截工具操作 | **部分可见，行为未知** | 存在 `guardian_approval`（stable, **true**）与 `write_stdin_approval`（stable, true）；但 `exec_permission_approvals`（under development, **false**）、`request_permissions_tool`（under development, false）。**能否在启动前拦截未验证** |
-| 控制内部子 Agent | **存在开关候选，行为未知** | `multi_agent`（stable, **true，当前启用**）；`multi_agent_v2`（stable, false）；`enable_fanout`（**removed**）；`agent_message_board`（under development, false） |
-| 返回真实用量 | **未知** | `--help` 未列出用量/计费输出。需真实调用后从其输出或会话记录核实 |
+| 限制文件目录 | **接口存在；行为未验证** | `-C/--cd <DIR>`；`--add-dir <DIR>`；`-s/--sandbox {read-only,workspace-write,danger-full-access}`。两次真实调用**均未进入执行阶段**，故"限制是否真生效"未验证 |
+| 拦截工具操作 | **部分可见，行为未知** | `guardian_approval`（stable, **true**）、`write_stdin_approval`（stable, true）；`exec_permission_approvals`（under development, **false**）、`request_permissions_tool`（under development, false） |
+| 控制内部子 Agent | **存在开关且已本地验证可关闭；行为未验证** | `multi_agent`（stable, **true**）；`-c features.multi_agent=false` 与 `--disable multi_agent` 均实测把它翻为 **false**（退出码 0）。**"关闭后是否真能阻止派生"未验证** |
+| 返回真实用量 | **未知** | 两次真实调用**均未产生 usage 事件**（一次在初始化失败，一次在网络层失败）。**成功路径的用量输出仍未验证** |
 
 ---
 
@@ -130,24 +130,87 @@ Codex 启动时需要在用户目录下创建/清理临时文件与 PATH 别名
 
 **按用户指令：失败后停止，未追加调用、未重试。**
 
-### 5.2 已定位的可能解法（**需另行批准后才能尝试**）
+### 5.2 第 2 步（重试，已获批准并执行）—— **仍失败，但定位更前进了一层**
 
-| 方案 | 说明 | 需用户决定 |
-|---|---|---|
-| 重定向 `CODEX_HOME` | 帮助文本确认支持 `$CODEX_HOME`。把它指到**工作区内可写目录**（如 `E:\plug\agent-hub\var\codex-home`），Codex 就不必写用户目录 | 是否允许再次尝试（仍是一次真实调用） |
-| 放宽文件沙箱 | 以更宽的文件权限运行（`danger-full-access`），允许 Codex 写 `~/.codex/tmp` | 权限更高，需明确同意 |
-| 在沙箱外运行 | 由用户在自己的终端里执行同一命令 | 无沙箱冲突，但需用户手动操作 |
+**批准范围**：仅一次重试；为本进程设置专用、可写、Git 已忽略的 `CODEX_HOME`；
+保留只读沙箱与禁用原生子 Agent；先核实有效配置与登录状态；失败即停、不扩大权限、不输出凭据。
 
-**在获得新的批准之前，不会发起任何后续调用。**
+**预检（无模型调用）结果**：
 
-### 5.3 其余待验证步骤（同样需逐次批准）
+| 检查 | 结果 |
+|---|---|
+| 专用 `CODEX_HOME` | `E:\plug\agent-hub\var\codex-home`（**可写**；已在其中创建 `tmp` 子目录） |
+| 默认 home 登录状态 | `Logged in using ChatGPT`（退出码 0；**未输出任何凭据**） |
+| 新 home 下 `features list` | 退出码 0，`multi_agent` = **false**（开关在重定向下同样生效） |
+| 凭据传递 | 将 `auth.json` **本地复制**到该 gitignored 目录（大小 3915 字节，**内容未打印**）。
+验证结束后**已删除该副本**，避免凭据留存 |
+
+**实际执行**（单次，未重试）：
+
+| 项 | 值 |
+|---|---|
+| 工作根 `-C` | `C:\Users\Administrator\AppData\Local\Temp\dsh-NDA5C5\codex-retry-20261014-144729`（事前空、**事后仍空**） |
+| `CODEX_HOME` | `E:\plug\agent-hub\var\codex-home` |
+| **退出码** | **1（失败）** |
+| 耗时 | 20.1s |
+| **JSON 事件** | **14 个**（见下） |
+| 用量信息 | **无**（0 个 usage 事件） |
+
+**关键结果 1：上一次的初始化失败已被消除。**
+`os error 5` 与 `failed to initialize in-process app-server client` **完全消失**——
+证明「沙箱拒绝写 `~/.codex/tmp`」这一根因判断正确，`CODEX_HOME` 重定向是有效解法。
+
+**关键结果 2：JSONL 事件流现已实测产生**（此前为"未知"）：
+
+```
+{"type":"thread.started","thread_id":"01a1392a-83f3-7160-b836-c987cfcef25b"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"error"}}
+{"type":"error","message":"Reconnecting... 5/5 (workspace routing discovery failed)"}
+{"type":"turn.failed","error":{"message":"workspace routing discovery failed"}}
+```
+
+事件类型统计：`error` 10、`thread.started` 1、`turn.started` 1、`item.completed` 1、`turn.failed` 1。
+说明 `--json` 输出**是可解析的 JSONL**，适配器可以消费；且 CLI 会返回
+`thread_id`（对"恢复会话"有用）。
+
+**关键结果 3：本次失败发生在网络层，不是配置层。**
+
+```
+ERROR codex_models_manager::manager: failed to refresh available models: Connection failed: error sending request
+ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed,
+      http/request failed: error sending request for url (https://chatgpt.com/backend-api/ps/mcp)
+{"type":"error","message":"Reconnecting... 5/5 (workspace routing discovery failed)"}
+{"type":"turn.failed","error":{"message":"workspace routing discovery failed"}}
+```
+
+即：**当前执行环境无法完成到 `chatgpt.com` 的出站连接**，
+Codex 在重试 5 次后放弃，整个 turn 失败——**模型未被调用，因此无用量、无费用**。
+
+**按用户指令：失败后停止，未追加调用、未扩大权限、未重试。**
+
+### 5.3 仍未验证的步骤（需逐次批准）
 
 | # | 目的 | 状态 |
 |---|---|---|
-| 2 | 目录限制是否真生效 | 未执行 |
-| 3 | **关闭 `multi_agent` 是否真能阻止子 Agent 派生** | 未执行（用户明确要求另行申请） |
-| 4 | 取消能力 | 未执行 |
-| 5 | 工具启动前拦截 | 未执行 |
+| 2 | 目录限制是否真生效 | 未验证（调用未进入执行阶段） |
+| 3 | **关闭 `multi_agent` 是否真能阻止子 Agent 派生** | 未验证（用户明确要求另行申请） |
+| 4 | 取消能力 | 未验证 |
+| 5 | 工具启动前拦截 | 未验证 |
+
+### 5.4 结论：本环境内无法完成真实调用
+
+两次尝试合计把失败点从**配置层**推进到了**网络层**。要在本机完成真实 Agent 接入验证，
+需要先解决**出站网络**可达性，可选：
+
+| 方案 | 说明 |
+|---|---|
+| 在沙箱外运行 | 由用户在自己的终端执行同一命令（`CODEX_HOME` 已可复用 `var/codex-home` 方案） |
+| 放开出站网络 | 允许该进程访问 `chatgpt.com`（本环境当前不允许） |
+| 换成本机可达的 Agent 端点 | 例如自建 Agent 或本地模型（`--oss` / `--local-provider lmstudio|ollama`），无需外网 |
+
+> 注意：`codex exec --help` 显示 `--oss` 与 `--local-provider <lmstudio|ollama>` 存在，
+> 若本机有本地模型，可作为**不依赖外网**的真实验证路线（**尚未尝试**）。
 
 ---
 
