@@ -9,7 +9,7 @@
 .\.venv\Scripts\python.exe -m pytest -v
 ```
 
-结果：**141 passed，exit code 0**。并发/恢复/停止确认/E2E 敏感用例另做 **8 轮重复**
+结果：**149 passed，exit code 0**。并发/恢复/停止确认/E2E 敏感用例另做 **8 轮重复**
 （23 项 × 8 = 184 次执行）全部 `exit=0`。
 
 ---
@@ -160,6 +160,33 @@ API 层：`test_reconcile_settle_via_api`、`test_reconcile_retry_requires_new_a
 `test_reconcile_refuses_non_unknown`（非 unknown→409）、
 `test_reconcile_retry_refused_while_execution_unconfirmed`（未确认→409 `not_stopped`）。
 
+### F.3 证据丢失：曾运行 → unknown → 外部记录缺失（交接第 1 项）
+
+**此前缺陷**：判断"是否曾启动"只看**当前状态**。运行中的调用一旦被置为 `unknown`
+（例如超时且取消未确认），"曾运行"的唯一痕迹就消失了；随后若外部记录缺失，
+会被读成"从未到达适配器"，于是**释放名额**——而该调用可能仍在运行。
+
+**修复**：改用**持久证据** `started_at` / `adapter_invocation_id` 判断，
+并在适配器接受调用时即持久化 `adapter_invocation_id`（此前只放在返回字典里，
+导致"启动后崩溃"与"启动前崩溃"在库中无法区分）。
+
+| 情形 | 判定 | 测试 |
+|---|---|---|
+| 有持久启动证据 + 记录缺失 | ❌ 未确认（证据丢失），**保留名额** | `test_running_then_unknown_then_missing_record_keeps_the_slot` |
+| 同上，且上限为 1 | 第二条已批准调用**不得启动** | `test_second_approved_call_blocked_after_lost_evidence` |
+| 超时 + 记录缺失 | 置 `unknown`、`slot_released=False` | `test_reap_with_lost_evidence_goes_unknown_not_timed_out` |
+| 无任何启动证据 + 记录缺失（窗口 A） | ✅ 确认从未启动，**允许 retry** | `test_a_call_that_never_started_can_still_be_confirmed_and_retried` |
+| 用户显式 `settle` | 人工确认，释放一次 | `test_settle_still_resolves_lost_evidence` |
+| 工作进程持久化证据 | `started_at` 与 `adapter_invocation_id` 均已落库 | `test_worker_persists_adapter_id_and_started_at` |
+
+**回归有效性已验证**：把持久证据抹掉后，同一状态返回 `confirmed=True`（即修复前的行为），
+证明该测试能区分修复前后，而非恰好通过。
+
+### F.4 进程与工具（交接第 2 项）
+
+见 `docs/tooling-diagnostics.md`：按 PID 启动/停止（`tools/demo/serve.py` + `stop.py`）、
+归属校验、优雅关闭；并如实记录 `0xc0000142` **未复现、根因未定位**。
+
 ---
 
 ## G. P2 结论
@@ -168,8 +195,8 @@ API 层：`test_reconcile_settle_via_api`、`test_reconcile_retry_requires_new_a
   "未批准绝不调用适配器"有大量 `start_count == 0` 断言支撑。
 - **§10 首个演示链路完整通过。**
 - **P2 内部遗留已清零**：状态机三状态落地、`unknown` 人工裁决入口补齐、接口契约对齐，
-  以及本轮修正的两处**名额释放语义**（超时未确认→`unknown` 并保留名额；
-  `retry` 须先确认旧执行结束才释放一次）。
+  以及三处**名额释放语义**修正（超时未确认→`unknown` 并保留名额；
+  `retry` 须先确认旧执行结束才释放一次；**证据丢失时不得凭"unknown + 无记录"释放名额**）。
 - **统一原则**：任何时刻，**一个并发名额只有在能确认对应执行已结束时才会被释放**；
   无法确认时一律保留占位，宁可少放行也不让两条调用占用同一名额。
 - **不宣称整个项目安全阀全部通过。** 4 条部分通过的条目均有明确阶段归属与未验证标注：
