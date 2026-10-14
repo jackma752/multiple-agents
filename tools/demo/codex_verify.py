@@ -14,13 +14,19 @@ What it guarantees for the run:
 * exactly ONE task tree and ONE invocation, created with agent_id="codex"
   explicitly - the script verifies the agent id it sent;
 * the unapproved path is exercised FIRST and must launch nothing;
-* after approval exactly ONE process launch happens, and the script says so.
+* after approval exactly ONE process launch happens, and the script says so -
+  for a real run it also prints the exit code and JSONL event count, because a
+  record alone only proves a launch was ATTEMPTED;
+* real mode refuses to start unless CODEX_HOME is outside the repo AND holds a
+  login credential, so it can never spend a call on a guaranteed auth failure.
 
 It never prints the user token or the contents of any credential file.
 
 Usage:
     .\.venv\Scripts\python.exe tools\demo\codex_verify.py --mode stub
     .\.venv\Scripts\python.exe tools\demo\codex_verify.py --mode real --i-understand-this-spends-quota
+
+Override the home with `--codex-home <dir>` (must also be outside the repo).
 """
 
 from __future__ import annotations
@@ -62,7 +68,50 @@ def human_seconds(s: float) -> str:
     return f"{s:.1f}s"
 
 
-def build_env(mode: str, db_path: str) -> dict:
+def adapter_result(client, invocation_id: str) -> dict:
+    return client.get(f"/api/invocations/{invocation_id}/adapter-result", headers=USER).json()
+
+
+def launch_attempts(client, invocation_id: str, mode: str) -> int:
+    """How many process launches were attempted for this invocation.
+
+    Stub mode counts entries in the stub's own argv log - one line per process
+    the adapter really started. Real mode uses the adapter's execution record:
+    the adapter writes it only AFTER its pre-launch refusals, so a refused start
+    can never be counted as a launch here.
+    """
+    if mode == "stub":
+        if not os.path.exists(ARGV_LOG):
+            return 0
+        with open(ARGV_LOG, encoding="utf-8") as fh:
+            return len([ln for ln in fh.read().splitlines() if ln.strip()])
+    return 1 if adapter_result(client, invocation_id).get("available") else 0
+
+
+def resolve_codex_home(mode: str) -> str:
+    """Where the server process will keep CODEX_HOME.
+
+    Stub mode needs no credential, so a temp directory is enough. Real mode needs
+    a LOGGED-IN home, otherwise the call is guaranteed to fail authentication and
+    we would be spending a real call to learn nothing. Both candidates are
+    outside the repository, because CODEX_HOME can hold an ``auth.json`` copy.
+    """
+    override = os.environ.get("AGENT_HUB_CODEX_HOME")
+    if override:
+        return override
+    if mode == "stub":
+        return os.path.join(tempfile.gettempdir(), "agenthub-codex-verify-home")
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "AgentHub", "codex-home"),
+        os.path.join(os.environ.get("USERPROFILE", ""), ".codex"),
+    ]
+    for path in [p for p in candidates if p]:
+        if os.path.isfile(os.path.join(path, "auth.json")):
+            return path
+    return candidates[0]
+
+
+def build_env(mode: str, db_path: str, codex_home: str) -> dict:
     """Environment for the server process. Process-scoped only."""
     env = dict(os.environ)
     env.update({
@@ -70,8 +119,7 @@ def build_env(mode: str, db_path: str) -> dict:
         "AGENT_HUB_DB_URL": "sqlite:///" + db_path.replace("\\", "/"),
         "AGENT_HUB_DATA_DIR": RUN_DIR,
         # CODEX_HOME stays OUTSIDE the repo: it can hold a credential copy.
-        "AGENT_HUB_CODEX_HOME": os.environ.get("AGENT_HUB_CODEX_HOME")
-        or os.path.join(tempfile.gettempdir(), "agenthub-codex-verify-home"),
+        "AGENT_HUB_CODEX_HOME": codex_home,
         "AGENT_HUB_CODEX_TIMEOUT": os.environ.get("AGENT_HUB_CODEX_TIMEOUT", "300"),
     })
     if mode == "stub":
@@ -91,6 +139,8 @@ def main() -> int:
     ap.add_argument("--mode", choices=["stub", "real"], default="stub")
     ap.add_argument("--i-understand-this-spends-quota", action="store_true",
                     help="required for --mode real")
+    ap.add_argument("--codex-home", default=None,
+                    help="CODEX_HOME for the server (must be outside the repo)")
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args()
 
@@ -104,6 +154,22 @@ def main() -> int:
         print("it needs the operator's explicit approval.")
         return 2
 
+    codex_home = os.path.abspath(args.codex_home or resolve_codex_home(mode))
+    repo = os.path.abspath(REPO)
+    if codex_home.lower().startswith(repo.lower() + os.sep):
+        print(f"REFUSING: CODEX_HOME is inside the repository: {codex_home}")
+        print("It can hold a login credential; keep it outside the repo tree.")
+        return 2
+    credential = os.path.join(codex_home, "auth.json")
+    credential_present = os.path.isfile(credential)
+    if mode == "real" and not credential_present:
+        # Refuse BEFORE spending a call: without a login this can only fail.
+        print(f"REFUSING: no Codex login credential in CODEX_HOME: {codex_home}")
+        print(f"  looked for: {credential}")
+        print("A real call from an unauthenticated home would only spend a call to")
+        print("learn that it is not logged in. Pass --codex-home <logged-in home>.")
+        return 2
+
     # ---- independent, empty database -----------------------------------
     os.makedirs(RUN_DIR, exist_ok=True)
     db_path = os.path.join(RUN_DIR, f"verify-{mode}-{int(time.time())}.db")
@@ -111,16 +177,25 @@ def main() -> int:
     if os.path.exists(ARGV_LOG):
         os.remove(ARGV_LOG)
 
-    env = build_env(mode, db_path)
+    env = build_env(mode, db_path, codex_home)
     print("=" * 78)
     print(f"CODEX VERIFICATION - mode={mode}")
     print("=" * 78)
     print(f"  database   : {db_path}   (created fresh, asserted empty)")
-    print(f"  CODEX_HOME : {env['AGENT_HUB_CODEX_HOME']}   (outside the repository)")
+    print(f"  CODEX_HOME : {codex_home}   (outside the repository)")
+    print(
+        "  credential : "
+        + ("present; contents are never read or printed" if credential_present
+           else "not present (not needed for this mode)")
+    )
+    if mode == "real":
+        default_home = os.path.abspath(resolve_codex_home("real"))
+        if codex_home == default_home and default_home.endswith(os.path.join(".codex")):
+            print("               NOTE: this is the operator's own Codex home; the run's")
+            print("               session record will be written there.")
     if mode == "stub":
         print(f"  process    : STUB {STUB} (no Codex, no network)")
     else:
-        from agenthub_kernel import config as _cfg  # noqa: F401  (path report only)
         print(f"  process    : REAL Codex (pinned; identity checked by the adapter)")
 
     server = subprocess.Popen(
@@ -174,11 +249,7 @@ def main() -> int:
 
         # ---- 4. unapproved must launch nothing -------------------------
         c.post("/api/worker/drain", headers=USER)
-        if mode == "stub":
-            launches = len(open(ARGV_LOG, encoding="utf-8").read().splitlines()) if os.path.exists(ARGV_LOG) else 0
-        else:
-            launches = 1 if c.get(f"/api/invocations/{inv_id}/adapter-result",
-                                 headers=USER).json().get("available") else 0
+        launches = launch_attempts(c, inv_id, mode)
         print(f"\n[4] drain WITHOUT approval -> process launches = {launches}   (must be 0)")
         assert launches == 0, "SAFETY FAILURE: a process launched without approval"
 
@@ -187,18 +258,25 @@ def main() -> int:
         t0 = time.time()
         outcomes = c.post("/api/worker/drain", headers=USER).json()
         elapsed = time.time() - t0
-        if mode == "stub":
-            launches = len(open(ARGV_LOG, encoding="utf-8").read().splitlines()) if os.path.exists(ARGV_LOG) else 0
-        else:
-            launches = 1 if c.get(f"/api/invocations/{inv_id}/adapter-result",
-                                 headers=USER).json().get("available") else 0
+        launches = launch_attempts(c, inv_id, mode)
+        res = adapter_result(c, inv_id)
+        evidence = res.get("evidence") or {}
         print(f"\n[5] after approval -> process launches = {launches}   (must be 1)")
         print(f"      drain outcomes: {json.dumps(outcomes)}")
         print(f"      elapsed       : {human_seconds(elapsed)}")
-        assert launches == 1, f"expected exactly one launch, got {launches}"
+        if mode == "real":
+            # A record proves a launch was ATTEMPTED; the events prove a process
+            # really ran and spoke. Both are reported so neither is inferred.
+            print(f"      process evidence: exit_code={evidence.get('exit_code')} "
+                  f"timed_out={evidence.get('timed_out')} verdict={evidence.get('verdict')} "
+                  f"jsonl_events={evidence.get('event_count')}")
+        launch_ok = launches == 1
+        if not launch_ok:
+            print(f"      !! expected exactly one launch, got {launches}"
+                  f" (detail: {res.get('detail') or 'n/a'})")
+            print("      the run is reported below with its actual outcome")
 
         # ---- 6. the adapter's parsed result ----------------------------
-        res = c.get(f"/api/invocations/{inv_id}/adapter-result", headers=USER).json()
         s = res.get("summary") or {}
         print(f"\n[6] adapter result")
         print(f"      status       = {res.get('status')}")
@@ -217,21 +295,31 @@ def main() -> int:
         print(f"      stopped={view2['stopped']}  paused={view2['paused']}")
 
         # ---- 8. diff summary -------------------------------------------
-        ok = bool(s.get("thread_id")) and inv_state in ("succeeded", "failed", "canceled",
-                                                        "timed_out", "unknown")
+        process_ran = bool(evidence.get("event_count")) or mode == "stub"
+        ok = (
+            launch_ok
+            and bool(s.get("thread_id"))
+            and inv_state in ("succeeded", "failed", "canceled", "timed_out", "unknown")
+            and process_ran
+        )
         print("\n" + "=" * 78)
         print("DIFF (before -> after)")
         print("=" * 78)
         print(f"  task trees        : 0 -> {len(tasks1)}")
         print(f"  invocations       : 0 -> 1")
-        print(f"  process launches  : 0 (unapproved) -> {launches} (approved)")
+        print(f"  process launches  : 0 (unapproved) -> {launches} (approved)"
+              f"{'' if launch_ok else '   <-- expected 1'}")
         print(f"  adapter record    : none -> {res.get('status')}")
         print(f"  thread_id         : none -> {s.get('thread_id') or 'none'}")
         print(f"  usage             : none -> {json.dumps(s.get('usage') or {}, ensure_ascii=False)}")
         print(f"  open reservations : 0 -> {view2['quota'].get('open_reservations')}")
+        if mode == "real":
+            print(f"  exit code         : none -> {evidence.get('exit_code')}")
+            print(f"  jsonl events      : none -> {evidence.get('event_count')}")
+            print(f"  verdict           : none -> {evidence.get('verdict')}")
         print("=" * 78)
         print("VERIFICATION PASSED" if ok else "VERIFICATION COMPLETED WITH CAVEATS")
-        return 0
+        return 0 if ok else 1
     finally:
         server.terminate()
         try:

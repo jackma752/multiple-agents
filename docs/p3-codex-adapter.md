@@ -212,10 +212,18 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 批准后 → **恰好为 1**；然后打印 DIFF（任务树 / 调用数 / 启动数 / 适配器记录 /
 thread_id / usage / 未释放预留）。
 
-真实模式的前置条件：
+真实模式的前置条件（脚本会在**发起任何调用之前**检查，不满足就直接拒绝）：
 
-* `CODEX_HOME` 必须是**可写**目录且**在仓库之外**（默认 `%LOCALAPPDATA%\AgentHub\codex-home`）；
+* `CODEX_HOME` 必须是**可写**目录且**在仓库之外**（默认优先用
+  `%LOCALAPPDATA%\AgentHub\codex-home`，没有凭证时回退到操作者自己的
+  `%USERPROFILE%\.codex`，也可用 `--codex-home` 指定）；
+* 该目录必须**已有登录凭证** `auth.json`，否则脚本拒绝执行——避免花掉一次真实
+  调用只为得到"未登录"；
 * 需要放行 `chatgpt.com:443` 与 `api.openai.com:443`（或走已验证的本地回环代理，
   见 `docs/codex-proxy-setup.md`）；
 * **未获批准不会发起任何真实调用。**
+
+判定"启动了进程"的证据分两层：`adapter-result` 的 `launch_attempted` 表示**已越过
+启动前拒绝**（即真的去启动进程了），`evidence.exit_code` / `evidence.event_count`
+才表示**进程确实跑起来并输出了 JSONL**。真实模式两者都会打印，不做推断。
 

@@ -487,11 +487,25 @@ def create_app(
 
         last = getattr(adapter, "last_result", None)
         summary = last(invocation_id) if callable(last) else None
+        payload = record.get("payload") or {}
         return {
             "available": True,
             "status": record.get("status"),
             "detail": record.get("detail", ""),
             "summary": summary,
+            # Launch evidence. An execution record only exists once the adapter is
+            # past its pre-launch refusals, so `launch_attempted` means "a process
+            # was asked for"; the fields below say whether one really produced
+            # output. The prompt/argv is deliberately NOT echoed back here.
+            "launch_attempted": True,
+            "evidence": {
+                "exit_code": payload.get("exit_code"),
+                "timed_out": payload.get("timed_out"),
+                "verdict": payload.get("verdict"),
+                "event_count": len(payload.get("events") or []),
+                "event_types": payload.get("event_types") or {},
+                "elapsed": payload.get("elapsed"),
+            },
         }
 
     @app.get("/api/dev/mock-activity")

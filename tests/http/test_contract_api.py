@@ -397,3 +397,66 @@ def test_shutdown_invokes_the_hook_when_installed(client):
     assert r.status_code == 200
     assert r.json()["stopping"] is True
     assert calls == [1]
+
+
+# --------------------------------------------------------------------------- #
+# adapter-result: launch evidence
+# --------------------------------------------------------------------------- #
+
+
+def test_adapter_result_reports_launch_evidence(tmp_path):
+    """A launch ATTEMPT and a process that really RAN must be distinguishable.
+
+    The verification script (`tools/demo/codex_verify.py`) counts launches from
+    this endpoint, so "an execution record exists" alone is not enough: it also
+    needs the fields that prove a process produced output.
+    """
+    from agenthub_adapters.codex import (
+        CodexAdapter,
+        FakeCodexRunner,
+        success_script,
+    )
+    from agenthub_adapters.store import ExecutionStore
+
+    def make(store_path, adapter_path):
+        adapter = CodexAdapter(
+            codex_path=__file__,  # any existing file; identity is not pinned here
+            codex_home=str(tmp_path / "home"),
+            workdir_root=str(tmp_path / "runs"),
+            store=ExecutionStore(path=store_path, table="codex_executions"),
+            runner=FakeCodexRunner(success_script()),
+        )
+        app = create_app(
+            db=Database(f"sqlite:///{(tmp_path / adapter_path).as_posix()}"), adapter=adapter
+        )
+        return adapter, app
+
+    adapter, app = make(str(tmp_path / "codex-exec.db"), "evidence.db")
+    with TestClient(app) as c:
+        created = c.post(
+            "/api/invocations",
+            json={"task_id": "-", "agent_id": "codex", "task_input": "say OK"},
+            headers=USER,
+        ).json()
+        inv_id, appr_id = created["invocation_id"], created["approval_id"]
+
+        # Before approval: no record at all, so nothing can be counted as a launch.
+        assert c.get(f"/api/invocations/{inv_id}/adapter-result", headers=USER).json()[
+            "available"
+        ] is False
+
+        c.post("/api/worker/drain", headers=USER)
+        assert adapter.start_count == 0
+
+        c.post(f"/api/approvals/{appr_id}/approve", headers=USER)
+        c.post("/api/worker/drain", headers=USER)
+
+        res = c.get(f"/api/invocations/{inv_id}/adapter-result", headers=USER).json()
+        assert res["available"] is True
+        assert res["launch_attempted"] is True
+        assert res["status"] == "finished"
+        evidence = res["evidence"]
+        assert evidence["exit_code"] == 0
+        assert evidence["timed_out"] is False
+        assert evidence["verdict"] == "finished"
+        assert evidence["event_count"] >= 4
