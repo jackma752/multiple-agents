@@ -412,6 +412,27 @@ def create_app(
         worker: Worker = app.state.worker
         return worker.reap_timeouts()
 
+    @app.post("/api/dev/shutdown")
+    def shutdown(
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """MOCK/DEV-ONLY: ask the server to stop gracefully.
+
+        Exists because some environments forbid terminating the process from
+        outside (a restricted sandbox denies os.kill / TerminateProcess), which
+        leaves a PID-based stop tool unable to finish the job. User-token
+        protected, localhost only; a real deployment would not expose this.
+        """
+        require_approver(principal)
+        hook = getattr(app.state, "request_shutdown", None)
+        if hook is None:
+            return {
+                "stopping": False,
+                "reason": "no shutdown hook (start via tools/demo/serve.py)",
+            }
+        hook()
+        return {"stopping": True}
+
     @app.get("/api/dev/mock-activity")
     def mock_activity(
         principal: Principal = Depends(authenticate),

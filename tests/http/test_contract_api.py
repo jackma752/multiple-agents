@@ -371,3 +371,29 @@ def test_mock_activity_requires_user(client):
     r = client.get("/api/dev/mock-activity", headers=USER)
     assert r.status_code == 200
     assert r.json()["mock_only"] is True
+
+
+def test_shutdown_requires_user_and_reports_missing_hook(client):
+    """Dev shutdown is user-only and inert without serve.py's hook.
+
+    Unit tests build the app via create_app(), which installs no shutdown hook,
+    so the endpoint must say so rather than pretend it stopped something.
+    """
+    assert client.post("/api/dev/shutdown").status_code == 401
+    assert client.post("/api/dev/shutdown", headers=AGENT).status_code == 403
+
+    r = client.post("/api/dev/shutdown", headers=USER)
+    assert r.status_code == 200, r.text
+    assert r.json()["stopping"] is False
+    assert "no shutdown hook" in r.json()["reason"]
+
+
+def test_shutdown_invokes_the_hook_when_installed(client):
+    """With a hook installed (as tools/demo/serve.py does), it is called."""
+    calls: list[int] = []
+    client.app.state.request_shutdown = lambda: calls.append(1)
+
+    r = client.post("/api/dev/shutdown", headers=USER)
+    assert r.status_code == 200
+    assert r.json()["stopping"] is True
+    assert calls == [1]

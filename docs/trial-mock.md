@@ -257,9 +257,17 @@ POST /api/worker/recover     （需要用户 token）
 **重置为干净状态**：
 
 ```powershell
-# 先停掉服务，然后
+# 先按 PID 停掉服务（精确，不会误杀其他 python 进程）
+.\.venv\Scripts\python.exe tools\demo\stop.py
+# 再删除运行库
 Remove-Item .\var\agent-hub.db* -Force
 ```
+
+> **不要**用 `Get-Process python | Stop-Process -Force`：它会终止机器上所有 python
+> 进程（含无关工作），本环境还可能产生 `0x40010004` 强制终止码。
+> `stop.py` 会先核对 PID 与端口归属（`openapi.json` 的 `title` 必须是 `Agent Hub`），
+> 再请求服务**优雅退出**；核对不通过时**拒绝终止**。
+> 详见 `docs/tooling-diagnostics.md`。
 
 `var/` 已在 `.gitignore` 中，不会被提交。
 
