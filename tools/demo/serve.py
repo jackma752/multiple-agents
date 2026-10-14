@@ -71,18 +71,45 @@ def main() -> None:
         action="store_true",
         help="do not write var/serve-<port>.pid",
     )
+    parser.add_argument(
+        "--adapter",
+        choices=["mock", "codex"],
+        default=None,
+        help="adapter to serve with: 'mock' is inert (default), 'codex' launches "
+             "the real Codex CLI and needs the pinned executable plus proxy/CA "
+             "settings in place",
+    )
     args = parser.parse_args()
 
     import uvicorn
 
     from agenthub_kernel import config
 
+    if args.adapter:
+        os.environ["AGENT_HUB_ADAPTER"] = args.adapter
+
+    from agenthub_kernel.adapters import adapter_kind
+
+    kind = adapter_kind()
+
     print("=" * 72)
-    print("Agent Hub - Mock API (no real Agent is contacted)")
+    if kind == "codex":
+        print("Agent Hub - REAL Codex adapter (launches the local Codex CLI)")
+    else:
+        print("Agent Hub - Mock API (no real Agent is contacted)")
+    print(f"  adapter  : {kind}")
     print(f"  API page : http://{args.host}:{args.port}/docs")
+    print(f"  console  : http://{args.host}:{args.port}/ui")
     print(f"  OpenAPI  : http://{args.host}:{args.port}/openapi.json")
     print(f"  Database : {config.default_db_url()}")
     print(f"  Data dir : {config.DATA_DIR}")
+    if kind == "codex":
+        s = config.codex_settings()
+        print(f"  codex    : {s['codex_path']}")
+        print(f"  version  : {s['version']}")
+        print(f"  sandbox  : read-only, sub-agents disabled (--disable multi_agent)")
+        print(f"  proxy    : {s['proxy'] or '(none)'}")
+        print(f"  ca bundle: {s['ca_bundle'] or '(none)'}")
     token = os.environ.get("AGENT_HUB_USER_TOKEN", "dev-user-token")
     print(f"  User token (from AGENT_HUB_USER_TOKEN or default): {token}")
     if not args.no_pid_file:
@@ -103,7 +130,7 @@ def main() -> None:
 
     from agenthub_rt.api import create_app
 
-    app = create_app()
+    app = create_app(adapter_kind=kind)
     config_ = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config_)
 

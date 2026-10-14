@@ -73,7 +73,7 @@
 <body>
 <header>
   <h1>Agent Hub 控制台</h1>
-  <span class="mock-badge">Mock 模式 · 未接入真实 Agent</span>
+  <span id="adapter-badge" class="mock-badge">Mock 模式 · 未接入真实 Agent</span>
   <div class="row" style="margin:0; flex: 1; min-width: 260px;">
     <input id="token" type="password" placeholder="用户 token（默认 dev-user-token）" />
     <button id="connect" class="primary">连接</button>
@@ -114,12 +114,16 @@
 
     <h2 style="margin-top:16px;">任务树</h2>
     <ul id="tree" class="tree"><li class="muted">无</li></ul>
+
+    <h2 style="margin-top:16px;">执行结果（适配器记录）</h2>
+    <div id="results" class="muted">无</div>
   </section>
 
   <!-- 右：配额、停止、事件 -->
   <section>
     <h2>配额</h2>
     <div id="quota" class="muted">—</div>
+    <div id="adapter-note" class="muted" style="margin-top:8px;"></div>
 
     <h2 style="margin-top:16px;">控制</h2>
     <div class="row"><button id="stop" class="danger" disabled>停止整棵树</button>
@@ -187,10 +191,47 @@ $("connect").onclick = async () => {
   S.token = $("token").value.trim() || "dev-user-token";
   try {
     await api("GET", "/api/dev/mock-activity");
-    toast("已连接（Mock 模式，未接入真实 Agent）", "ok");
+    await loadAdapter();
+    toast("已连接（适配器：" + S.adapterLabel + "）", "ok");
     await loadTasks();
   } catch (e) { toast("连接失败：" + e.message, "bad"); }
 };
+
+/* ---------------- adapter identity ---------------- */
+async function loadAdapter() {
+  try {
+    S.adapter = await api("GET", "/api/adapter");
+  } catch (e) { S.adapter = null; }
+  const a = S.adapter || {};
+  const badge = $("adapter-badge");
+  if (a.kind === "codex") {
+    S.adapterLabel = "REAL Codex";
+    badge.textContent = "REAL Codex · 将启动真实进程";
+    badge.style.background = "#3a1a1d";
+    badge.style.color = "#ffb4b7";
+    badge.style.borderColor = "#5c2a2e";
+    const caps = a.capabilities || {};
+    const note = [
+      "版本 " + (a.version || "?"),
+      "沙箱 " + (a.sandbox || "?") + (a.subagents_disabled ? "，子 Agent 已禁用" : "，⚠ 子 Agent 未禁用"),
+      a.identity_ok ? "可执行文件已固定校验通过" : "⚠ 可执行文件校验未通过：" + (a.identity_detail || ""),
+      a.proxy ? "代理 " + a.proxy : "无代理",
+      "超时 " + (a.timeout_seconds || "?") + "s",
+    ].join(" · ");
+    const unknown = Object.entries(caps)
+      .filter(([k, v]) => (v === false || v === "unknown") && ["cancel", "intercept_tool", "limit_dir", "control_subagent"].includes(k))
+      .map(([k, v]) => k + "=" + v);
+    $("adapter-note").textContent = note + (unknown.length ? " · 未验证: " + unknown.join(", ") : "");
+    $("adapter-note").className = "muted";
+  } else {
+    S.adapterLabel = "Mock";
+    badge.textContent = "Mock 模式 · 未接入真实 Agent";
+    badge.style.background = "#3a2a12";
+    badge.style.color = "#e8b339";
+    badge.style.borderColor = "#5a4020";
+    $("adapter-note").textContent = "Mock 适配器只记录启动次数，不启动任何真实进程。";
+  }
+}
 
 /* ---------------- tasks ---------------- */
 async function loadTasks() {
@@ -337,7 +378,37 @@ function renderEvents() {
   ).join("") || '<span class="muted">无</span>';
 }
 
-function render() { renderApprovals(); renderTree(); renderQuota(); renderEvents(); }
+function render() { renderApprovals(); renderTree(); renderQuota(); renderEvents(); renderResults(); }
+
+/* ---------------- adapter execution results ---------------- */
+async function renderResults() {
+  const invs = (S.view && S.view.invocations) || [];
+  if (!invs.length) { $("results").innerHTML = '<span class="muted">无</span>'; return; }
+  const cards = [];
+  for (const inv of invs) {
+    let r = null;
+    try { r = await api("GET", `/api/invocations/${inv.id}/adapter-result`); } catch (e) { r = null; }
+    if (!r || !r.available) continue;
+    const s = r.summary || {};
+    const usage = s.usage && Object.keys(s.usage).length
+      ? Object.entries(s.usage).map(([k, v]) => `${k}=${v}`).join(", ")
+      : "未提供";
+    const events = s.event_types ? Object.entries(s.event_types).map(([k, v]) => `${k}×${v}`).join(" → ") : "—";
+    cards.push(`<div class="card">
+      <h3><code>${inv.id}</code> ${pill(r.status || "unknown")}</h3>
+      <div class="kv">
+        <div>thread_id</div><div><code>${s.thread_id || "—"}</code></div>
+        <div>最终回复</div><div>${escapeHtml(s.final_message || "—")}</div>
+        <div>usage</div><div>${escapeHtml(usage)}</div>
+        <div>事件</div><div>${escapeHtml(events)}</div>
+        <div>工作目录</div><div>${(s.workdir_entries_after || []).length} 条目${
+          (s.workdir_entries_after || []).length === 0 ? "（只读生效）" : "（⚠ 有写入）"}</div>
+      </div>
+      ${r.detail ? `<div class="muted" style="margin-top:6px;">${escapeHtml(r.detail).slice(0, 240)}</div>` : ""}
+    </div>`);
+  }
+  $("results").innerHTML = cards.join("") || '<span class="muted">尚无适配器执行记录</span>';
+}
 
 /* ---------------- controls ---------------- */
 $("stop").onclick = async () => {

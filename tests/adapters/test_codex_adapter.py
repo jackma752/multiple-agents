@@ -1,0 +1,349 @@
+"""Codex adapter tests - fully offline.
+
+No real Codex process is launched anywhere in this file. The adapter is driven
+through an injected ``runner`` that replays canned JSONL, so the event parsing,
+store updates, gate enforcement and failure handling are all exercised without
+spending quota or touching the network.
+
+The JSONL shape used here is the one captured from the verified real probe
+(docs/agent-codex-capabilities.md 5.5), so the fixtures are not invented.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from agenthub.contracts import InvocationSnapshot
+from agenthub_adapters.codex import (
+    CodexAdapter,
+    CodexRun,
+    FakeCodexRunner,
+    build_argv,
+    build_env,
+    file_identity,
+    parse_events,
+    success_script,
+)
+from agenthub_adapters.store import FAILED, FINISHED, RUNNING, ExecutionStore
+
+VERIFIED_LINES = [
+    '{"type":"thread.started","thread_id":"01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"}',
+    '{"type":"turn.started"}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":14481,"cached_input_tokens":12544,'
+    '"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}',
+]
+VERIFIED_CAPTURE = "\n".join(VERIFIED_LINES) + "\n"
+
+
+def snapshot(text: str = "Reply with exactly: OK. Do not modify any files.") -> InvocationSnapshot:
+    return InvocationSnapshot(
+        agent_id="codex",
+        task_input=text,
+        parent_task_id=None,
+        depth=0,
+    )
+
+
+def make_adapter(tmp_path, script=None, **kw) -> CodexAdapter:
+    store = ExecutionStore(path=str(tmp_path / "codex-exec.db"), table="codex_executions")
+    runner = FakeCodexRunner(script or success_script())
+    return CodexAdapter(
+        codex_path=kw.pop("codex_path", __file__),  # any existing file
+        codex_home=str(tmp_path / "home"),
+        workdir_root=str(tmp_path / "runs"),
+        store=store,
+        runner=runner,
+        **kw,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# event parsing (pure function, exact fixture from the real probe)
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_verified_capture():
+    p = parse_events(VERIFIED_CAPTURE)
+    assert p.thread_id == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
+    assert p.final_message == "OK"
+    assert p.usage["input_tokens"] == 14481
+    assert p.usage["cached_input_tokens"] == 12544
+    assert p.usage["output_tokens"] == 5
+    assert p.event_types == {
+        "thread.started": 1,
+        "turn.started": 1,
+        "item.completed": 1,
+        "turn.completed": 1,
+    }
+    assert p.turn_completed is True
+    assert p.turn_failed is False
+    assert p.errors == []
+
+
+def test_parse_keeps_non_json_lines_instead_of_dropping_them():
+    text = "Reading additional input from stdin...\n" + VERIFIED_CAPTURE
+    p = parse_events(text)
+    assert len(p.events) == 4
+    assert any("Reading additional input" in l for l in p.unparsed_lines)
+
+
+def test_parse_records_errors_and_reconnect_messages():
+    text = "\n".join([
+        '{"type":"thread.started","thread_id":"t1"}',
+        '{"type":"error","message":"Reconnecting... 2/5 (workspace routing discovery failed)"}',
+        '{"type":"turn.failed","error":{"message":"workspace routing discovery failed"}}',
+    ])
+    p = parse_events(text)
+    assert p.turn_failed is True
+    assert p.turn_completed is False
+    assert len(p.errors) == 2
+    assert "Reconnecting" in p.errors[0]
+
+
+def test_parse_empty_output_is_not_a_success():
+    p = parse_events("")
+    assert p.events == []
+    assert p.thread_id == ""
+    assert p.turn_completed is False
+
+
+# --------------------------------------------------------------------------- #
+# argv / env build: the safety posture is asserted, not assumed
+# --------------------------------------------------------------------------- #
+
+
+def test_build_argv_enforces_read_only_and_no_subagents():
+    argv = build_argv("codex.exe", "hi", "C:/wd")
+    assert argv[0] == "codex.exe"
+    assert argv[1] == "exec"
+    assert "--json" in argv
+    assert "--disable" in argv and "multi_agent" in argv
+    assert "--sandbox" in argv and "read-only" in argv
+    assert "--skip-git-repo-check" in argv
+    assert argv[-3] == "-C" and argv[-2] == "C:/wd"
+    assert argv[-1] == "hi"
+    # the dangerous bypass flags must never appear
+    joined = " ".join(argv)
+    assert "dangerously-bypass" not in joined
+
+
+def test_build_argv_no_subagent_flag_when_disabled_option_off():
+    argv = build_argv("codex.exe", "hi", "wd", disable_subagents=False)
+    assert "multi_agent" not in argv
+
+
+def test_build_env_sets_proxy_and_ca_without_touching_the_system():
+    base = {"PATH": "x", "USERPROFILE": "y"}
+    env = build_env(
+        codex_home="HOME",
+        proxy="http://127.0.0.1:8090",
+        ca_bundle="cacert.pem",
+        base_env=base,
+    )
+    assert env["CODEX_HOME"] == "HOME"
+    assert env["HTTPS_PROXY"] == "http://127.0.0.1:8090"
+    assert env["https_proxy"] == "http://127.0.0.1:8090"
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:8090"
+    assert env["NO_PROXY"] == "localhost,127.0.0.1"
+    assert env["CODEX_CA_CERTIFICATE"] == "cacert.pem"
+    # the caller's dict is not mutated (process-scoped only)
+    assert "CODEX_HOME" not in base
+    assert "HTTPS_PROXY" not in base
+
+
+# --------------------------------------------------------------------------- #
+# the gate: the central safety requirement
+# --------------------------------------------------------------------------- #
+
+
+def test_start_without_gate_token_launches_nothing(tmp_path):
+    a = make_adapter(tmp_path)
+    result = a.start("inv-1", snapshot())          # no gate_token
+    assert result.ok is False
+    assert "no kernel gate token" in result.detail
+    assert a.start_count == 0, "process was reached without a gate token"
+    assert a.runner.calls == [], "runner was invoked without a gate token"
+    assert a.store.get("inv-1") is None
+
+
+def test_start_with_gate_token_runs_once(tmp_path):
+    a = make_adapter(tmp_path)
+    result = a.start("inv-1", snapshot(), gate_token="consumed:appr-1:inv-1")
+    assert result.ok is True
+    assert a.start_count == 1
+    assert len(a.runner.calls) == 1
+    assert result.adapter_invocation_id == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
+
+
+def test_identity_mismatch_refuses_to_launch(tmp_path):
+    a = make_adapter(tmp_path, expected_identity={"size": 1, "sha256": "deadbeef"})
+    result = a.start("inv-1", snapshot(), gate_token="consumed:appr-1:inv-1")
+    assert result.ok is False
+    assert result.detail.startswith("refused:")
+    assert "mismatch" in result.detail
+    assert a.start_count == 0 and a.runner.calls == []
+
+
+def test_identity_matches_for_real_file(tmp_path):
+    a = make_adapter(tmp_path, expected_identity=file_identity(__file__))
+    ok, why = a.identity_matches()
+    assert ok, why
+
+
+# --------------------------------------------------------------------------- #
+# result plumbing
+# --------------------------------------------------------------------------- #
+
+
+def test_success_records_thread_id_reply_and_usage(tmp_path):
+    a = make_adapter(tmp_path)
+    a.start("inv-1", snapshot(), gate_token="tok")
+    rec = a.store.get("inv-1")
+    assert rec["status"] == FINISHED
+    payload = rec["payload"]
+    assert payload["thread_id"] == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
+    assert payload["final_message"] == "OK"
+    assert payload["usage"]["input_tokens"] == 14481
+    assert payload["usage"]["output_tokens"] == 5
+    assert payload["workdir_entries_after"] == []
+    last = a.last_result("inv-1")
+    assert last["thread_id"] == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
+    assert last["usage"]["output_tokens"] == 5
+
+
+def test_turn_failed_marks_failed_with_reason(tmp_path):
+    def script(argv, env):
+        text = "\n".join([
+            '{"type":"thread.started","thread_id":"t9"}',
+            '{"type":"turn.started"}',
+            '{"type":"error","message":"workspace routing discovery failed"}',
+            '{"type":"turn.failed","error":{"message":"workspace routing discovery failed"}}',
+        ])
+        return CodexRun(1, False, 20.1, text, argv)
+
+    a = make_adapter(tmp_path, script=script)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+    assert result.ok is False
+    assert "workspace routing discovery failed" in result.detail
+    assert a.store.get("inv-1")["status"] == FAILED
+
+
+def test_exit_zero_without_turn_completed_is_not_success(tmp_path):
+    """Exit code alone must not be read as success."""
+
+    def script(argv, env):
+        return CodexRun(0, False, 0.1, '{"type":"thread.started","thread_id":"t"}\n', argv)
+
+    a = make_adapter(tmp_path, script=script)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+    assert result.ok is False
+    assert a.store.get("inv-1")["status"] == FAILED
+
+
+# --------------------------------------------------------------------------- #
+# requirement 4: timeout / unconfirmed cancel => unknown, slot kept
+# --------------------------------------------------------------------------- #
+
+
+def test_timeout_keeps_record_running_so_the_kernel_cannot_release(tmp_path):
+    """A local kill is NOT proof the remote turn ended."""
+
+    def script(argv, env):
+        # Partial output, then the process had to be killed.
+        return CodexRun(None, True, 300.0, '{"type":"thread.started","thread_id":"t1"}\n', argv)
+
+    a = make_adapter(tmp_path, script=script)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+    assert result.ok is False
+    assert "unknown" in result.detail
+    rec = a.store.get("inv-1")
+    assert rec["status"] == RUNNING, "timeout must not look terminal to the kernel"
+    assert "not confirmed stopped" in rec["detail"]
+
+
+def test_cancel_is_reported_unsupported_not_faked(tmp_path):
+    a = make_adapter(tmp_path)
+    out = a.cancel_invocation("inv-1")
+    assert out["ok"] is False
+    assert out["reason"] == "unsupported"
+    assert "unverified" in out["detail"]
+
+
+def test_lookup_reflects_the_external_record(tmp_path):
+    a = make_adapter(tmp_path)
+    assert a.lookup_by_invocation("inv-1") is None
+    a.start("inv-1", snapshot(), gate_token="tok")
+    rec = a.lookup_by_invocation("inv-1")
+    assert rec is not None and rec["status"] == FINISHED
+
+
+# --------------------------------------------------------------------------- #
+# capabilities tell the truth
+# --------------------------------------------------------------------------- #
+
+
+def test_capabilities_mark_unverified_items():
+    caps = CodexAdapter.capabilities(CodexAdapter.__new__(CodexAdapter))
+    assert caps["post_message"] is True
+    assert caps["stream"] is True
+    assert caps["real_usage"] is True
+    # never claim what was not demonstrated
+    assert caps["cancel"] is False
+    assert caps["intercept_tool"] is False
+    assert caps["limit_dir"] == "unknown"
+    assert caps["control_subagent"] == "unknown"
+
+
+# --------------------------------------------------------------------------- #
+# the real subprocess machinery, using a stub "process" instead of Codex
+# --------------------------------------------------------------------------- #
+
+
+def test_subprocess_runner_captures_output_from_a_stub_process(tmp_path):
+    """Exercises SubprocessCodexRunner without involving Codex.
+
+    The stub is a tiny python script that prints the same JSONL. This proves the
+    file-based stdout capture path works (pipes are denied in this sandbox).
+    """
+    import sys
+
+    from agenthub_adapters.codex import SubprocessCodexRunner
+
+    stub = tmp_path / "stub_codex.py"
+    stub.write_text(
+        "import json,sys\n"
+        "sys.stdout.write(json.dumps({'type':'thread.started','thread_id':'stub-1'})+'\\n')\n"
+        "sys.stdout.write(json.dumps({'type':'turn.started'})+'\\n')\n"
+        "sys.stdout.write(json.dumps({'type':'item.completed','item':{'id':'i','type':"
+        "'agent_message','text':'OK'}})+'\\n')\n"
+        "sys.stdout.write(json.dumps({'type':'turn.completed','usage':{'input_tokens':7,"
+        "'output_tokens':1}})+'\\n')\n",
+        encoding="utf-8",
+    )
+    runner = SubprocessCodexRunner(scratch_dir=str(tmp_path / "scratch"))
+    run = runner.run([sys.executable, str(stub)], dict(os.environ), timeout=60)
+
+    assert run.ok, run.stdout_text
+    parsed = parse_events(run.stdout_text)
+    assert parsed.thread_id == "stub-1"
+    assert parsed.final_message == "OK"
+    assert parsed.usage == {"input_tokens": 7, "output_tokens": 1}
+
+
+def test_subprocess_runner_enforces_timeout(tmp_path):
+    import sys
+
+    from agenthub_adapters.codex import SubprocessCodexRunner
+
+    slow = tmp_path / "slow.py"
+    slow.write_text("import time\nprint('{\"type\":\"turn.started\"}', flush=True)\ntime.sleep(60)\n",
+                    encoding="utf-8")
+    runner = SubprocessCodexRunner(scratch_dir=str(tmp_path / "scratch"))
+    run = runner.run([sys.executable, str(slow)], dict(os.environ), timeout=2)
+
+    assert run.timed_out is True
+    assert run.ok is False

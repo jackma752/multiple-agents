@@ -80,6 +80,8 @@ class ReconcileIn(BaseModel):
 def create_app(
     db: Optional[Database] = None,
     db_url: Optional[str] = None,
+    adapter: Optional[Any] = None,
+    adapter_kind: Optional[str] = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -87,8 +89,13 @@ def create_app(
     is anchored to the repo root, not the working directory), so the API process
     and a separately launched Worker process see the same data and it survives a
     restart. Tests may pass an explicit ``db`` or ``db_url``.
+
+    Adapter selection: defaults to the inert **Mock**. Passing
+    ``adapter_kind="codex"`` (or setting ``AGENT_HUB_ADAPTER=codex``) opts into
+    the real Codex CLI, which launches a real process.
     """
     from agenthub_kernel import config
+    from agenthub_kernel.adapters import build_adapter
 
     if db is None:
         url = db_url or config.default_db_url()
@@ -98,7 +105,10 @@ def create_app(
     db.create_all()
     app = FastAPI(title="Agent Hub", version="0.1.0")
     app.state.db = db
-    app.state.worker = Worker(db, MockAdapter())
+    if adapter is None:
+        adapter = build_adapter(adapter_kind)
+    app.state.adapter = adapter
+    app.state.worker = Worker(db, adapter)
 
     # Read-model endpoints + the zero-build console page (see ui.py).
     from agenthub_rt.ui import register_ui
@@ -437,6 +447,52 @@ def create_app(
             }
         hook()
         return {"stopping": True}
+
+    @app.get("/api/adapter")
+    def adapter_info(
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """Which adapter is live, and (for Codex) its pinned identity/limits.
+
+        Read-only: lets the console show 'Mock mode' vs 'REAL Codex' and surface
+        the safety posture (read-only sandbox, sub-agents disabled, pinned hash)
+        without the operator having to trust the page's own text.
+        """
+        from agenthub_kernel.adapters import describe
+
+        adapter = app.state.adapter
+        info = describe(adapter)
+        caps = getattr(adapter, "capabilities", None)
+        if callable(caps):
+            info["capabilities"] = caps()
+        return info
+
+    @app.get("/api/invocations/{invocation_id}/adapter-result")
+    def adapter_result(
+        invocation_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        """The adapter's own record for one invocation.
+
+        For Codex this is where the parsed thread_id, final reply, real usage and
+        the workdir delta come from - the console renders them on the call card.
+        """
+        adapter = app.state.adapter
+        lookup = getattr(adapter, "lookup_by_invocation", None)
+        if lookup is None:
+            return {"available": False, "reason": "adapter has no execution records"}
+        record = lookup(invocation_id)
+        if record is None:
+            return {"available": False, "reason": "no execution record for this invocation"}
+
+        last = getattr(adapter, "last_result", None)
+        summary = last(invocation_id) if callable(last) else None
+        return {
+            "available": True,
+            "status": record.get("status"),
+            "detail": record.get("detail", ""),
+            "summary": summary,
+        }
 
     @app.get("/api/dev/mock-activity")
     def mock_activity(

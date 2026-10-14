@@ -423,11 +423,18 @@ class Worker:
                     "error": exc.message,
                 }
             snapshot_data = plan["snapshot"]
+            gate_token = plan.get("gate_token", "")
             # Exiting this block COMMITS the consumed approval + reservation.
             # Any failure here propagates and the adapter is never started.
 
         # ---- Phase 2: only now start the adapter, outside that transaction ----
-        start = self.adapter.start(invocation_id, _snapshot_from_dict(snapshot_data))
+        # The gate token proves an approval was consumed and a slot reserved; an
+        # adapter that launches a real process requires it.
+        start = self.adapter.start(
+            invocation_id,
+            _snapshot_from_dict(snapshot_data),
+            gate_token=gate_token,
+        )
 
         # ---- Phase 3: record the outcome ----
         with self.db.session() as session:
@@ -442,13 +449,31 @@ class Worker:
             if inv is not None and start.adapter_invocation_id:
                 inv.adapter_invocation_id = start.adapter_invocation_id
             if start.ok:
+                # Set started_at first (durable evidence the call reached the
+                # adapter), then either settle a completed run or leave it
+                # running. A synchronous adapter that already finished reports
+                # terminal=True; leaving it 'running' would leak its slot.
                 svc.transition_invocation(invocation_id, InvocationStatus.RUNNING)
-            else:
+                if getattr(start, "terminal", False):
+                    svc.release(invocation_id, InvocationStatus.SUCCEEDED)
+            elif getattr(start, "terminal", True):
+                # Definitive failure: settle it and free the slot once.
                 svc.release(invocation_id, InvocationStatus.FAILED)
+            else:
+                # NOT confirmed (timeout, or a cancellation the adapter cannot
+                # perform). The remote work may still be running, so the slot is
+                # deliberately KEPT and the call becomes unknown until a human
+                # resolves it. Freeing here would let a second call take a slot
+                # the first one may still occupy.
+                svc.mark_unknown(
+                    invocation_id,
+                    reason=f"adapter outcome unconfirmed: {start.detail}",
+                )
 
         return {
             "invocation_id": invocation_id,
             "ok": start.ok,
+            "terminal": getattr(start, "terminal", True),
             "adapter_invocation_id": start.adapter_invocation_id,
         }
 

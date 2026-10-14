@@ -14,10 +14,7 @@ metadata (its own table, its own connection) to model that boundary honestly.
 
 from __future__ import annotations
 
-import datetime as dt
 import itertools
-import os
-import sqlite3
 import threading
 from typing import Any, Optional
 
@@ -27,138 +24,29 @@ from agenthub.contracts import (
     InvocationSnapshot,
 )
 
-#: External-side run states.
-MOCK_RUNNING = "running"
-MOCK_FINISHED = "finished"
-MOCK_FAILED = "failed"
-MOCK_CANCELLED = "cancelled"
+from agenthub_adapters.store import (
+    CANCELLED as MOCK_CANCELLED,
+    FAILED as MOCK_FAILED,
+    FINISHED as MOCK_FINISHED,
+    RUNNING as MOCK_RUNNING,
+    ExecutionStore,
+)
 
 
-class MockExecutionStore:
+class MockExecutionStore(ExecutionStore):
     """Persisted record of what the Mock "external agent" was asked to run.
 
-    Keyed by ``invocation_id`` so recovery can ask, per invocation, whether the
-    call ever reached the adapter and what happened to it.
+    Keyed by `invocation_id` so recovery can ask, per invocation, whether the
+    call ever reached the adapter and what happened to it. Shares the generic
+    implementation; only the table name differs.
     """
 
-    def __init__(self, path: str = ":memory:") -> None:
-        self.path = path
-        self._lock = threading.Lock()
-        # A shared-cache in-memory DB so several connections see one store.
-        self._uri = path == ":memory:" or path.startswith("file:")
-        self._init()
-
-    # -- connection helpers -------------------------------------------------
-
-    def _connect(self) -> sqlite3.Connection:
-        if self.path == ":memory:":
-            # Keep one connection alive for in-memory mode.
-            if not hasattr(self, "_mem_conn"):
-                self._mem_conn = sqlite3.connect(
-                    "file:mockexec?mode=memory&cache=shared",
-                    uri=True,
-                    check_same_thread=False,
-                )
-                self._mem_conn.execute("PRAGMA busy_timeout=30000")
-            return self._mem_conn
-        conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
-        conn.execute("PRAGMA busy_timeout=30000")
-        return conn
-
-    def _init(self) -> None:
-        with self._lock:
-            conn = self._connect()
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS mock_executions (
-                    invocation_id       TEXT PRIMARY KEY,
-                    adapter_invocation_id TEXT,
-                    status              TEXT NOT NULL,
-                    detail              TEXT,
-                    started_at          TEXT,
-                    updated_at          TEXT
-                )
-                """
-            )
-            conn.commit()
-            if self.path != ":memory:":
-                conn.close()
-
-    # -- api ----------------------------------------------------------------
-
-    @staticmethod
-    def _ts() -> str:
-        return dt.datetime.now(dt.timezone.utc).isoformat()
+    TABLE = "mock_executions"
 
     def record_start(self, invocation_id: str, adapter_invocation_id: str) -> None:
-        with self._lock:
-            conn = self._connect()
-            conn.execute(
-                """
-                INSERT INTO mock_executions
-                    (invocation_id, adapter_invocation_id, status, started_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(invocation_id) DO UPDATE SET
-                    adapter_invocation_id=excluded.adapter_invocation_id,
-                    status=excluded.status,
-                    updated_at=excluded.updated_at
-                """,
-                (invocation_id, adapter_invocation_id, MOCK_RUNNING, self._ts(), self._ts()),
-            )
-            conn.commit()
-            if self.path != ":memory:":
-                conn.close()
-
-    def set_status(self, invocation_id: str, status: str, detail: str = "") -> None:
-        with self._lock:
-            conn = self._connect()
-            conn.execute(
-                "UPDATE mock_executions SET status=?, detail=?, updated_at=? "
-                "WHERE invocation_id=?",
-                (status, detail, self._ts(), invocation_id),
-            )
-            conn.commit()
-            if self.path != ":memory:":
-                conn.close()
-
-    def get(self, invocation_id: str) -> Optional[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM mock_executions WHERE invocation_id=?",
-                (invocation_id,),
-            ).fetchone()
-            if self.path != ":memory:":
-                conn.close()
-            return dict(row) if row is not None else None
-
-    def all_records(self) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM mock_executions").fetchall()
-            if self.path != ":memory:":
-                conn.close()
-            return [dict(r) for r in rows]
-
-    def delete(self, invocation_id: str) -> int:
-        """Remove one execution record. TEST/MOCK-ONLY.
-
-        Exists so tests can reproduce "the external side has no record for a call
-        the kernel knows it started" - the lost-evidence case, which must NOT be
-        mistaken for proof that nothing is running. A real adapter would not
-        offer this.
-        """
-        with self._lock:
-            conn = self._connect()
-            cur = conn.execute(
-                "DELETE FROM mock_executions WHERE invocation_id=?", (invocation_id,)
-            )
-            conn.commit()
-            if self.path != ":memory:":
-                conn.close()
-            return cur.rowcount
+        super().record_start(invocation_id, adapter_invocation_id)
+        # The Mock has always exposed the raw row shape; keep that.
+        return None
 
 
 class MockAdapter(AdapterContract):
@@ -210,7 +98,14 @@ class MockAdapter(AdapterContract):
     def health(self) -> bool:
         return True
 
-    def start(self, invocation_id: str, snapshot: InvocationSnapshot) -> AdapterStartResult:
+    def start(
+        self,
+        invocation_id: str,
+        snapshot: InvocationSnapshot,
+        *,
+        gate_token: Optional[str] = None,
+    ) -> AdapterStartResult:
+        """Record a start. The Mock is inert, so it accepts but ignores the token."""
         with self._lock:
             self._start_count += 1
             adapter_id = f"mock-{next(self._counter)}-{invocation_id}"
@@ -221,9 +116,17 @@ class MockAdapter(AdapterContract):
         if self._fail_on_start:
             self.store.set_status(invocation_id, MOCK_FAILED, "mock failure")
             return AdapterStartResult(
-                adapter_invocation_id=adapter_id, ok=False, detail="mock failure"
+                adapter_invocation_id=adapter_id,
+                ok=False,
+                terminal=True,
+                detail="mock failure",
             )
-        return AdapterStartResult(adapter_invocation_id=adapter_id, ok=True)
+        # terminal=False: the Mock simulates a call that keeps running until the
+        # kernel releases it, which is what the concurrency tests rely on. A real
+        # adapter that completes synchronously reports terminal=True instead.
+        return AdapterStartResult(
+            adapter_invocation_id=adapter_id, ok=True, terminal=False
+        )
 
     def cancel(self, adapter_invocation_id: str) -> Any:
         # Unsupported operations must say so rather than pretending; the Mock

@@ -587,6 +587,10 @@ class PolicyService:
             "root_task_id": task.root_task_id,
             "approval_id": appr.id,
             "snapshot": inv.snapshot,
+            # Proof that THIS call consumed an approved approval under a reserved
+            # quota slot. Adapters that launch a real process can require it, so
+            # reaching a launch without the gate becomes a loud error.
+            "gate_token": f"consumed:{appr.id}:{invocation_id}",
         }
 
     # ------------------------------------------------------------------ #

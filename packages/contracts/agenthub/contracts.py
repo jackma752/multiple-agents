@@ -236,11 +236,23 @@ class Policy:
 
 @dataclass
 class AdapterStartResult:
-    """What the worker takes away from a successful adapter start."""
+    """What the worker takes away from an attempt to start a call.
+
+    ``terminal`` distinguishes the two ways a start can be "not ok":
+
+    * ``terminal=True`` (default) - the outcome is definitive and the invocation
+      may be settled (e.g. ``turn.failed``, a refused request). The kernel frees
+      the quota slot.
+    * ``terminal=False`` - the outcome could NOT be confirmed: a timeout, or a
+      cancellation the adapter cannot perform. The kernel must NOT free the slot,
+      because the remote work may still be running. The invocation becomes
+      ``unknown`` and keeps its slot until a human resolves it.
+    """
 
     adapter_invocation_id: str
     ok: bool = True
     detail: str = ""
+    terminal: bool = True
 
 
 class AdapterContract:
@@ -260,7 +272,21 @@ class AdapterContract:
     def health(self) -> bool:
         raise NotImplementedError
 
-    def start(self, invocation_id: str, snapshot: InvocationSnapshot) -> AdapterStartResult:
+    def start(
+        self,
+        invocation_id: str,
+        snapshot: InvocationSnapshot,
+        *,
+        gate_token: Optional[str] = None,
+    ) -> AdapterStartResult:
+        """Start a call.
+
+        ``gate_token`` is issued by the kernel's consume gate once an approval has
+        been atomically consumed and a quota slot reserved. Inert adapters may
+        ignore it; an adapter that launches a real process should require it, so
+        that reaching a launch without approval is a loud error instead of a
+        silent one. Keyword-only and optional for backwards compatibility.
+        """
         raise NotImplementedError
 
     def cancel(self, adapter_invocation_id: str) -> Any:

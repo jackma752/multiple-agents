@@ -30,7 +30,12 @@ class KernelHarness:
     would operate against the persistent store.
     """
 
-    def __init__(self, policy: Policy | None = None, url: str = "sqlite:///:memory:"):
+    def __init__(
+        self,
+        policy: Policy | None = None,
+        url: str = "sqlite:///:memory:",
+        adapter=None,
+    ):
         self.policy = policy or DEFAULT_POLICY
         self.db = Database(url)
         self.db.create_all()
@@ -39,7 +44,10 @@ class KernelHarness:
         # survive a simulated restart; for in-memory we use a shared-cache
         # in-memory store.
         self.store_path = _store_path_for(url)
-        self.adapter = MockAdapter(store_path=self.store_path)
+        # `adapter` lets a test substitute a real adapter (e.g. the Codex adapter
+        # driven by a fake runner) while everything else - approval, snapshot and
+        # quota gates - stays exactly as in production.
+        self.adapter = adapter if adapter is not None else MockAdapter(store_path=self.store_path)
         self.worker = Worker(self.db, self.adapter)
 
     def new_adapter(self) -> MockAdapter:
