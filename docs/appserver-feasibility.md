@@ -35,13 +35,28 @@
 **关键结论**：四项**全部有文档支持且本机接口存在**，但**没有任何一项在真实 app-server 上验证过行为**。
 按 AGENTS.md，适配器**不得**据此宣称"支持取消/支持拦截"。
 
-### 2.1 握手（顺带发现，尚未验证）
+### 2.1 传输与握手（本轮已按官方口径确定）
 
-本机 schema 里有 `initialize` / `InitializeParams`（`ClientRequest.json:1861`，required `clientInfo`
-位于 `:1878`）与 `InitializeResponse`，还有 `InitializeCapabilities`（"Client-declared capabilities
-negotiated during initialize"）。但**捕获到的文档没有说明 stdio 会话是否必须、何时必须发它**。
-原型因此把 `initialize` 做成**可选且显式**的方法（`AppServerSession.initialize()`），
-不假设任何握手发生；真实要求由下一轮 S1 确定。
+| 项 | 结论 | 依据 |
+|---|---|---|
+| stdio 编码 | **JSONL**（一行一个 JSON 对象）。客户端与 `StdioTransport` 的 framing 默认值都是 JSONL；`FRAMING_AUTO`（嗅探首行）与 LSP 头**仅作诊断**保留，**不用于真实服务器** | 本机 `--help` 给出传输（默认 `stdio://`、`unix://`、`ws://`）；编码按官方 JSONL 约定 |
+| 握手顺序 | **`initialize` 请求 → `initialized` 通知**，两步缺一不可；**握手完成前禁止**发送 `thread/*` 与 `turn/*` | 本机 schema：`ClientNotification.json` 的 `oneOf` **只有一个**变体——`initialized`（仅 `method`，无 params）；`InitializeParams` required `clientInfo`（`ClientRequest.json:1861/1878`） |
+| 顺序由谁保证 | **两侧都保证**：客户端在握手完成前**本地拒绝**（抛 `HandshakeRequired`，请求不上线）；桩服务在收到 `initialized` 之前对 `thread/*`、`turn/*` 回 `-32002` | 原型实现 + 离线测试（含两个反面对照，见 §5） |
+
+**因此修正此前的两处表述**：
+
+1. ~~"framing 未说明，只能自动识别"~~ → **官方规定 stdio 为 JSONL**，默认即 JSONL；自动识别降级为诊断选项。
+2. ~~"initialize 可选、是否必须未验证"~~ → **握手是必须的两步**（`initialized` 是协议里唯一的客户端通知），
+   原型与桩都强制它。仍有待真实观测的是：**真实服务器是否也强制**（S1 就是为此设计）。
+
+### 2.2 审批决策：本客户端只发送三种
+
+`SUPPORTED_DECISIONS = {accept, decline, cancel}`。**`acceptForSession` 与结构化决策
+（`acceptWithExecpolicyAmendment`、`applyNetworkPolicyAmendment`）一律不发送**，
+理由：它们改变的是**后续命令**是否需要提示（会话级/策略级放行），比"回答一次提示"大得多。
+拒绝在**三个入口**都强制，并有测试：① 直接应答 `answer_approval`；② 策略构造（`ApprovalPolicy`
+的 `default_decision`/`rules` 在 `__post_init__` 里校验）；③ 自动应答 `auto_answer_pending`
+（策略被事后篡改也会在 `decide()` 处被拒）。
 
 ## 3. 与 `codex exec` 的对照（含一处重要更正）
 
@@ -116,7 +131,7 @@ negotiated during initialize"）。但**捕获到的文档没有说明 stdio 会
 | `packages/adapters/agenthub_adapters/appserver.py` | 最小客户端：**两种 framing 自动识别**（`Content-Length` 或按行 JSON —— `--help` 只写了 `stdio://`，**没写 framing**，所以不猜）、请求 id 精确匹配、通知队列（保序）、服务端请求（审批）收集与显式应答、断开/超时分类、以及内核面向的判定函数与 `AppServerSession` |
 | `packages/adapters/agenthub_adapters/appserver_stub.py` | 脚本化桩服务：12 个场景（happy / 审批允许·拒绝·沉默 / 中断接受·终态 / 断开 / 超时 / 重复 id / 乱序通知 / 回合失败 / LSP framing），**方法名与载荷形状照本机 schema** |
 | `tools/demo/stub_appserver.py` | 把桩服务跑在 stdio 上，供手工驱动（`--list` 列场景） |
-| `tests/adapters/test_appserver_client.py` | **33 项离线测试**（见下） |
+| `tests/adapters/test_appserver_client.py` | **39 项离线测试**（见下） |
 
 **保持现状**：`codex exec` 适配器一行未改，仍是默认；app-server 原型是**可选第三件**，
 未接入 `build_adapter()`（避免在真实行为未验证前改变生产路径）。
@@ -131,7 +146,9 @@ negotiated during initialize"）。但**捕获到的文档没有说明 stdio 会
 | 审批 | 请求被呈现且**未预先应答**；`accept` 后回合完成；`decline` 后回合**继续**；沉默**不算批准**且策略默认 `decline`；不可重复应答；非法/结构化决策被拒 |
 | 中断终态 | `interrupt` 返回 `{}` 后无终态 → **unconfirmed**；随后 `turn/completed(status=interrupted)` → `cancelled` 且 terminal；`inProgress` **不是**终态 |
 | 断线 / 超时 | 中途断线 → unconfirmed 且后续请求报 `AppServerDisconnected`；无终态 → 超时 unconfirmed |
-| framing | 两种编码各自往返；未知 framing 自动识别；垃圾输入报 `AppServerProtocolError`；空流报断线 |
+| 握手 | `initialize` + `initialized` **两步都要**；握手前 `thread/*`/`turn/*` 本地拒绝且**不上线**；桩对跳过通知的客户端回 `-32002` |
+| 审批决策 | 仅 `accept`/`decline`/`cancel`；**`acceptForSession` 在三个入口都被拒**（直接应答、策略构造、自动应答），且未发出任何应答 |
+| framing | JSONL 为默认；LSP 与嗅探仅作诊断；垃圾输入报 `AppServerProtocolError`；空流报断线 |
 
 运行命令（worktree 内没有 `.venv`，用绝对解释器）：
 
@@ -139,7 +156,7 @@ negotiated during initialize"）。但**捕获到的文档没有说明 stdio 会
 $py = 'E:\plug\agent-hub\.venv\Scripts\python.exe'
 cd E:\plug\agent-hub\.worktrees\appserver-proto
 & $py -m pytest tests/adapters/test_appserver_client.py -q
-& $py -m pytest -q            # 全套 337 passed
+& $py -m pytest -q            # 全套 343 passed
 & $py tools\demo\stub_appserver.py --list
 ```
 
@@ -159,13 +176,34 @@ cd E:\plug\agent-hub\.worktrees\appserver-proto
 
 ## 7. 下一轮验收计划（需要真实调用，逐次批准）
 
-| 步骤 | 内容 | 真实调用 | 需要你批准的点 |
+### S1（脚本已就绪；本轮已完成离线正反对照）
+
+```bat
+:: CMD 一行；worktree 内没有 .venv，故用绝对解释器
+cd /d E:\plug\agent-hub\.worktrees\appserver-proto && E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s1.py --mode real --i-understand-this-starts-an-app-server-process --codex-home "%LOCALAPPDATA%\AgentHub\codex-home"
+```
+
+* **允许**：启动 **1 个** app-server 进程（固定路径 + sha256/size 校验通过）、完成握手、
+  创建**最多 1 个空 thread**，然后停止。
+* **禁止（线级断言；违反即 FAIL 并立即停止）**：任何 `turn/start`（因此**没有任何模型回合、不消耗配额**）、
+  `turn/steer`/`turn/interrupt`、`thread/fork`、`command/exec`、`process/spawn`、
+  任何审批请求、第二个 thread。
+* **证据**：子进程 stderr 落文件；线级 transcript 打印并保存到
+  `var/appserver-s1/<run>/wire-transcript.json`。
+* **失败即停**：第一项检查失败即退出，不重试、不放宽。
+* **清理**：只终止**本脚本自己启动**的进程（持有的句柄）；`--clean` 只删本次运行目录，
+  并带守卫（**拒绝**删除 `var/appserver-s1/` 之外、或位于 `%LOCALAPPDATA%`/`%USERPROFILE%`
+  之内的路径）；**长期 `CODEX_HOME` 与用户 `~/.codex` 一律保留**。
+* **离线反面对照（已执行）**：①握手前请求 `thread/start` → 本地 `HandshakeRequired` 且**不上线**；
+  ②只发 `initialize` 不发 `initialized` → 服务端回 `-32002`。
+
+| 步骤 | 内容 | 真实回合 | 需要你批准的点 |
 |---|---|---|---|
-| S1 | **只握手不回合**：启动 `codex app-server`（stdio），发 `initialize`（若需要）并 `thread/start`，然后关闭。目的：确定 framing、握手要求、方法是否被接受 | 0 次模型回合（但会启动真实进程） | 允许启动 app-server 进程；**不产生任何模型回合** |
-| S2 | **一次最小回合**：`turn/start` 发一句只要求回 OK 的输入，验证 `turn/started → item/agentMessage/delta → item/completed → turn/completed` 的真实顺序与载荷 | 1 | 1 次真实回合 |
-| S3 | **审批往返**：提示词要求执行一条无害命令（如 `echo hi`），在真实审批请求上用 `decline`，确认"拒绝后回合继续" | 1 | 1 次真实回合 + **命令审批按拒绝处理**（不批准执行） |
-| S4 | **中断**：长任务 + `turn/interrupt`，测真实终态与**子进程是否真的停止**；在此之前适配器 `cancel` 一直返回 `unsupported` | 1 | 1 次真实回合（可能进入 unknown 并保留名额） |
-| S5 | **恢复**：用真实 `thread_id` 走 `thread/resume` + `turn/start` | 1 | 1 次真实回合 |
+| **S1** | 握手 + 一个空 thread（见上） | **0** | 允许启动 app-server 进程 |
+| S2 | 一次最小回合：验证 `turn/started → item/agentMessage/delta → item/completed → turn/completed` 的真实顺序与载荷 | 1 | 1 次真实回合 |
+| S3 | 审批往返：要求执行无害命令并在真实审批请求上 `decline`，确认"拒绝后回合继续" | 1 | 1 次真实回合 + **不批准执行命令** |
+| S4 | 中断：长任务 + `turn/interrupt`，测真实终态与**子进程是否真的停止**（此前 `cancel` 一直返回 `unsupported`） | 1 | 1 次真实回合（可能进入 unknown 并保留名额） |
+| S5 | 恢复：用真实 `thread_id` 走 `thread/resume` + `turn/start` | 1 | 1 次真实回合 |
 | S6 | 通过后再考虑把 app-server 接入 `build_adapter()` 作为可选传输（默认仍是 exec） | 0 | 代码评审 |
 
 **每步的判定与清理**沿用现有口径：只有明确终态才释放名额，否则 `unknown` 并保留；

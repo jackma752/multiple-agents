@@ -99,6 +99,11 @@ class ScriptedAppServer:
         self.turn_status = "inProgress"
         self._interrupt_accepted = False
         self._interrupt_declined = False
+        #: Handshake enforcement (offline stand-in for the real server's protocol
+        #: order): a thread/turn request before `initialized` is refused on the wire.
+        self.initialize_seen = False
+        self.initialized_seen = False
+        self.handshake_violations: list[str] = []
 
     # -- wiring -------------------------------------------------------------
     def attach(self, to_client: QueueStream, from_client: QueueStream) -> "ScriptedAppServer":
@@ -158,11 +163,26 @@ class ScriptedAppServer:
         request_id = message.get("id")
         params = message.get("params") or {}
 
+        # Client notification: the protocol defines exactly one, `initialized`.
+        if method == "initialized" and "id" not in message:
+            self.initialized_seen = True
+            return
+
         if method == "initialize":
-            # Whether the real server requires this is UNVERIFIED; the stub simply
-            # answers it so the client's optional handshake path can be exercised.
-            self.notify_supported = True
+            self.initialize_seen = True
             self.reply(request_id, {"serverInfo": {"name": "stub-appserver", "version": "0.0.1"}})
+            return
+
+        # Handshake gate: thread/turn requests before `initialized` are refused,
+        # exactly as a protocol-conforming server would.
+        needs_handshake = (THREAD_START, THREAD_RESUME, TURN_START, TURN_INTERRUPT, "thread/fork")
+        if method in needs_handshake and not (self.initialize_seen and self.initialized_seen):
+            self.handshake_violations.append(str(method))
+            self.reply(request_id, error={
+                "code": -32002,
+                "message": f"{method} before the handshake completed "
+                           "(initialize request + initialized notification)",
+            })
             return
 
         if method in (THREAD_START, THREAD_RESUME):
@@ -335,6 +355,12 @@ class ScriptedAppServer:
     def sent_methods(self) -> list[str]:
         return [m.get("method") or m.get("__script__") or "response"
                 for m in self.sent]
+
+    def received_methods(self) -> list[str]:
+        return [str(m.get("method") or "response") for m in self.received]
+
+    def handshake_ok(self) -> bool:
+        return self.initialize_seen and self.initialized_seen
 
 
 def make_pair(scenario: str, **kwargs: Any) -> tuple[ScriptedAppServer, dict]:

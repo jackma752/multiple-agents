@@ -139,6 +139,7 @@ def test_lsp_framing_without_length_header_is_an_error():
 
 def test_thread_turn_and_delta_stream_end_to_end(harness):
     h = harness("happy")
+    h.session.initialize()
     thread_id = h.session.start_thread(cwd="C:\\stub")
     assert thread_id == "stub-thread-0001"
 
@@ -154,6 +155,7 @@ def test_thread_turn_and_delta_stream_end_to_end(harness):
 
 def test_response_ids_are_matched_not_guessed(harness):
     h = harness("happy")
+    h.session.initialize()
     first = h.session.start_thread()
     second = h.session.start_turn("x", thread_id=first)
     assert first == "stub-thread-0001"
@@ -163,6 +165,7 @@ def test_response_ids_are_matched_not_guessed(harness):
 def test_a_duplicate_response_for_an_unknown_id_is_dropped(harness):
     """The id-confusion bug this prototype must not have: a late reply stealing a call."""
     h = harness("duplicate-ids")
+    h.session.initialize()
     h.session.start_thread()
     assert h.session.start_turn("x") == "stub-turn-0001"
     assert h.client.request(A.THREAD_START, {})["thread"]["id"] == "stub-thread-0001"
@@ -171,6 +174,7 @@ def test_a_duplicate_response_for_an_unknown_id_is_dropped(harness):
 def test_notifications_may_precede_the_causing_response(harness):
     """Out of order relative to the response, never reordered among themselves."""
     h = harness("out-of-order")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     early = h.client.wait_for(lambda n: n.method == A.DELTA_AGENT_MESSAGE, timeout=3.0)
@@ -179,6 +183,7 @@ def test_notifications_may_precede_the_causing_response(harness):
 
 def test_a_failed_turn_is_terminal_and_reported_as_failed(harness):
     h = harness("turn-failed")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     outcome = h.session.await_turn_end(timeout=3.0)
@@ -201,6 +206,7 @@ def test_in_progress_status_is_not_terminal():
 
 def test_approval_request_is_surfaced_and_answered_explicitly(harness):
     h = harness("approval-allow")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("run a command")
 
@@ -216,6 +222,7 @@ def test_approval_request_is_surfaced_and_answered_explicitly(harness):
 
 def test_approval_params_match_the_schema_and_are_content_free(harness):
     h = harness("approval-silent")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     request = _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
@@ -229,6 +236,7 @@ def test_approval_params_match_the_schema_and_are_content_free(harness):
 
 def test_declining_a_command_does_not_fail_the_turn(harness):
     h = harness("approval-decline")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("run a command")
     request = _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
@@ -241,6 +249,7 @@ def test_declining_a_command_does_not_fail_the_turn(harness):
 
 def test_silence_is_never_approval(harness):
     h = harness("approval-silent")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     request = _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
@@ -252,6 +261,7 @@ def test_silence_is_never_approval(harness):
 
 def test_the_policy_answers_pending_requests_and_defaults_to_decline(harness):
     h = harness("approval-silent")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
@@ -264,6 +274,7 @@ def test_the_policy_answers_pending_requests_and_defaults_to_decline(harness):
 def test_unsupported_and_structured_decisions_are_refused(harness):
     """Structured decisions persist policy for FUTURE commands: not this client's job."""
     h = harness("approval-silent")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     request = _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
@@ -277,6 +288,7 @@ def test_unsupported_and_structured_decisions_are_refused(harness):
 
 def test_an_approval_cannot_be_answered_twice(harness):
     h = harness("approval-silent")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     request = _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
@@ -343,6 +355,7 @@ def test_terminal_statuses_map_to_the_exec_adapters_vocabulary():
 def test_interrupt_accepted_then_nothing_is_the_dangerous_case(harness):
     """End-to-end shape of the rule: accepted, no terminal status, still unconfirmed."""
     h = harness("interrupt-accepted")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("long task")
     reply = h.session.interrupt_turn()      # the server answers with an empty object
@@ -356,6 +369,7 @@ def test_interrupt_accepted_then_nothing_is_the_dangerous_case(harness):
 
 def test_interrupt_then_terminal_status_end_to_end(harness):
     h = harness("interrupt-terminal")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("long task")
     h.session.interrupt_turn()
@@ -380,6 +394,7 @@ def test_interrupt_requires_both_ids(harness):
 
 def test_disconnect_mid_turn_marks_unconfirmed_and_blocks_further_calls(harness):
     h = harness("disconnect")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
 
@@ -394,6 +409,7 @@ def test_disconnect_mid_turn_marks_unconfirmed_and_blocks_further_calls(harness)
 
 def test_a_turn_without_terminal_status_times_out_unconfirmed(harness):
     h = harness("slow-terminal")
+    h.session.initialize()
     h.session.start_thread()
     h.session.start_turn("x")
     outcome = h.session.await_turn_end(timeout=0.4)
@@ -415,16 +431,108 @@ def test_json_rpc_error_becomes_a_response_error(harness):
     assert caught.value.code == -32601
 
 
-def test_initialize_is_optional_and_its_response_is_recorded(harness):
-    """The handshake is NOT assumed: nothing requires it until a real session shows it does."""
+def test_initialize_is_required_before_any_thread_or_turn_request(harness):
+    """Protocol order is enforced: nothing reaches the wire before the handshake."""
+    for method in ("start_thread", "resume_thread", "start_turn", "interrupt_turn"):
+        h = harness("happy")
+        with pytest.raises(A.HandshakeRequired):
+            if method == "start_thread":
+                h.session.start_thread()
+            elif method == "resume_thread":
+                h.session.resume_thread("thr-1")
+            elif method == "start_turn":
+                h.session.start_turn("x", thread_id="thr-1")
+            else:
+                h.session.interrupt_turn(thread_id="thr-1", turn_id="turn-1")
+        # The refusal happened locally: no thread/turn request was ever sent.
+        assert h.server.received_methods() == [], h.server.received_methods()
+
+
+def test_the_handshake_has_two_halves_and_the_stub_checks_both(harness):
     h = harness("happy")
-    result = h.session.initialize(client_name="agent-hub-test", version="9.9.9")
-    assert result["serverInfo"]["name"] == "stub-appserver"
-    assert h.session.initialized == result
-    # A session that never initialized still works (the stub does not require it).
-    h2 = harness("happy")
-    assert h2.session.initialized is None
-    assert h2.session.start_thread() == "stub-thread-0001"
+    h.session.initialize(client_name="agent-hub-test", version="9.9.9")
+    assert h.session.handshake_complete is True
+    assert h.session.initialized["serverInfo"]["name"] == "stub-appserver"
+    # The notification is asynchronous on the wire: wait for the server to see it.
+    assert _wait_until(lambda: h.server.initialized_seen, timeout=2.0)
+    assert h.server.initialize_seen is True
+    assert h.server.handshake_ok() is True
+    assert "initialized" in h.server.received_methods()
+    assert h.server.handshake_violations == []
+
+
+def test_a_client_that_skips_the_notification_is_refused_on_the_wire(harness):
+    """Negative control for the gate: the stub refuses an early thread/start.
+
+    This bypasses the session on purpose (the session refuses locally) to prove the
+    SERVER side of the rule exists too.
+    """
+    h = harness("happy")
+    h.client.request(A.INITIALIZE, {"clientInfo": {"name": "x", "version": "0"}})
+    with pytest.raises(A.AppServerResponseError) as caught:
+        h.client.request(A.THREAD_START, {})
+    assert caught.value.code == -32002
+    assert h.server.handshake_violations == ["thread/start"]
+
+    h.client.notify(A.INITIALIZED)
+    assert h.client.request(A.THREAD_START, {})["thread"]["id"] == "stub-thread-0001"
+
+
+def test_jsonl_is_the_default_wire_encoding():
+    """The official stdio encoding is JSONL; nothing relies on sniffing it."""
+    import inspect
+
+    assert inspect.signature(A.AppServerClient.__init__).parameters["framing"].default \
+        == A.FRAMING_LINES
+    assert inspect.signature(A.StdioTransport.__init__).parameters["framing"].default \
+        == A.FRAMING_LINES
+
+
+def test_the_session_refuses_a_skipped_handshake_even_when_asked_to_tolerate_it(harness):
+    """`enforce_handshake=False` exists for diagnostics only and is never the default."""
+    import inspect
+
+    default = inspect.signature(A.AppServerSession.__init__).parameters["enforce_handshake"].default
+    assert default is True
+    h = harness("happy")
+    relaxed = A.AppServerSession(h.client, enforce_handshake=False)
+    with pytest.raises(A.AppServerResponseError) as caught:
+        relaxed.start_thread()          # the stub still refuses it on the wire
+    assert caught.value.code == -32002
+
+
+def test_accept_for_session_is_refused_at_every_entry_point(harness):
+    """`acceptForSession` would widen consent to FUTURE prompts: never sendable."""
+    h = harness("approval-silent")
+    h.session.initialize()
+    h.session.start_thread()
+    h.session.start_turn("x")
+    request = _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
+
+    # 1) direct answer
+    with pytest.raises(A.AppServerError):
+        h.client.answer_approval(request, "acceptForSession")
+    # 2) a policy that names it cannot even be constructed
+    with pytest.raises(A.AppServerError):
+        A.ApprovalPolicy(default_decision="acceptForSession")
+    with pytest.raises(A.AppServerError):
+        A.ApprovalPolicy(rules={S.APPROVAL_REQUEST: "acceptForSession"})
+    # 3) the automatic answerer never sends it
+    assert "acceptForSession" not in A.SUPPORTED_DECISIONS
+    assert h.server.answered_approvals() == [], "nothing may have been answered"
+
+
+def test_a_policy_cannot_be_swapped_after_construction_either(harness):
+    h = harness("approval-silent")
+    h.session.initialize()
+    h.session.start_thread()
+    h.session.start_turn("x")
+    _wait_for_server_request(h.client, S.APPROVAL_REQUEST)
+
+    h.client.approval_policy.rules[S.APPROVAL_REQUEST] = "acceptForSession"
+    with pytest.raises(A.AppServerError):
+        h.client.auto_answer_pending()
+    assert h.server.answered_approvals() == []
 
 
 # --------------------------------------------------------------------------- #

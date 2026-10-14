@@ -41,14 +41,29 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
-#: Wire encodings we support. Which one the real server uses is UNVERIFIED.
-FRAMING_LSP = "lsp"      # `Content-Length: N\\r\\n\\r\\n` + N bytes of JSON
-FRAMING_LINES = "lines"  # one JSON object per line
-FRAMING_AUTO = "auto"
+#: Wire encodings. The official stdio protocol is JSONL (one JSON object per line),
+#: which is what this client uses by default and what StdioTransport writes.
+#: :data:`FRAMING_LSP` exists only because a tolerant reader costs nothing and makes
+#: an unexpected header visible instead of producing a parse error; it is NOT
+#: auto-selected for the real server.
+FRAMING_LINES = "lines"  # JSONL - the official stdio encoding
+FRAMING_LSP = "lsp"      # `Content-Length: N\r\n\r\n` + N bytes (diagnostic only)
+FRAMING_AUTO = "auto"    # diagnostic only: sniff the first line, never used as a default
 
 
 class AppServerError(Exception):
     """Base class for transport/protocol failures."""
+
+
+class HandshakeRequired(AppServerError):
+    """A thread/turn request was attempted before the handshake completed.
+
+    The protocol's client->server notification set contains exactly one entry,
+    `initialized`, which is sent after the `initialize` request succeeds. Sending
+    thread or turn requests before that is a protocol violation, so the session
+    refuses locally (and the stub, in turn, refuses on the wire) rather than
+    discovering it through a confusing server error.
+    """
 
 
 class AppServerDisconnected(AppServerError):
@@ -230,7 +245,11 @@ class QueueStream:
 
 
 class StdioTransport:
-    """Real transport: spawn a process and talk to its stdin/stdout.
+    """Real transport: spawn a process and talk JSONL to its stdin/stdout.
+
+    The official stdio encoding is JSONL (one JSON object per line), so this
+    transport writes and reads that; ``framing`` is exposed only so a diagnostic
+    can be explicit about what it expects.
 
     NOTE (environment): piped stdio to native processes is denied in the
     restricted sandbox this code was developed in, so this path could not be
@@ -239,14 +258,25 @@ class StdioTransport:
     """
 
     def __init__(self, argv: list[str], *, env: Optional[dict] = None,
-                 cwd: Optional[str] = None) -> None:
+                 cwd: Optional[str] = None,
+                 stderr_path: Optional[str] = None,
+                 framing: str = FRAMING_LINES) -> None:
         import subprocess
 
+        self.framing = framing
+        # stderr goes to a FILE (a handle works here; pipes are denied by the
+        # sandbox) so a failure still leaves evidence behind.
+        self._stderr_file = open(stderr_path, "w", encoding="utf-8", errors="replace") \
+            if stderr_path else subprocess.DEVNULL
         self._proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, env=env, cwd=cwd,
+            stderr=self._stderr_file, env=env, cwd=cwd,
         )
         self.reader = self._proc.stdout
+
+    @property
+    def pid(self) -> int:
+        return self._proc.pid
 
     def write(self, data: bytes) -> None:
         assert self._proc.stdin is not None
@@ -265,10 +295,19 @@ class StdioTransport:
                 self._proc.wait(timeout=10)
             except Exception:  # noqa: BLE001
                 self._proc.kill()
+        if hasattr(self._stderr_file, "close"):
+            try:
+                self._stderr_file.close()
+            except OSError:
+                pass
 
     @property
     def alive(self) -> bool:
         return self._proc.poll() is None
+
+    @property
+    def returncode(self) -> Optional[int]:
+        return self._proc.poll()
 
 
 # --------------------------------------------------------------------------- #
@@ -299,23 +338,47 @@ class ApprovalPolicy:
     ``default_decision`` is applied only when no rule matches. It defaults to
     ``decline``: silence must never mean approval (AGENTS.md: a prompt is not a
     safety valve, and approval must be an explicit act).
+
+    Only :data:`SUPPORTED_DECISIONS` may appear here. In particular
+    ``acceptForSession`` is NOT supported anywhere in this client, and a policy that
+    names it fails loudly at construction instead of quietly widening consent.
     """
 
     default_decision: str = "decline"
     rules: dict[str, str] = field(default_factory=dict)   # method -> decision
     decisions: list[dict] = field(default_factory=list)    # audit trail of answers
 
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Refuse a policy that names a decision this client will not send."""
+        for label, value in [("default_decision", self.default_decision), *self.rules.items()]:
+            if value not in SUPPORTED_DECISIONS:
+                raise AppServerError(
+                    f"approval policy {label}={value!r} is not supported; "
+                    f"this client sends only {sorted(SUPPORTED_DECISIONS)}"
+                )
+
     def decide(self, method: str, params: dict) -> str:
-        return self.rules.get(method, self.default_decision)
+        decision = self.rules.get(method, self.default_decision)
+        if decision not in SUPPORTED_DECISIONS:
+            raise AppServerError(
+                f"approval policy would answer {method!r} with {decision!r}, which this "
+                f"client refuses to send; allowed: {sorted(SUPPORTED_DECISIONS)}"
+            )
+        return decision
 
 
 class AppServerClient:
     """Request/response + notification pump for one app-server session."""
 
-    def __init__(self, transport: Any, *, framing: str = FRAMING_AUTO,
+    def __init__(self, transport: Any, *, framing: str = FRAMING_LINES,
                  request_timeout: float = 30.0,
                  approval_policy: Optional[ApprovalPolicy] = None) -> None:
         self.transport = transport
+        # JSONL is the protocol's encoding; any other value must be asked for
+        # explicitly (FRAMING_AUTO is for diagnostics, never a production default).
         self.framing = framing
         self.detected_framing: Optional[str] = None
         self.request_timeout = request_timeout
@@ -403,14 +466,18 @@ class AppServerClient:
     def answer_approval(self, request: ServerRequest, decision: str) -> dict:
         """Answer one approval request with an explicit decision.
 
-        Refuses to answer twice, and refuses invented decisions: the caller (or the
-        policy) must name a value the protocol defines.
+        Refuses to answer twice, and refuses any decision outside
+        :data:`SUPPORTED_DECISIONS` - including ``acceptForSession`` and the
+        structured amendments, which would change what FUTURE commands may do
+        without prompting.
         """
         if request.answered:
             raise AppServerError(f"approval {request.id} already answered")
-        allowed = {"accept", "decline", "cancel", "acceptForSession"}
-        if decision not in allowed:
-            raise AppServerError(f"unsupported decision {decision!r}; expected one of {sorted(allowed)}")
+        if decision not in SUPPORTED_DECISIONS:
+            raise AppServerError(
+                f"unsupported decision {decision!r}; this client sends only "
+                f"{sorted(SUPPORTED_DECISIONS)}"
+            )
         self.respond(request.id, {"decision": decision})
         request.answered = True
         self.approval_policy.decisions.append(
@@ -556,6 +623,7 @@ THREAD_RESUME = "thread/resume"           # required: threadId
 TURN_START = "turn/start"                 # required: input, threadId
 TURN_INTERRUPT = "turn/interrupt"         # required: threadId, turnId
 INITIALIZE = "initialize"                 # InitializeParams requires clientInfo
+INITIALIZED = "initialized"               # the protocol's ONLY client notification
 
 THREAD_STARTED = "thread/started"
 TURN_STARTED = "turn/started"
@@ -588,11 +656,13 @@ APPROVAL_METHODS = frozenset({
     "applyPatchApproval",
 })
 
-#: Decisions this client will send. The schema also defines structured decisions
-#: (execpolicy / network-policy amendments); this prototype deliberately does NOT
-#: support them: they persist policy for future commands, which is a larger
-#: decision than answering one prompt, and it must not happen by accident.
-SUPPORTED_DECISIONS = frozenset({"accept", "acceptForSession", "decline", "cancel"})
+#: Decisions this client will send. `acceptForSession` is deliberately EXCLUDED, as
+#: are the structured decisions (execpolicy / network-policy amendments): all of
+#: them change what FUTURE commands in the session may do without prompting, which
+#: is a larger decision than answering one prompt and must not happen by accident.
+#: Anything outside this set is refused at every entry point: direct answers, policy
+#: rules, and the automatic answerer (all three are covered by tests).
+SUPPORTED_DECISIONS = frozenset({"accept", "decline", "cancel"})
 
 
 def judge_turn_outcome(*, terminal_notification: Optional[str] = None,
@@ -705,38 +775,56 @@ def turn_id_of(notification: "Notification") -> str:
 
 
 class AppServerSession:
-    """Thin, explicit wrapper: one thread, one turn at a time, no hidden state.
+    """Thin, explicit wrapper: handshake, then one thread, one turn at a time.
+
+    Protocol order is enforced, not assumed:
+
+    1. ``initialize`` request, 2. ``initialized`` notification (the only client
+    notification the protocol defines), 3. ``thread/start`` or ``thread/resume``,
+    4. ``turn/start``. Steps 3 and 4 raise :class:`HandshakeRequired` if the
+    handshake has not completed, so a mis-ordered call never reaches the wire.
 
     Every method that could imply "the work stopped" returns an outcome whose
     ``terminal`` flag the kernel must honour. Nothing here decides quota: that
     stays in the kernel's approval/quota gate.
     """
 
-    def __init__(self, client: AppServerClient) -> None:
+    def __init__(self, client: AppServerClient, *, enforce_handshake: bool = True) -> None:
         self.client = client
+        self.enforce_handshake = enforce_handshake
         self.thread_id: str = ""
         self.turn_id: str = ""
         self.initialized: Optional[dict] = None
+        self.handshake_complete: bool = False
 
-    # -- handshake (optional; see the note) ---------------------------------
+    # -- handshake ----------------------------------------------------------
     def initialize(self, *, client_name: str = "agent-hub",
                    version: str = "0.1.0") -> dict:
-        """Send ``initialize``. Whether the real server REQUIRES this is UNVERIFIED.
+        """Run the handshake: ``initialize`` request, then ``initialized``.
 
-        The schema defines ``InitializeParams`` with ``clientInfo`` required, but no
-        captured document states when (or whether) a stdio session must send it.
-        The method is therefore explicit and optional: the next real verification
-        (step S1 in docs/appserver-feasibility.md §7) is what settles it, and until
-        then nothing here may assume a handshake happened.
+        The client notification schema has exactly one entry, ``initialized``, and
+        the protocol expects it after a successful ``initialize``. Both halves are
+        required here: without the notification the handshake is not complete, and
+        thread/turn requests are refused.
         """
         result = self.client.request(INITIALIZE, {
             "clientInfo": {"name": client_name, "version": version},
         })
+        self.client.notify(INITIALIZED)
         self.initialized = result
+        self.handshake_complete = True
         return result
+
+    def _require_handshake(self, what: str) -> None:
+        if self.enforce_handshake and not self.handshake_complete:
+            raise HandshakeRequired(
+                f"refusing {what}: the handshake is not complete "
+                "(initialize request + initialized notification)"
+            )
 
     # -- thread -------------------------------------------------------------
     def start_thread(self, *, cwd: Optional[str] = None) -> str:
+        self._require_handshake("thread/start")
         params: dict = {}
         if cwd:
             params["cwd"] = cwd
@@ -745,12 +833,14 @@ class AppServerSession:
         return self.thread_id
 
     def resume_thread(self, thread_id: str) -> str:
+        self._require_handshake("thread/resume")
         result = self.client.request(THREAD_RESUME, {"threadId": thread_id})
         self.thread_id = _thread_id_from(result) or thread_id
         return self.thread_id
 
     # -- turn ---------------------------------------------------------------
     def start_turn(self, text: str, *, thread_id: Optional[str] = None) -> str:
+        self._require_handshake("turn/start")
         target = thread_id or self.thread_id
         if not target:
             raise AppServerError("start_turn without a thread id")
@@ -765,6 +855,7 @@ class AppServerSession:
     def interrupt_turn(self, *, thread_id: Optional[str] = None,
                        turn_id: Optional[str] = None) -> dict:
         """Ask to interrupt. The response being OK is NOT a stop."""
+        self._require_handshake("turn/interrupt")
         target_thread = thread_id or self.thread_id
         target_turn = turn_id or self.turn_id
         if not target_thread or not target_turn:
