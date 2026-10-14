@@ -86,17 +86,68 @@
 
 ## 5. 真实调用验证计划（**等待用户逐次批准**）
 
-按交接要求"真实调用继续逐次由我批准"，以下**尚未执行**，每一步都需要用户明确同意：
+按交接要求"真实调用继续逐次由我批准"，以下每一步都需要用户明确同意。
 
-| # | 目的 | 拟执行 | 风险 |
-|---|---|---|---|
-| 1 | 会话/输出/用量 | `codex exec --json --sandbox read-only -C <临时目录> "回复 OK，不要改任何文件"` | 一次真实模型调用；read-only 沙箱；无文件写入 |
-| 2 | 目录限制是否真生效 | 同上但在工作目录外写入，观察是否被拒 | 可能产生文件；需 read-only 下应为拒绝 |
-| 3 | **子 Agent 开关是否有效** | 对比 `multi_agent=true/false` 时是否会派生内部子 Agent | 可能触发嵌套调用与费用 |
-| 4 | 取消能力 | 启动一个长任务并尝试中断 | 可能无法停止，需人工介入 |
-| 5 | 工具拦截 | 让 Codex 执行一条 shell 命令，观察是否先请求批准 | 可能直接执行 |
+### 5.1 第 1 步：已获批准并已执行 —— **失败**
 
-**在用户批准第 1 项之前，不会发起任何真实调用。**
+**批准范围**：仅一次真实调用，只读沙箱、禁用原生子 Agent、工作区外空临时目录、
+失败即停不追加、返回退出码/JSON 事件/用量。
+
+**实际执行**（单次，未重试）：
+
+| 项 | 值 |
+|---|---|
+| 工作根 `-C` | `C:\Users\Administrator\AppData\Local\Temp\dsh-NDA5C5\codex-probe-20261014-143737`（工作区外、**事前为空、事后仍为空**） |
+| 完整命令 | `codex.exe exec --json --sandbox read-only --disable multi_agent --skip-git-repo-check -C <上述目录> "Reply with exactly: OK. Do not modify any files."` |
+| **退出码** | **1（失败）** |
+| 耗时 | 0.2s |
+| **JSON 事件** | **0 个** |
+| **用量信息** | **无** |
+
+**完整原始输出**：
+
+```
+WARNING: failed to clean up stale arg0 temp dirs: 拒绝访问。 (os error 5)
+WARNING: proceeding, even though we could not create PATH aliases: 拒绝访问。 (os error 5) at path "C:\\Users\\Administrator\\.codex\\tmp\\arg0\\codex-arg0Nk1CDn"
+Reading additional input from stdin...
+Error: failed to initialize in-process app-server client: 拒绝访问。 (os error 5)
+```
+
+**根因（本次可确认的部分）**：
+`Error: failed to initialize in-process app-server client: 拒绝访问 (os error 5)` ——
+Codex 启动时需要在用户目录下创建/清理临时文件与 PATH 别名
+（`C:\Users\Administrator\.codex\tmp\arg0\...`），而**当前执行环境的文件沙箱拒绝写入该位置**，
+因此它在**初始化阶段**即退出，**根本没有进入模型调用**。
+
+**由此确认的事实**：
+
+- 失败发生在 Codex 自身初始化，**不是**审批/配额逻辑的问题。
+- 临时目录**未被写入**（前后均为 0 项），read-only 断言未被真正考验。
+- 未产生任何 JSON 事件与用量信息，因此**"流式事件"与"真实用量"两项仍为未知**。
+- 观察到 `Reading additional input from stdin...`：即使已把 prompt 作为参数传入，
+  Codex 仍检测到 stdin 非 TTY。后续调用应显式使用 `stdin=DEVNULL`，
+  避免语义歧义（可能被当作 `<stdin>` 块追加）。
+
+**按用户指令：失败后停止，未追加调用、未重试。**
+
+### 5.2 已定位的可能解法（**需另行批准后才能尝试**）
+
+| 方案 | 说明 | 需用户决定 |
+|---|---|---|
+| 重定向 `CODEX_HOME` | 帮助文本确认支持 `$CODEX_HOME`。把它指到**工作区内可写目录**（如 `E:\plug\agent-hub\var\codex-home`），Codex 就不必写用户目录 | 是否允许再次尝试（仍是一次真实调用） |
+| 放宽文件沙箱 | 以更宽的文件权限运行（`danger-full-access`），允许 Codex 写 `~/.codex/tmp` | 权限更高，需明确同意 |
+| 在沙箱外运行 | 由用户在自己的终端里执行同一命令 | 无沙箱冲突，但需用户手动操作 |
+
+**在获得新的批准之前，不会发起任何后续调用。**
+
+### 5.3 其余待验证步骤（同样需逐次批准）
+
+| # | 目的 | 状态 |
+|---|---|---|
+| 2 | 目录限制是否真生效 | 未执行 |
+| 3 | **关闭 `multi_agent` 是否真能阻止子 Agent 派生** | 未执行（用户明确要求另行申请） |
+| 4 | 取消能力 | 未执行 |
+| 5 | 工具启动前拦截 | 未执行 |
 
 ---
 
@@ -105,8 +156,10 @@
 - 本机**唯一可用的真实 Agent 是 Codex**（0.162.0-alpha.17.2）；
   PATH 上没有 claude / gemini / workbuddy 等，`.claude` 目录不存在。
 - Codex **接口层面具备**：非交互执行、JSONL 事件流、会话恢复、目录限定 flag、
-  沙箱模式 flag、`multi_agent` 特性开关。
+  沙箱模式 flag、`multi_agent` 特性开关（**已本地验证可关闭**）。
+- **首次真实调用失败**（退出码 1，0 事件，无用量），根因是**当前文件沙箱拒绝 Codex
+  写自己的临时/PATH 别名目录**，导致其在初始化阶段退出。**失败后已停止，未重试。**
 - **仍为未知（不得当作支持）**：取消能力、工具启动前拦截是否可强制、
   关闭 `multi_agent` 是否真能阻止子 Agent、真实用量返回、Windows 上沙箱是否生效、
-  以及 app-server 协议。
-- 这些未知项**只能靠真实调用验证**，且须**逐次经用户批准**。
+  以及 app-server 协议。流式事件虽在接口上存在，但因初始化失败**尚未实测**。
+- 后续验证**须逐次经用户批准**；§5.2 已列出三种可能解法供选择。

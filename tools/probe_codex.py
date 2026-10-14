@@ -147,6 +147,26 @@ def main() -> int:
     }
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
+
+    # Verify LOCALLY (still no model call) that the sub-agent switch can actually
+    # be flipped, and by which syntax. This matters because the plan's hard
+    # condition 3 is "can native sub-agents be disabled or intercepted".
+    variants = {
+        "baseline": [],
+        "config_override": ["-c", "features.multi_agent=false"],
+        "disable_flag": ["--disable", "multi_agent"],
+    }
+    switch_check: dict[str, Any] = {}
+    for label, pre in variants.items():
+        res = run(exe, ["features", *pre, "list"])
+        feats_v = parse_features(res["text"])
+        switch_check[label] = {
+            "argv_prefix": pre,
+            "exit": res["exit"],
+            "multi_agent": (feats_v.get("multi_agent") or {}).get("enabled"),
+        }
+    result["subagent_switch_check"] = switch_check
+
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, indent=2, ensure_ascii=False)
 
@@ -159,6 +179,9 @@ def main() -> int:
     print(f"features parsed: {len(feats)}")
     for name, info in result["plan_relevant_features"].items():
         print(f"  {name:34s} stage={info['stage']:<20s} enabled={info['enabled']}")
+    print("sub-agent switch check (multi_agent enabled under each form):")
+    for label, info in result["subagent_switch_check"].items():
+        print(f"  {label:18s} argv={info['argv_prefix']} -> exit={info['exit']} enabled={info['multi_agent']}")
     print(f"flags: {json.dumps(result['plan_relevant_flags'], ensure_ascii=False)}")
     print(f"written: {os.path.relpath(args.out, REPO_ROOT)}")
     return 0
