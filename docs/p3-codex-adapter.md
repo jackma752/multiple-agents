@@ -133,13 +133,14 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 
 | 文件 | 数量 | 内容 |
 |---|---|---|
-| `tests/adapters/test_codex_adapter.py` | 34 | 事件解析（真实捕获作 fixture）、argv/env 安全断言、门禁、**Agent 身份匹配**、身份固定、超时、启动期异常分类、**桩子进程**真实走通捕获与超时 |
-| `tests/policy/test_codex_gate.py` | 17 | Codex 适配器**插进未改动的内核**：Agent 身份不匹配 → 0 进程；未批准/拒绝/过期 → 0 进程；批准 → 恰好 1 次；总量与并发上限拦得住；停机拦得住；超时→unknown 保留名额；成功不泄漏名额；启动期四类失败的名额归属 |
-| `tests/test_hygiene.py` | 10 | 仓库无真实密钥、Token 只从环境读、**CODEX_HOME 与凭证路径在仓库之外**、**日志不打印 Token** |
-| `tests/http/test_contract_api.py` | +4 | `adapter-result` 的启动证据（exit_code / 事件数 / verdict）、`agent_ids` 暴露、未服务 agent 的创建期告警 |
-| `tests/http/test_ui.py` | +1 | 页面不再硬编码 agent_id，且读取 `agent_ids` / `adapter_warning` |
+| `tests/adapters/test_codex_adapter.py` | 37 | 事件解析（真实捕获作 fixture）、argv/env 安全断言、门禁、**Agent 身份匹配**、身份固定、超时、启动期异常分类、**执行 ID 回填**、**桩子进程**真实走通捕获与超时 |
+| `tests/policy/test_codex_gate.py` | 22 | Codex 适配器**插进未改动的内核**：Agent 身份不匹配 → 0 进程；未批准/拒绝/过期 → 0 进程；批准 → 恰好 1 次；总量与并发上限拦得住；停机拦得住；超时→unknown 保留名额；成功不泄漏名额；启动期四类失败的名额归属；**内核与适配器记录的执行 ID 一致**；**任务状态随调用生命周期同步** |
+| `tests/policy/test_task_status.py` | 18 | 任务状态推导规则（优先级矩阵）、写路径同步、读模型覆盖陈旧值 |
+| `tests/policy/test_stop_cancel.py` | 11 | 停止持久化与幂等；**未确认的取消保留名额并置 unknown**（回归）；能取消的适配器行为不变 |
+| `tests/http/test_ui.py` | 15 | 页面控件与读取模型；**结果面板绑定 Codex 的回复/用量/状态/退出码**；**取消显式声明为不支持**；停止消息区分已确认/未确认；用 Codex 适配器跑一遍页面的真实调用序列 |
+| `tests/test_hygiene.py` | 12 | 仓库无真实密钥、Token 只从环境读、**CODEX_HOME 与凭证路径在仓库之外**、**日志不打印 Token**、**凭证状态查询不读内容也不建目录**、登录工具源码不出现凭证文件名 |
 
-**全套 221 passed**。**全部离线，未启动真实 Codex。**
+**全套 257 passed**。**全部离线，未启动真实 Codex。**
 
 ## 7. 启动期异常：哪些能释放名额，哪些不能
 
@@ -180,11 +181,57 @@ AdapterStartResult(ok, terminal)      # terminal=True 表示结果确定
 * `CODEX_HOME` 默认**在仓库之外**（`%LOCALAPPDATA%\AgentHub\codex-home`，
   可用 `AGENT_HUB_CODEX_HOME` 覆盖）。它可能存放 `auth.json` 副本，
   放在仓库内即使被 gitignore，也只需一次 `git add -f`/打包/备份就会泄露。
+  **长期目录与"由你自己登录"的完整步骤见 `docs/p3-codex-credentials.md`**，
+  状态查询工具 `tools/demo/codex_login.py`（只报告路径与是否存在，从不读取凭证内容）。
 * `config.codex_home()` **只做路径解析、不创建目录**（纯函数）；
   只有真正要启动进程时才由适配器创建（`config.ensure_codex_home()` 供工具使用）。
   否则"读一下设置"都会产生仓库外的写入副作用。
 * 启动横幅**不打印 Token**，只说明它的来源（`value not shown`）。
   回归测试在源码层面断言，防止以后又打出来。
+
+### 任务状态不再停留在 `draft`
+
+`tasks.status` 原先只在创建时写一次，**永不更新**：调用成功后任务仍显示 `draft`。
+这不只是显示问题——该列可被查询，任何基于它的筛选或报表都会是错的。
+
+现在规则只有一条纯函数（`apps/worker/agenthub_kernel/taskstatus.py`）：
+
+```
+unknown > running > queued > awaiting_approval > failed > canceled > succeeded > draft
+```
+
+* **写路径**：`PolicyService` 的每次状态写入都经 `_set_invocation_status()`，
+  它同一事务内重新推导 `tasks.status`（不会漂移）；
+* **读路径**：`GET /api/tasks/{id}/view` 也用同一函数从调用状态推导，
+  因此**旧数据库**里的陈旧值也会被正确显示；同时返回 `stored_status` 便于发现不一致；
+* 语义是**汇总**而非替代：一次成功 + 一次失败 → `failed`（需要关注），
+  每条调用自身的状态仍照原样展示。
+
+测试：`tests/policy/test_task_status.py`（规则矩阵、写入路径同步、读模型覆盖陈旧值）、
+`tests/policy/test_codex_gate.py` 的生命周期/失败/unknown/拒绝/撤销用例。
+
+### 适配器记录里的执行 ID
+
+`record_start()` 在**启动之前**写记录，此时外部执行 ID 还不存在（它通常是被调用进程
+之后才报出的 thread id），因此适配器记录里的 `adapter_invocation_id` 一直是空的——
+只读适配器记录的恢复/停止核对/运维查证**无法知道这条记录对应哪个外部执行**。
+
+现在解析完成后立刻回填（`ExecutionStore.set_adapter_id()`），与内核
+`invocations.adapter_invocation_id` 一致；**没有真正启动的调用不会凭空造 ID**。
+测试：`test_success_fills_the_execution_id_in_the_adapters_own_record`、
+`test_unconfirmed_run_still_records_the_execution_id`（超时保留名额时更要能定位）、
+`test_launch_that_never_happened_records_no_execution_id`、
+`test_kernel_and_adapter_records_agree_on_the_execution_id`。
+
+### 取消：未确认就**不得**释放名额（真实缺陷修正）
+
+Codex 的 `cancel` 返回 `unsupported`，但 `Worker._cancel_one()` 原先**无条件**把调用
+结算为 `canceled` 并释放名额——既虚假宣称已停止，又可能让第二条调用拿到第一条仍占用的
+名额。现已按"能否证明已停止"分流：确认 → `canceled` + 释放；未确认 → `unknown` +
+**保留名额**；API 与页面分别报出 `confirmed` / `unconfirmed`。
+完整说明与回归测试见 `docs/p2-stop-and-recovery.md` §2.1；页面侧的显式声明见
+`docs/p3-ui.md`。
+
 
 ## 8. 仍未验证（不得当作已实现）
 

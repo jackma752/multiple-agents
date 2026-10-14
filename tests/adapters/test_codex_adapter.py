@@ -19,6 +19,7 @@ import pytest
 from agenthub.contracts import InvocationSnapshot
 from agenthub_adapters.codex import (
     CodexAdapter,
+    CodexLaunchFailed,
     CodexRun,
     FakeCodexRunner,
     build_argv,
@@ -213,6 +214,57 @@ def test_success_records_thread_id_reply_and_usage(tmp_path):
     last = a.last_result("inv-1")
     assert last["thread_id"] == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
     assert last["usage"]["output_tokens"] == 5
+
+
+def test_success_fills_the_execution_id_in_the_adapters_own_record(tmp_path):
+    """The adapter's record must name the external execution it refers to.
+
+    ``record_start`` runs before the launch, when the external id does not exist,
+    so the column used to stay empty - leaving the adapter's store unable to say
+    WHICH Codex thread a record was about, while the kernel row had the id.
+    """
+    a = make_adapter(tmp_path)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    rec = a.store.get("inv-1")
+    assert rec["adapter_invocation_id"] == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
+    assert rec["adapter_invocation_id"] == result.adapter_invocation_id
+    # The payload still carries it too, and the lookup agrees.
+    assert rec["payload"]["thread_id"] == rec["adapter_invocation_id"]
+    assert a.lookup_by_invocation("inv-1")["adapter_invocation_id"] == result.adapter_invocation_id
+
+
+def test_unconfirmed_run_still_records_the_execution_id(tmp_path):
+    """A timeout keeps the slot, so the record MUST say which thread to look for."""
+
+    def timeout_script(argv, env):
+        return CodexRun(
+            None, True, 300.0, '{"type":"thread.started","thread_id":"t-timeout"}\n', argv
+        )
+
+    a = make_adapter(tmp_path, script=timeout_script)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    assert result.terminal is False
+    rec = a.store.get("inv-1")
+    assert rec["status"] == RUNNING
+    assert rec["adapter_invocation_id"] == "t-timeout", (
+        "an unconfirmed run must record the id a human needs to investigate it"
+    )
+
+
+def test_launch_that_never_happened_records_no_execution_id(tmp_path):
+    """No process, no id: the record must not invent one."""
+
+    def refused(argv, env):
+        raise CodexLaunchFailed("could not launch 'codex.exe': Access is denied")
+
+    a = make_adapter(tmp_path, script=refused)
+    result = a.start("inv-1", snapshot(), gate_token="tok")
+
+    assert result.terminal is True
+    rec = a.store.get("inv-1")
+    assert not rec["adapter_invocation_id"]
 
 
 def test_turn_failed_marks_failed_with_reason(tmp_path):

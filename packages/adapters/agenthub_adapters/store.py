@@ -125,6 +125,29 @@ class ExecutionStore:
             if self.path != ":memory:":
                 conn.close()
 
+    def set_adapter_id(self, invocation_id: str, adapter_invocation_id: str) -> None:
+        """Fill in the external execution id once the adapter knows it.
+
+        ``record_start`` runs BEFORE the process is launched, when the external id
+        does not exist yet (it is usually the thread id the process reports later).
+        Without this update the adapter's own record kept an empty
+        ``adapter_invocation_id``, so anyone reading only the adapter's store -
+        recovery, a stop check, an operator - could not tell WHICH external
+        execution a record refers to, even though the kernel row had it.
+        """
+        if not adapter_invocation_id:
+            return
+        with self._lock:
+            conn = self._connect()
+            conn.execute(
+                f"UPDATE {self.TABLE} SET adapter_invocation_id=?, updated_at=? "
+                "WHERE invocation_id=?",
+                (adapter_invocation_id, self._ts(), invocation_id),
+            )
+            conn.commit()
+            if self.path != ":memory:":
+                conn.close()
+
     def set_payload(self, invocation_id: str, payload: Any) -> None:
         """Store adapter-specific results (parsed events, thread id, usage)."""
         import json

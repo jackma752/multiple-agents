@@ -31,6 +31,7 @@ from agenthub_kernel.db import (
     TaskRow,
     TreeQuotaRow,
 )
+from agenthub_kernel.taskstatus import derive_task_status
 
 UTC = dt.timezone.utc
 
@@ -203,7 +204,7 @@ class PolicyService:
             InvocationStatus.DRAFT.value,
             InvocationStatus.AWAITING_APPROVAL.value,
         ):
-            inv.status = InvocationStatus.AWAITING_APPROVAL.value
+            self._set_invocation_status(inv, InvocationStatus.AWAITING_APPROVAL)
         self.session.flush()
         return appr
 
@@ -215,9 +216,37 @@ class PolicyService:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
         if inv.status in TERMINAL_STATUSES:
             return
-        inv.status = status.value
+        self._set_invocation_status(inv, status)
         if status is InvocationStatus.RUNNING:
             inv.started_at = now()
+
+    # ------------------------------------------------------------------ #
+    # Task status: derived from the calls, never left stale
+    # ------------------------------------------------------------------ #
+
+    def _set_invocation_status(self, inv: InvocationRow, status: Any) -> None:
+        """Set an invocation status and immediately re-derive its task status.
+
+        Every status write goes through here, so ``tasks.status`` cannot drift
+        from the calls again (it used to stay ``draft`` forever).
+        """
+        inv.status = (
+            status.value if isinstance(status, InvocationStatus) else str(status)
+        )
+        self.sync_task_status(inv.task_id)
+
+    def sync_task_status(self, task_id: str) -> str:
+        """Recompute and store one task's derived status. Returns it."""
+        task = self.session.get(TaskRow, task_id)
+        if task is None:
+            return ""
+        statuses = self.session.scalars(
+            select(InvocationRow.status).where(InvocationRow.task_id == task_id)
+        ).all()
+        derived = derive_task_status(statuses)
+        if task.status != derived:
+            task.status = derived
+        return derived
 
     def approve(self, approval_id: str) -> ApprovalRow:
         """Mark pending->approved. Only a valid pending approval can be approved.
@@ -237,7 +266,7 @@ class PolicyService:
             InvocationStatus.STARTING.value,
             InvocationStatus.RUNNING.value,
         ):
-            inv.status = InvocationStatus.QUEUED.value
+            self._set_invocation_status(inv, InvocationStatus.QUEUED)
         self.session.flush()
         return appr
 
@@ -253,7 +282,7 @@ class PolicyService:
             InvocationStatus.STARTING.value,
             InvocationStatus.RUNNING.value,
         ):
-            inv.status = InvocationStatus.REJECTED.value
+            self._set_invocation_status(inv, InvocationStatus.REJECTED)
         self.session.flush()
         return appr
 
@@ -281,7 +310,7 @@ class PolicyService:
             InvocationStatus.AWAITING_APPROVAL.value,
             InvocationStatus.QUEUED.value,
         ):
-            inv.status = InvocationStatus.DRAFT.value
+            self._set_invocation_status(inv, InvocationStatus.DRAFT)
         self.session.flush()
         return appr
 
@@ -430,7 +459,7 @@ class PolicyService:
             raise QuotaError("no_task", f"task {inv.task_id} not found")
         current_snapshot = InvocationSnapshot(**inv.snapshot)
         if current_snapshot.payload_hash() != inv.payload_hash:
-            inv.status = InvocationStatus.INVALID.value
+            self._set_invocation_status(inv, InvocationStatus.INVALID)
             self.session.flush()
             raise QuotaError(
                 "snapshot_changed",
@@ -446,7 +475,7 @@ class PolicyService:
         if root is not None:
             snapshot_policy_version = int(inv.snapshot.get("policy_version") or 0)
             if int(root.policy_version or 0) != snapshot_policy_version:
-                inv.status = InvocationStatus.INVALID.value
+                self._set_invocation_status(inv, InvocationStatus.INVALID)
                 self.session.flush()
                 raise QuotaError(
                     "policy_changed",
@@ -570,7 +599,7 @@ class PolicyService:
             root_task_id=task.root_task_id,
         )
         self.session.add(reservation)
-        inv.status = InvocationStatus.STARTING.value
+        self._set_invocation_status(inv, InvocationStatus.STARTING)
         self.session.add(
             EventRow(
                 root_task_id=task.root_task_id,
@@ -615,7 +644,7 @@ class PolicyService:
             InvocationStatus.CANCELED.value,
             InvocationStatus.TIMED_OUT.value,
         ):
-            inv.status = status.value
+            self._set_invocation_status(inv, status)
         inv.finished_at = now()
 
         candidates = self.session.scalars(
@@ -656,7 +685,7 @@ class PolicyService:
         inv = self.session.get(InvocationRow, invocation_id)
         if inv is None:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
-        inv.status = InvocationStatus.UNKNOWN.value
+        self._set_invocation_status(inv, InvocationStatus.UNKNOWN)
         inv.error = reason or (
             "state could not be confirmed after recovery; not restarted"
         )
@@ -1228,6 +1257,6 @@ class PolicyService:
                 InvocationStatus.AWAITING_APPROVAL.value,
                 InvocationStatus.QUEUED.value,
             ):
-                inv.status = InvocationStatus.INVALID.value
+                self._set_invocation_status(inv, InvocationStatus.INVALID)
         self.session.flush()
         return len(targets)

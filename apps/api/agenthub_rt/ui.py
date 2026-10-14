@@ -38,6 +38,7 @@ from agenthub_kernel.db import (
     TaskRow,
     TreeQuotaRow,
 )
+from agenthub_kernel.taskstatus import derive_task_status
 
 from agenthub_rt.auth import Principal, authenticate
 
@@ -132,6 +133,13 @@ def _task_view(db: Database, root_task_id: str) -> dict[str, Any]:
         ).all()
         paused = bool(pause_events) and pause_events[0].type == "tree_pause"
 
+        # Task status is DERIVED from its calls, not read from the stored column:
+        # the row is kept in sync by PolicyService, and deriving here as well means
+        # a database written before that rule existed still reports the truth.
+        statuses_by_task: dict[str, list[str]] = {}
+        for i in invocations:
+            statuses_by_task.setdefault(i.task_id, []).append(i.status)
+
         return {
             "root": {
                 "id": root.id,
@@ -147,7 +155,10 @@ def _task_view(db: Database, root_task_id: str) -> dict[str, Any]:
                     "kind": t.kind,
                     "goal": t.goal,
                     "agent_id": t.agent_id,
-                    "status": t.status,
+                    "status": derive_task_status(statuses_by_task.get(t.id, [])),
+                    # Kept for transparency: the stored column should match, and a
+                    # mismatch is the signal that a write path forgot to sync.
+                    "stored_status": t.status,
                 }
                 for t in tasks
             ],

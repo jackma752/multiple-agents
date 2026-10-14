@@ -23,13 +23,35 @@ detail, started_at, updated_at)`，状态为 `running / finished / failed / canc
 `starting`/`running` 的调用清单。
 
 `Worker.cancel_tree(...)`：**先**持久化停止请求，**再**对每条在飞调用调用
-`adapter.cancel_invocation`，然后把调用置 `canceled` 并释放其名额。
+`adapter.cancel_invocation`，然后**只在取消被确认时**把调用置 `canceled` 并释放名额。
 
 这个顺序是关键：即使取消阶段失败或进程在中途死掉，**已落库的停止请求**仍保证
 该树不会再被调度新调用。适配器不支持取消时返回 `unsupported`，不伪造成功。
 
 API `POST /api/tasks/{id}/stop` 现走 `cancel_tree`（此前只持久化、不取消），
-返回 `already_stopped` 与 `cancelled` 计数；仅 `user` 角色可调用。
+返回 `already_stopped`、`cancelled`（=尝试数）、`confirmed`、`unconfirmed` 与逐条
+`outcomes`；仅 `user` 角色可调用。
+
+### 2.1 未确认的取消**不得**释放名额（2026-10-14 修正的真实缺陷）
+
+修正前的 `_cancel_one()` **无条件**执行 `release(invocation_id, CANCELED)`：
+只要适配器返回 `{"ok": false, "reason": "unsupported"}`（Codex 今天就是如此），
+调用仍会被结算为 `canceled`、名额仍会被释放——**在无法证明远端已停止的情况下**。
+这既**虚假宣称已停止**，又让第二条调用可能拿到第一条仍占用的名额，正是
+`_stop_evidence()` 与超时路径一直在防的错误（§4）。
+
+修正后按"能否证明已停止"分流，与超时/恢复路径同一标准：
+
+| 适配器取消结果 | 调用终态 | 名额 | API 计数 |
+|---|---|---|---|
+| `ok: true`（确认已停） | `canceled` | 释放一次 | `confirmed` |
+| `ok: false`（`unsupported` / 报错 / 无 cancel 方法） | **`unknown`**（记录原因） | **保留** | `unconfirmed` |
+| 调用已是终态 | 不动 | 不动 | 附 `note: already_terminal` |
+
+回归测试：`test_unconfirmed_cancel_keeps_the_slot_and_marks_unknown`（断言
+`released_at` 为空、`concurrent` 仍为 1）、`test_stop_still_blocks_new_calls_when_cancel_is_unsupported`
+（停止先落库，仍挡住新调度）、`test_confirmed_cancel_still_settles_and_releases`
+（能取消的适配器行为不变）。控制台同步改为如实报数，见 `docs/p3-ui.md`。
 
 ## 3. 配额释放幂等（按预留记录）
 

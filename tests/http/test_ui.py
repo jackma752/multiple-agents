@@ -275,3 +275,134 @@ def test_view_reports_paused_state_for_the_header(client):
 
 def test_view_404_for_unknown_task(client):
     assert client.get("/api/tasks/task-nope/view", headers=USER).status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# what the console must show for a REAL adapter (Codex)
+# --------------------------------------------------------------------------- #
+
+
+def test_ui_results_panel_renders_the_codex_reply_usage_and_state(client):
+    """Source-level check that the panel binds every field the P3 brief requires.
+
+    The page cannot be clicked here (no browser), so this pins the rendering
+    contract: the results card must show the adapter status, the kernel status,
+    thread_id, the final reply, usage, the event census, the exit code and the
+    workdir delta.
+    """
+    html = client.get("/ui").text
+    for needle in (
+        "最终回复",              # final reply, verbatim
+        "usage",
+        "thread_id",
+        "退出码",                 # exit code (real process evidence)
+        "事件",
+        "工作目录",
+        "内核：",                 # kernel status next to the adapter status
+        'id="results"',
+    ):
+        assert needle in html, f"results panel is missing: {needle}"
+
+
+def test_ui_states_cancellation_is_unsupported(client):
+    """Codex cannot cancel: the page must SAY so rather than imply a stop."""
+    html = client.get("/ui").text
+    assert "取消：<b>不支持</b>" in html
+    assert "caps.cancel === true" in html, "cancel support must be read from the adapter"
+    assert "保留配额" in html, "the page must say the slot is kept when a stop is unconfirmed"
+
+
+def test_ui_stop_message_separates_confirmed_from_unconfirmed(client):
+    """A stop is only 'stopped' where the adapter confirmed it."""
+    html = client.get("/ui").text
+    assert "r.confirmed" in html and "r.unconfirmed" in html
+    assert "未能确认停止" in html
+    assert "已停止：取消" not in html, "the old unconditional 'stopped' claim is back"
+
+
+def test_stop_api_reports_confirmed_and_unconfirmed(client):
+    """The endpoint behind that message must return both counts."""
+    created = client.post(
+        "/api/invocations", json={"task_id": "-", "agent_id": "mock", "task_input": "stop me"}
+    ).json()
+    root = created["task_id"]
+    body = client.post(f"/api/tasks/{root}/stop", headers=USER).json()
+    assert body["stopped"] is True
+    assert body["confirmed"] == 0 and body["unconfirmed"] == 0  # nothing in flight
+    assert "outcomes" in body
+
+
+def test_simulated_console_session_with_the_real_codex_adapter(tmp_path):
+    """Drive the console's exact call sequence against the Codex adapter.
+
+    The stub-driven runs prove the HTTP path; this one pins what the RESULTS panel
+    would render for Codex: the adapter status, the kernel status, the parsed
+    thread_id, the final reply verbatim, real usage, the event census and the
+    process exit code - plus the adapter's declared cancel=false, which the page
+    turns into "取消：不支持".
+
+    No real process runs here: the runner is the fake that replays the verified
+    capture shape.
+    """
+    from agenthub_adapters.codex import CodexAdapter, FakeCodexRunner, success_script
+    from agenthub_adapters.store import ExecutionStore
+
+    adapter = CodexAdapter(
+        codex_path=__file__,
+        codex_home=str(tmp_path / "home"),
+        workdir_root=str(tmp_path / "runs"),
+        store=ExecutionStore(path=str(tmp_path / "codex.db"), table="codex_executions"),
+        runner=FakeCodexRunner(success_script()),
+    )
+    app = create_app(
+        db=Database(f"sqlite:///{(tmp_path / 'console-codex.db').as_posix()}"), adapter=adapter
+    )
+
+    with TestClient(app) as c:
+        # 1) the header: real adapter, honest capability list
+        info = c.get("/api/adapter", headers=USER).json()
+        assert info["kind"] == "codex"
+        assert info["capabilities"]["cancel"] is False, "Codex cannot cancel"
+        assert info["capabilities"]["intercept_tool"] is False
+
+        # 2) create the call the composer would create
+        created = c.post(
+            "/api/invocations",
+            json={"task_id": "-", "agent_id": "codex", "task_input": "Reply with exactly: OK."},
+            headers=USER,
+        ).json()
+        root, inv_id, appr_id = (
+            created["task_id"],
+            created["invocation_id"],
+            created["approval_id"],
+        )
+
+        # 3) "推进调度" without approval: nothing may launch
+        c.post("/api/worker/drain", headers=USER)
+        assert c.get(f"/api/invocations/{inv_id}/adapter-result", headers=USER).json()[
+            "available"
+        ] is False
+
+        # 4) approve, then drain
+        c.post(f"/api/approvals/{appr_id}/approve", headers=USER)
+        c.post("/api/worker/drain", headers=USER)
+
+        # 5) exactly what renderTree()/renderResults() read
+        view = c.get(f"/api/tasks/{root}/view", headers=USER).json()
+        served = {t["id"]: t for t in view["tasks"]}[root]
+        assert served["status"] == "succeeded", "the task must not read 'draft'"
+        assert served["stored_status"] == "succeeded"
+        assert view["invocations"][0]["status"] == "succeeded"
+
+        res = c.get(f"/api/invocations/{inv_id}/adapter-result", headers=USER).json()
+        assert res["available"] is True
+        summary = res["summary"]
+        assert summary["thread_id"] == "01a13a34-63e6-7cc2-85d1-ddfbbec0e2ce"
+        assert summary["final_message"] == "OK", "the panel shows the reply verbatim"
+        assert summary["usage"]["input_tokens"] == 14481
+        assert summary["usage"]["output_tokens"] == 5
+        assert summary["event_types"]["turn.completed"] == 1
+        assert res["evidence"]["exit_code"] == 0
+        assert res["evidence"]["event_count"] >= 4
+        assert res["evidence"]["timed_out"] is False
+

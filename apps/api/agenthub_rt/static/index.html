@@ -54,6 +54,9 @@
   .card h3 { font-size: 13px; margin: 0 0 6px; }
   .kv { display: grid; grid-template-columns: 88px 1fr; gap: 2px 8px; font-size: 12px; }
   .kv div:nth-child(odd) { color: var(--dim); }
+  /* Stated, never implied: what the adapter cannot do. */
+  .unsupported { margin-top: 6px; padding: 4px 8px; font-size: 12px; border-radius: 4px;
+                 color: var(--warn); border: 1px solid #5a4020; background: #2a1f0d; }
   code { font-family: Consolas, monospace; font-size: 12px; color: #b9c6dd; }
   .tree { list-style: none; margin: 0; padding: 0; font-size: 12px; }
   .tree li { padding: 3px 0; border-bottom: 1px dashed #232833; }
@@ -431,30 +434,52 @@ function render() { renderApprovals(); renderTree(); renderQuota(); renderEvents
 async function renderResults() {
   const invs = (S.view && S.view.invocations) || [];
   if (!invs.length) { $("results").innerHTML = '<span class="muted">无</span>'; return; }
+  const caps = (S.adapter && S.adapter.capabilities) || {};
   const cards = [];
   for (const inv of invs) {
     let r = null;
     try { r = await api("GET", `/api/invocations/${inv.id}/adapter-result`); } catch (e) { r = null; }
     if (!r || !r.available) continue;
     const s = r.summary || {};
+    const ev = r.evidence || {};
     const usage = s.usage && Object.keys(s.usage).length
       ? Object.entries(s.usage).map(([k, v]) => `${k}=${v}`).join(", ")
       : "未提供";
     const events = s.event_types ? Object.entries(s.event_types).map(([k, v]) => `${k}×${v}`).join(" → ") : "—";
+    const proc = ev.exit_code === undefined || ev.exit_code === null
+      ? "—" : String(ev.exit_code);
     cards.push(`<div class="card">
-      <h3><code>${inv.id}</code> ${pill(r.status || "unknown")}</h3>
+      <h3><code>${inv.id}</code> ${pill(r.status || "unknown")}
+        ${inv.status ? `<span class="muted">内核：${pill(inv.status)}</span>` : ""}</h3>
       <div class="kv">
         <div>thread_id</div><div><code>${s.thread_id || "—"}</code></div>
         <div>最终回复</div><div>${escapeHtml(s.final_message || "—")}</div>
         <div>usage</div><div>${escapeHtml(usage)}</div>
-        <div>事件</div><div>${escapeHtml(events)}</div>
+        <div>事件</div><div>${escapeHtml(events)}${ev.event_count !== undefined ? `（共 ${ev.event_count}）` : ""}</div>
+        <div>退出码</div><div>${proc}${ev.timed_out ? " · ⚠ 本地超时" : ""}</div>
         <div>工作目录</div><div>${(s.workdir_entries_after || []).length} 条目${
           (s.workdir_entries_after || []).length === 0 ? "（只读生效）" : "（⚠ 有写入）"}</div>
       </div>
       ${r.detail ? `<div class="muted" style="margin-top:6px;">${escapeHtml(r.detail).slice(0, 240)}</div>` : ""}
+      ${cancelNote(caps, inv.status)}
     </div>`);
   }
   $("results").innerHTML = cards.join("") || '<span class="muted">尚无适配器执行记录</span>';
+}
+
+/* Cancellation is stated, not implied: Codex cannot cancel, so a run must never
+ * look like it was stopped. This is the same claim the adapter itself refuses to
+ * make (it answers `unsupported` rather than faking a stop). */
+function cancelNote(caps, invocationStatus) {
+  const supported = caps.cancel === true;
+  if (!supported) {
+    return `<div class="unsupported">取消：<b>不支持</b>（适配器未验证取消能力；` +
+      `运行中的调用只能等待超时，届时若无法确认已停会标记 unknown 并保留配额）</div>`;
+  }
+  if (invocationStatus === "running" || invocationStatus === "starting") {
+    return `<div class="muted">取消：支持（由适配器确认停止后才会结算为 canceled）</div>`;
+  }
+  return "";
 }
 
 /* ---------------- controls ---------------- */
@@ -463,8 +488,19 @@ $("stop").onclick = async () => {
   if (!confirm("停止整棵树？运行中的调用会被取消，累计用量不会返还。")) return;
   try {
     const r = await api("POST", `/api/tasks/${S.taskId}/stop`);
-    log(`已停止：取消 ${r.cancelled} 个运行中调用`);
-    await refresh(); await loadTasks();
+    const reasons = (r.outcomes || [])
+      .map(o => (o.cancel && o.cancel.reason) || "")
+      .filter(Boolean);
+    let msg = `已请求停止：${r.cancelled} 个运行中调用`;
+    if (r.confirmed) msg += `，其中 ${r.confirmed} 个已确认停止`;
+    if (r.unconfirmed) {
+      msg += `；⚠ ${r.unconfirmed} 个**未能确认停止**` +
+        (reasons.length ? `（适配器 cancel=${[...new Set(reasons)].join("/")}）` : "") +
+        "：已标记 unknown 并**保留配额**，不会自动重试，需人工裁决（取消能力未验证则属于预期行为）";
+    }
+    log(msg);
+    if (r.unconfirmed) toast(msg, "bad");
+    await refresh(); await loadTasks(); await renderResults();
   } catch (e) { toast(e.message, "bad"); }
 };
 $("pause").onclick = async () => { try { await api("POST", `/api/tasks/${S.taskId}/pause`); await refresh(); } catch (e) { toast(e.message, "bad"); } };

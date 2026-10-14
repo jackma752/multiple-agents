@@ -608,6 +608,11 @@ class CodexAdapter(AdapterContract):
         parsed = parse_events(run.stdout_text)
 
         local_id = parsed.thread_id or f"codex-{invocation_id}"
+        # Record the external execution id NOW that it exists: the kernel keeps it
+        # in ``invocations.adapter_invocation_id``, and the adapter's own record
+        # must agree, otherwise a stop check or a recovery that reads only the
+        # adapter's store cannot say which external execution this is.
+        self.store.set_adapter_id(invocation_id, local_id)
         payload = {
             "thread_id": parsed.thread_id,
             "final_message": parsed.final_message,

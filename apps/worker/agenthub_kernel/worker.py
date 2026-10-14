@@ -42,8 +42,11 @@ class Worker:
 
         Ordering matters: the stop is persisted FIRST, so even if cancellation
         fails or the process dies mid-way, no new call can be scheduled for this
-        tree. Cancellation then asks the adapter to stop each running invocation
-        and marks it ``canceled``, releasing its slot idempotently.
+        tree. Cancellation then asks the adapter to stop each running invocation.
+
+        Only a CONFIRMED stop settles an invocation as ``canceled``. The response
+        separates ``confirmed`` from ``unconfirmed`` so a caller cannot read
+        "attempted" as "stopped".
         """
         with self.db.session() as session:
             plan = PolicyService(session).request_stop(
@@ -58,24 +61,37 @@ class Worker:
                 {"invocation_id": invocation_id, "cancel": cancel_result}
             )
 
+        confirmed = sum(1 for o in outcomes if o["cancel"].get("remote_stop_confirmed"))
         return {
             "root_task_id": root_task_id,
             "already_stopped": plan["already_stopped"],
             "attempted": len(plan["running"]),
+            "confirmed": confirmed,
+            "unconfirmed": len(outcomes) - confirmed,
             "outcomes": outcomes,
         }
 
     def _cancel_one(self, invocation_id: str) -> dict[str, Any]:
-        """Cancel a single invocation via the adapter, then settle its slot."""
+        """Cancel one invocation, settling it ONLY when the stop is confirmed.
+
+        An adapter that cannot cancel (Codex today) or whose cancel raised does
+        NOT prove the remote work stopped. Settling it as ``canceled`` and freeing
+        its slot would let a second call take a slot the first one may still be
+        occupying - the same mistake the timeout path already guards against. So
+        an unconfirmed stop marks the call ``unknown`` and KEEPS the slot until a
+        human resolves it.
+        """
         cancel_fn = getattr(self.adapter, "cancel_invocation", None)
         if cancel_fn is None:
             # An adapter that cannot cancel must say so, not pretend.
-            return {"ok": False, "reason": "unsupported"}
-        try:
-            result = cancel_fn(invocation_id)
-        except Exception as exc:  # noqa: BLE001
-            result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
+            result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
+        else:
+            try:
+                result = cancel_fn(invocation_id)
+            except Exception as exc:  # noqa: BLE001
+                result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
 
+        confirmed = bool(result.get("ok"))
         with self.db.session() as session:
             svc = PolicyService(session)
             inv = session.get(InvocationRow, invocation_id)
@@ -83,11 +99,21 @@ class Worker:
                 InvocationStatus.SUCCEEDED.value,
                 InvocationStatus.FAILED.value,
             ):
-                # Do not stomp a call that finished concurrently.
-                svc.release(invocation_id, InvocationStatus.CANCELED)
+                if confirmed:
+                    svc.release(invocation_id, InvocationStatus.CANCELED)
+                else:
+                    svc.mark_unknown(
+                        invocation_id,
+                        reason=(
+                            "stop requested, but cancellation could not be confirmed "
+                            f"(adapter cancel: {result.get('reason') or 'not ok'}); "
+                            "remote work may still be running, so the quota slot is "
+                            "deliberately kept"
+                        ),
+                    )
             else:
                 result = {**result, "note": "already_terminal"}
-        return result
+        return {**result, "remote_stop_confirmed": confirmed}
 
     # ------------------------------------------------------------------ #
     # Run-time limit enforcement

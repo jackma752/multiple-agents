@@ -136,6 +136,34 @@ def credential_location() -> str:
     return os.path.join(codex_home(), "auth.json")
 
 
+def _inside(path: str, root: str) -> bool:
+    """True when ``path`` is root itself or sits under it."""
+    p = os.path.abspath(path).lower().rstrip("\\/")
+    r = os.path.abspath(root).lower().rstrip("\\/")
+    return p == r or p.startswith(r + os.sep)
+
+
+def codex_home_status() -> dict:
+    """Facts about the long-term CODEX_HOME, for the console/tooling.
+
+    Reports presence and permissions ONLY. It never opens ``auth.json``: the
+    contents of a credential are not needed to answer "is a login configured?".
+    """
+    path = codex_home()
+    credential = credential_location()
+    exists = os.path.isdir(path)
+    return {
+        "codex_home": path,
+        "outside_repository": not _inside(path, REPO_ROOT),
+        "exists": exists,
+        "writable": os.access(path, os.W_OK) if exists else False,
+        "credential": credential,
+        "credential_present": os.path.isfile(credential),
+        "override_env": ENV_CODEX_HOME if os.environ.get(ENV_CODEX_HOME) else "",
+    }
+
+
+
 def codex_workdir_root() -> str:
     path = os.path.join(DATA_DIR, "codex-runs")
     os.makedirs(path, exist_ok=True)

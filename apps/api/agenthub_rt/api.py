@@ -364,6 +364,11 @@ def create_app(
             "root_task_id": result["root_task_id"],
             "already_stopped": result["already_stopped"],
             "cancelled": result["attempted"],
+            # `attempted` is not `stopped`: the adapter may be unable to cancel at
+            # all (Codex today), in which case those calls stay unknown and keep
+            # their slots. Both counts are returned so no caller has to guess.
+            "confirmed": result.get("confirmed", 0),
+            "unconfirmed": result.get("unconfirmed", 0),
             "outcomes": result["outcomes"],
         }
 

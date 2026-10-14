@@ -23,7 +23,7 @@ from agenthub_adapters.codex import (
 )
 from agenthub_adapters.mock import MockAdapter
 from agenthub_adapters.store import FINISHED, RUNNING, ExecutionStore
-from agenthub_kernel.db import InvocationRow, QuotaReservationRow, TreeQuotaRow
+from agenthub_kernel.db import InvocationRow, QuotaReservationRow, TaskRow, TreeQuotaRow
 from agenthub_kernel.service import PolicyService
 from tests.helpers import KernelHarness
 
@@ -452,3 +452,118 @@ def test_adapter_crash_keeps_the_slot_and_records_why(tmp_path):
         assert "RuntimeError" in (row.error or ""), row.error
     assert _quota(h, root.root_task_id).concurrent == 1, "slot must be kept"
     assert _open_reservations(h) == 1
+
+
+# --------------------------------------------------------------------------- #
+# the two records must agree on WHICH external execution this was
+# --------------------------------------------------------------------------- #
+
+
+def test_kernel_and_adapter_records_agree_on_the_execution_id(tmp_path):
+    """An operator (or a recovery pass) reading either record sees the same id."""
+    h, codex = harness_with_codex(tmp_path)
+    _root, _sub, inv, _appr = _approved_sub(h)
+
+    h.drain()
+
+    with h.open_session() as s:
+        kernel_id = s.get(InvocationRow, inv.id).adapter_invocation_id
+    adapter_rec = codex.lookup_by_invocation(inv.id)
+
+    assert kernel_id, "the kernel must persist the external execution id"
+    assert adapter_rec["adapter_invocation_id"] == kernel_id, (
+        "the adapter's own record must name the same execution"
+    )
+    assert adapter_rec["payload"]["thread_id"] == kernel_id
+
+
+# --------------------------------------------------------------------------- #
+# tasks.status follows the call (it used to stay 'draft' forever)
+# --------------------------------------------------------------------------- #
+
+
+def _task_status(h, task_id: str) -> str:
+    with h.open_session() as s:
+        return s.get(TaskRow, task_id).status
+
+
+def test_task_status_follows_the_call_through_its_lifecycle(tmp_path):
+    h, codex = harness_with_codex(tmp_path)
+    root = h.create_root(agent_id="codex")
+    sub = h.create_subtask(root.id, "tracked", agent_id="codex")
+    inv = h.create_invocation(sub.id)
+    assert _task_status(h, sub.id) == InvocationStatus.DRAFT.value
+
+    appr = h.create_approval(inv.id)
+    assert _task_status(h, sub.id) == InvocationStatus.AWAITING_APPROVAL.value
+
+    h.approve(appr.id)
+    assert _task_status(h, sub.id) == InvocationStatus.QUEUED.value
+
+    h.drain()
+    assert _task_status(h, sub.id) == InvocationStatus.SUCCEEDED.value, (
+        "a finished call must not leave its task reading 'draft'"
+    )
+    # The read model derives the same thing from the calls themselves.
+    with h.open_session() as s:
+        from agenthub_kernel.taskstatus import derive_task_status
+
+        assert derive_task_status([s.get(InvocationRow, inv.id).status]) == (
+            InvocationStatus.SUCCEEDED.value
+        )
+
+
+def test_task_status_reports_failure_and_unknown(tmp_path):
+    def fail_script(argv, env):
+        text = "\n".join([
+            '{"type":"thread.started","thread_id":"t1"}',
+            '{"type":"turn.failed","error":{"message":"nope"}}',
+        ])
+        return CodexRun(1, False, 1.0, text, argv)
+
+    h, _codex = harness_with_codex(tmp_path, script=fail_script)
+    root = h.create_root(agent_id="codex")
+    sub = h.create_subtask(root.id, "will fail", agent_id="codex")
+    inv = h.create_invocation(sub.id)
+    appr = h.create_approval(inv.id)
+    h.approve(appr.id)
+    h.drain()
+
+    assert _task_status(h, sub.id) == InvocationStatus.FAILED.value
+
+
+def test_task_status_reports_unknown_when_the_call_cannot_be_confirmed(tmp_path):
+    def timeout_script(argv, env):
+        return CodexRun(None, True, 300.0, '{"type":"thread.started","thread_id":"t1"}\n', argv)
+
+    h, _codex = harness_with_codex(tmp_path, script=timeout_script)
+    root = h.create_root(agent_id="codex")
+    sub = h.create_subtask(root.id, "unconfirmed", agent_id="codex")
+    inv = h.create_invocation(sub.id)
+    appr = h.create_approval(inv.id)
+    h.approve(appr.id)
+    h.drain()
+
+    assert _task_status(h, sub.id) == InvocationStatus.UNKNOWN.value, (
+        "a call awaiting human adjudication must surface as unknown"
+    )
+
+
+def test_task_status_is_never_left_stale_after_reject_and_revoke(tmp_path):
+    h, _codex = harness_with_codex(tmp_path)
+    root = h.create_root(agent_id="codex")
+
+    sub = h.create_subtask(root.id, "rejected", agent_id="codex")
+    inv = h.create_invocation(sub.id)
+    appr = h.create_approval(inv.id)
+    h.reject(appr.id)
+    # `rejected` is summarised into the "canceled" bucket at task level; the
+    # per-invocation status keeps the precise value.
+    assert _task_status(h, sub.id) == "canceled"
+
+    sub2 = h.create_subtask(root.id, "revoked", agent_id="codex")
+    inv2 = h.create_invocation(sub2.id)
+    appr2 = h.create_approval(inv2.id)
+    h.revoke(appr2.id)
+    assert _task_status(h, sub2.id) == InvocationStatus.DRAFT.value
+

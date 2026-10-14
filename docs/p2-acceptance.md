@@ -86,7 +86,7 @@ CLI 拦截（P3）、自动协作开关（P4）、真实远程超时（P3）、S
 | `PATCH /api/tasks/{id}/policy` | ✅ | **本轮补齐 PATCH**（POST 保留为兼容别名），仅 user |
 | `GET /api/tasks/{id}/events` | ⚠️ | 普通列表，**非 SSE**（SSE 属 P3/P5） |
 | `POST /api/tasks/{id}/pause` | ✅ | **本轮补齐**；阻止后续调度，不取消运行中调用 |
-| `POST /api/tasks/{id}/stop` | ✅ | 持久化 + 取消全树 |
+| `POST /api/tasks/{id}/stop` | ✅ | 持久化 + 取消全树；返回 `cancelled`/`confirmed`/`unconfirmed`，**只有确认停止才释放名额**（2026-10-14 修正，见 `docs/p2-stop-and-recovery.md` §2.1） |
 
 计划外但必要的补充端点：`POST /api/tasks/{id}/resume`、
 `POST /api/invocations/{id}/reconcile`（用户裁决 unknown）、

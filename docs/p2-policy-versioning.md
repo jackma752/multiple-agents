@@ -108,8 +108,10 @@ tests\policy\test_worker_atomicity.py ...          3
 ## 7. 仍未验证（不得当作已通过）
 
 - **进程被强杀后的收敛**：`starting` 状态下崩溃的 `unknown` 收敛与状态重查策略仍未实现。
-- **取消正在运行的调用**：停止后不新调度已验证；取消运行中调用（适配器 `cancel`）
-  未实现（Mock 适配器有 `cancel` 但调度路径未接）。
+- **取消正在运行的调用**：停止后不新调度已验证；适配器 `cancel` 已接通
+  `Worker.cancel_tree`（2026-10-14 起：只有**确认**停止才结算 `canceled` 并释放名额，
+  未确认则置 `unknown` 并保留名额，见 `docs/p2-stop-and-recovery.md` §2.1）。
+  **真实适配器的取消时延与语义仍未验证**（Codex 目前返回 `unsupported`）。
 - **并发规模**：验证到 4 线程 / 同机 SQLite；更高并发、跨机、以及 `busy_timeout`
   超阈值（>30s）时的失败语义未测。
 - **策略更新的权限边界**：仅验证 HTTP 层角色控制；未验证越权修改**他人**项目策略

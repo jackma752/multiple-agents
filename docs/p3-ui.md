@@ -1,7 +1,8 @@
-# P3 统一聊天控制台（Mock 后端）
+# P3 统一聊天控制台
 
-日期：2026-10-14。范围：连接现有 Mock 后端的统一聊天界面、审批卡片、任务状态、
-配额显示与停止按钮。**未接入任何真实 Agent。**
+日期：2026-10-14。范围：连接后端的统一聊天界面、审批卡片、任务状态、配额显示与停止按钮。
+**用户可选择 Mock 或真实 Codex 适配器**（由适配器声明它服务的 `agent_id` 决定），
+真实调用仍需逐次审批；**取消能力未验证，页面已显式声明为"不支持"**。
 
 ---
 
@@ -54,7 +55,10 @@ cd E:\plug\agent-hub
    界面面板已预留同一调用路径）。
 6. 右侧 **配额** 面板实时显示：已用总量 / 上限、并发 / 上限、最大深度、调用数、
    名额占用、策略版本（含历史版本列表），并有两条进度条。
-7. **控制**：停止整棵树 / 暂停 / 恢复。停止会弹确认框，并显示"取消 N 个运行中调用"。
+7. **控制**：停止整棵树 / 暂停 / 恢复。停止会弹确认框，并**分开报数**：
+   "已请求停止 N 个运行中调用，其中 M 个已确认停止"；若有**未确认**的，会明确写出
+   `⚠ K 个未能确认停止（适配器 cancel=unsupported）：已标记 unknown 并保留配额`。
+   **不会**再把"尝试取消"说成"已停止"。
 8. **修改配额**：填写总量/并发/深度/调用数 → **应用（版本 +1）**；非法值会被拒绝并提示。
 9. **事件** 面板按序号倒序显示最近 50 条事件。
 
@@ -68,7 +72,35 @@ cd E:\plug\agent-hub
 | 配额显示 | `#quota`（含进度条）+ `#p-total` 等输入 + `#apply-policy` |
 | 停止按钮 | `#stop`（另有 `#pause` / `#resume`） |
 | Agent 选择 | `#agent-id`（`list=#agent-options`）+ 说明 `#agent-note` |
+| 执行结果 | `#results`：适配器状态 + 内核状态、`thread_id`、最终回复（逐字）、usage、事件统计、退出码、工作目录增量 |
+| 取消能力声明 | 结果卡内 `.unsupported` 块：`取消：不支持`（由 `capabilities.cancel` 决定） |
 | Mock 标识 | 顶部 `Mock 模式 · 未接入真实 Agent` 徽标 |
+
+### 页面必须显示什么（真实适配器）
+
+`#results` 面板绑定的是**适配器自己的记录**（`GET /api/invocations/{id}/adapter-result`），
+因此 Codex 的真实回复、用量与执行状态就是它渲染的内容：
+
+| 面板字段 | 数据来源 | 真实运行时的实测值 |
+|---|---|---|
+| 状态 | `adapter-result.status` | `finished` |
+| 内核状态 | `view.invocations[].status` | `succeeded` |
+| thread_id | `summary.thread_id` | `01a13a77-…c0728f`（本次真实调用） |
+| 最终回复 | `summary.final_message` | `OK`（逐字） |
+| usage | `summary.usage` | `input_tokens=15094, cached_input_tokens=12544, output_tokens=5` |
+| 事件 / 退出码 | `evidence.event_types`、`evidence.exit_code` | 4 个事件、退出码 0 |
+| 工作目录 | `summary.workdir_entries_after` | 0 条目 |
+
+**取消必须显式声明**：Codex 的 `capabilities.cancel` 为 `false`，结果卡里固定显示
+"取消：**不支持**（适配器未验证取消能力；运行中的调用只能等待超时，届时若无法
+确认已停会标记 unknown 并保留配额）"。这与适配器本身的答复一致——它返回
+`unsupported` 而不是伪造停止（见 `docs/p2-stop-and-recovery.md` §2.1）。
+
+无浏览器环境下的验证方式：`tests/http/test_ui.py` 的
+`test_ui_results_panel_renders_the_codex_reply_usage_and_state`（面板绑定的每个字段都在页面源码里）、
+`test_ui_states_cancellation_is_unsupported`、`test_ui_stop_message_separates_confirmed_from_unconfirmed`、
+`test_simulated_console_session_with_the_real_codex_adapter`（按页面的真实调用顺序驱动
+Codex 适配器，断言它渲染的每个值：回复 `OK`、usage、退出码 0、事件数、任务状态 `succeeded`）。
 
 ### Agent 选择为什么必须可改（2026-10-14 修正）
 
@@ -112,7 +144,7 @@ cd E:\plug\agent-hub
 
 命令：`python -m pytest -v`（仓库根目录，使用 `.venv`）
 
-**158 passed，exit code 0**。本次新增 `tests/http/test_ui.py`（9 项）：
+**全套 257 passed，exit code 0**；其中本页相关 `tests/http/test_ui.py` **15 项**：
 
 | 验收点 | 测试 |
 |---|---|
@@ -125,6 +157,11 @@ cd E:\plug\agent-hub
 | **模拟界面完整会话**（见下） | `test_simulated_ui_session_end_to_end` |
 | 暂停状态反映到界面 | `test_view_reports_paused_state_for_the_header` |
 | 未知任务 404 | `test_view_404_for_unknown_task` |
+| Agent 选择由适配器声明驱动（不再硬编码） | `test_ui_page_lets_the_user_choose_the_agent` |
+| **结果面板绑定真实回复/用量/状态/退出码** | `test_ui_results_panel_renders_the_codex_reply_usage_and_state` |
+| **取消显式声明为不支持** | `test_ui_states_cancellation_is_unsupported` |
+| 停止消息区分已确认/未确认 | `test_ui_stop_message_separates_confirmed_from_unconfirmed`、`test_stop_api_reports_confirmed_and_unconfirmed` |
+| **用真实 Codex 适配器跑一遍页面调用序列** | `test_simulated_console_session_with_the_real_codex_adapter` |
 
 ### 模拟界面会话（无浏览器环境下的最强验证）
 
@@ -159,9 +196,10 @@ quota: {'launched_total': 0, 'concurrent': 0, 'total_invocations': 0, 'open_rese
 
 ## 6. 限制（不得当作已实现）
 
-1. **未接入真实 Agent**：界面全部操作都作用于 Mock 适配器。
+1. **真实 Agent 已接入但取消未支持**：页面可驱动 Codex 真实调用（结果面板显示其
+   真实回复/用量/退出码），但**取消仍不支持**——页面已显式声明，不做任何伪装。
 2. **未做浏览器交互验证**：本环境无浏览器，验证止于"页面可访问 + 元素齐全 +
-   模拟调用序列全通"。**真实点击、样式渲染、并发操作未验证**。
+   模拟调用序列全通 + 结果面板字段齐全"。**真实点击、样式渲染、并发操作未验证**。
 3. **非 React**：见 §1，属刻意偏离，待工具链可用后迁移。
 4. **无流式输出**：事件面板为轮询/刷新式读取，**不是 SSE**。
 5. **单用户**：只有 `local-user`，无多用户与项目隔离。

@@ -5,7 +5,9 @@ Acceptance:
 * the stop is wired through to the adapter's cancel;
 * quota release is idempotent — driven by the reservation record — so duplicate
   stops or a cancel racing a completion free exactly one slot;
-* an adapter that cannot cancel reports ``unsupported`` instead of pretending.
+* an adapter that cannot cancel reports ``unsupported`` instead of pretending,
+  and such a call becomes ``unknown`` with its slot KEPT (an unconfirmed stop must
+  never free a slot or claim the remote work stopped).
 """
 
 from __future__ import annotations
@@ -237,10 +239,94 @@ def test_adapter_without_cancel_reports_unsupported(tmp_path):
     h = KernelHarness(url=url)
     root, _sub, inv, _appr = _running_sub(h)
 
-    class NoCancelAdapter:
-        def start(self, *a, **k):  # pragma: no cover - unused here
-            raise NotImplementedError
-
     h.worker.adapter = NoCancelAdapter()  # type: ignore[assignment]
     result = h.worker._cancel_one(inv.id)
-    assert result == {"ok": False, "reason": "unsupported"}
+    assert result["ok"] is False
+    assert result["reason"] == "unsupported"
+    assert result["remote_stop_confirmed"] is False
+
+
+class NoCancelAdapter:
+    """An adapter that cannot cancel at all - Codex's honest position today."""
+
+    def start(self, *a, **k):  # pragma: no cover - unused here
+        raise NotImplementedError
+
+
+def test_unconfirmed_cancel_keeps_the_slot_and_marks_unknown(tmp_path):
+    """Regression: an unsupported cancel used to FREE a slot it could not free.
+
+    ``_cancel_one`` settled the invocation as ``canceled`` and released its
+    concurrent slot even when the adapter answered ``{"ok": False, "reason":
+    "unsupported"}``. For Codex - which cannot cancel - the remote turn may still
+    be running, so that both overclaimed a stop and let a second call take a slot
+    the first one still occupied. The rule is the same as the timeout path:
+    cannot confirm the stop -> ``unknown`` and KEEP the slot.
+    """
+    url = f"sqlite:///{(tmp_path / 'nocancel-slot.db').as_posix()}"
+    h = KernelHarness(
+        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1), url=url
+    )
+    root, _sub, inv, _appr = _running_sub(h)
+    assert _tree_quota(h, root.root_task_id).concurrent == 1
+
+    h.worker.adapter = NoCancelAdapter()  # type: ignore[assignment]
+    result = h.worker.cancel_tree(root.root_task_id, requested_by="local-user")
+
+    assert result["attempted"] == 1
+    assert result["confirmed"] == 0, "an unsupported cancel must not count as stopped"
+    assert result["unconfirmed"] == 1
+    assert result["outcomes"][0]["cancel"]["reason"] == "unsupported"
+
+    with h.open_session() as s:
+        row = s.get(InvocationRow, inv.id)
+        assert row.status == InvocationStatus.UNKNOWN.value
+        assert "could not be confirmed" in (row.error or "")
+        # The reservation is deliberately NOT released.
+        released = s.scalar(
+            select(func.count())
+            .select_from(QuotaReservationRow)
+            .where(QuotaReservationRow.released_at.is_not(None))
+        )
+        assert released == 0
+    assert _tree_quota(h, root.root_task_id).concurrent == 1, "slot must be kept"
+
+
+def test_stop_still_blocks_new_calls_when_cancel_is_unsupported(tmp_path):
+    """The stop is persisted first, so it holds even if the cancel cannot."""
+    url = f"sqlite:///{(tmp_path / 'nocancel-stop.db').as_posix()}"
+    h = KernelHarness(
+        policy=Policy(max_subagents_total=2, max_subagents_concurrent=2), url=url
+    )
+    root, _sub, _inv, _appr = _running_sub(h)
+
+    h.worker.adapter = NoCancelAdapter()  # type: ignore[assignment]
+    h.worker.cancel_tree(root.root_task_id, requested_by="local-user")
+
+    # A second, already-approved sub-agent must not start in a stopped tree.
+    sub2 = h.create_subtask(root.id, "second")
+    inv2 = h.create_invocation(sub2.id)
+    appr2 = h.create_approval(inv2.id)
+    h.approve(appr2.id)
+    outcomes = h.drain()
+
+    assert outcomes and outcomes[0]["ok"] is False
+    assert outcomes[0]["code"] == "tree_stopped"
+    with h.open_session() as s:
+        assert s.get(InvocationRow, inv2.id).status == InvocationStatus.QUEUED.value
+
+
+def test_confirmed_cancel_still_settles_and_releases(tmp_path):
+    """The honest rule must not break the adapter that CAN cancel."""
+    url = f"sqlite:///{(tmp_path / 'cancel-ok.db').as_posix()}"
+    h = KernelHarness(
+        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1), url=url
+    )
+    root, _sub, inv, _appr = _running_sub(h)
+
+    result = h.worker.cancel_tree(root.root_task_id, requested_by="local-user")
+
+    assert result["confirmed"] == 1 and result["unconfirmed"] == 0
+    with h.open_session() as s:
+        assert s.get(InvocationRow, inv.id).status == InvocationStatus.CANCELED.value
+    assert _tree_quota(h, root.root_task_id).concurrent == 0

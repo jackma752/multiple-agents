@@ -142,6 +142,71 @@ def test_ensure_codex_home_creates_the_directory(monkeypatch, tmp_path):
     assert target.is_dir()
 
 
+def test_codex_home_status_is_safe_to_report(monkeypatch, tmp_path):
+    """The status dict answers "is a login configured?" without reading anything.
+
+    It must expose paths and booleans only - no field may carry credential
+    content, and asking must not create the directory (the durable home is made by
+    the operator's own login, not as a side effect of a status check).
+    """
+    target = tmp_path / "long-term-home"
+    monkeypatch.setenv("AGENT_HUB_CODEX_HOME", str(target))
+    cfg = _load_config()
+
+    status = cfg.codex_home_status()
+
+    assert set(status) == {
+        "codex_home",
+        "outside_repository",
+        "exists",
+        "writable",
+        "credential",
+        "credential_present",
+        "override_env",
+    }
+    assert status["outside_repository"] is True
+    assert status["exists"] is False and status["credential_present"] is False
+    assert status["credential"].endswith("auth.json")
+    assert not target.exists(), "a status check must not create CODEX_HOME"
+
+    # An in-repo home is reported as such, so tooling can refuse it.
+    monkeypatch.setenv("AGENT_HUB_CODEX_HOME", os.path.join(REPO_ROOT, "var", "in-repo-home"))
+    cfg = _load_config()
+    assert cfg.codex_home_status()["outside_repository"] is False
+
+
+def test_login_tool_never_names_the_credential_file():
+    """The login helper must ask config for the path, never hardcode or open it.
+
+    Prose may mention the file (the docstring explains why it belongs outside the
+    repo); CODE must not name it, because that is how a tool ends up opening a
+    credential.
+    """
+    import ast
+
+    path = os.path.join(REPO_ROOT, "tools", "demo", "codex_login.py")
+    with open(path, "r", encoding="utf-8") as fh:
+        src = fh.read()
+
+    doc_spans = []
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if ast.get_docstring(node):
+                first = node.body[0]
+                doc_spans.append((first.lineno, first.end_lineno or first.lineno))
+
+    code_lines = [
+        line
+        for number, line in enumerate(src.splitlines(), 1)
+        if not any(lo <= number <= hi for lo, hi in doc_spans)
+    ]
+    code = "\n".join(code_lines)
+
+    assert "auth.json" not in code, "the tool's code must not name the credential file"
+    assert "codex_home_status" in code, "the tool must ask config where the home is"
+    assert "login status" in code, "the tool must tell the user how to verify the login"
+
+
 def test_serve_banner_never_prints_the_token():
     """The startup banner lands in scrollback, logs and screenshots.
 
