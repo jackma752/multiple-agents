@@ -21,6 +21,7 @@ from typing import Any, Optional
 from agenthub.contracts import (
     AdapterContract,
     AdapterStartResult,
+    ExecutionAdmission,
     InvocationSnapshot,
 )
 
@@ -97,6 +98,9 @@ class MockAdapter(AdapterContract):
 
     def health(self) -> bool:
         return True
+
+    def execution_admission(self) -> ExecutionAdmission:
+        return ExecutionAdmission(True, "simulation", "mock_only", "Mock 仅模拟执行，不调用真实 Agent。")
 
     def start(
         self,

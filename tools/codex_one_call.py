@@ -98,6 +98,18 @@ def init_home(home: str) -> int:
 
 
 def run_one(args: argparse.Namespace) -> int:
+    # Retain the historical capture implementation, but no longer offer a
+    # side entrance around the product's native-agent control restriction.
+    for package in ("packages/contracts", "packages/adapters"):
+        sys.path.insert(0, os.path.join(REPO_ROOT, package))
+    from agenthub_adapters.codex import blocked_codex_admission
+
+    admission = blocked_codex_admission()
+    if not admission.allowed:
+        print("REFUSING: " + admission.code)
+        print("See docs/p3-strict-adapter-admission.md; real Codex calls are suspended.")
+        return 2
+
     codex = find_codex(args.codex)
     if not codex:
         print("ERROR: codex.exe not found; pass --codex")

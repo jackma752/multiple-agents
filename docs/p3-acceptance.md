@@ -1,5 +1,9 @@
 # P3 验收：统一控制台与第一个真实适配器（Codex）
 
+> **2026-10-15 当前结论**：原生派生绕过 Hub 审批/配额已观测到，当前 Codex 配置不满足严格协作要求。
+> 新版本在消费审批前拒绝真实启动，Mock/离线桩可用。旧成功记录保留，不等于已验收严格控制。
+> 见 [准入修复](p3-strict-adapter-admission.md)、[派生证据与真实子 thread](p3-native-subagent-incident.md)、[最新交接](HANDOFF_CURRENT.md)。
+
 日期：2026-10-14。分支：`feat/p3-wrapup`（基于 `feat/p3-codex-probe`）。测试：**304 passed**。
 
 P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批和会话映射；登录和敏感配置不暴露给前端"。

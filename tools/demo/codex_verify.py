@@ -160,6 +160,11 @@ def main() -> int:
     BASE = f"http://127.0.0.1:{args.port}"
     mode = args.mode
 
+    if mode == "real":
+        print("REFUSING: native_subagents_uncontrolled; real Codex calls are suspended.")
+        print("See docs/p3-strict-adapter-admission.md. --mode stub remains available.")
+        return 2
+
     if mode == "real" and not args.i_understand_this_spends_quota:
         print("Refusing --mode real without --i-understand-this-spends-quota.")
         print("A real run launches the pinned Codex executable once and spends quota;")
@@ -341,7 +346,7 @@ def main() -> int:
             ("未发生本地超时", evidence.get("timed_out") is False),
             ("thread_id 非空", bool(s.get("thread_id"))),
             ("最终回复非空", bool((s.get("final_message") or "").strip())),
-            ("返回真实 usage", bool(s.get("usage"))),
+            ("返回 usage 字段（桩样本）" if mode == "stub" else "返回真实 usage", bool(s.get("usage"))),
             ("内核状态 = succeeded", inv_state == "succeeded"),
             ("未释放的配额预留 = 0", quota.get("open_reservations") == 0),
             ("并发名额已释放 = 0", quota.get("concurrent") == 0),

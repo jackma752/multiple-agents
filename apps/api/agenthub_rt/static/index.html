@@ -82,7 +82,7 @@
     <button id="connect" class="primary">连接</button>
   </div>
   <div class="row" style="margin:0;">
-    <button id="drain">推进调度</button>
+    <button id="drain" disabled>推进调度</button>
     <button id="recover">恢复核对</button>
     <button id="reap">超时检查</button>
   </div>
@@ -216,19 +216,25 @@ async function loadAdapter() {
 
 function applyAdapter(a) {
   const badge = $("adapter-badge");
+  const admission = a.execution_admission || {};
+  const launchAllowed = admission.allowed === true;
+  $("drain").disabled = !launchAllowed;
+  $("drain").title = launchAllowed ? "执行已批准的调用" : (admission.reason || "尚未确认适配器可执行");
   if (a.kind === "codex") {
     S.adapterLabel = "REAL Codex";
     // The browser title must follow the adapter: a REAL run must never sit under
     // a title that says Mock.
     document.title = "Agent Hub 控制台 · REAL Codex";
-    badge.textContent = "REAL Codex · 将启动真实进程";
+    badge.textContent = admission.mode === "simulation" ? "Codex 离线桩 · 无模型调用" :
+      (launchAllowed ? "REAL Codex · 将启动真实进程" : "REAL Codex · 已阻止新调用");
     badge.style.background = "#3a1a1d";
     badge.style.color = "#ffb4b7";
     badge.style.borderColor = "#5c2a2e";
     const caps = a.capabilities || {};
     const note = [
       "版本 " + (a.version || "?"),
-      "沙箱 " + (a.sandbox || "?") + (a.subagents_disabled ? "，子 Agent 已禁用" : "，⚠ 子 Agent 未禁用"),
+      "沙箱 " + (a.sandbox || "?"),
+      a.subagent_disable_requested ? "已传禁用参数；原生子 Agent 阻断未通过" : "未请求禁用原生子 Agent",
       a.identity_ok ? "可执行文件已固定校验通过" : "⚠ 可执行文件校验未通过：" + (a.identity_detail || ""),
       a.proxy ? "代理 " + a.proxy : "无代理",
       "超时 " + (a.timeout_seconds || "?") + "s",
@@ -236,9 +242,11 @@ function applyAdapter(a) {
     const unknown = Object.entries(caps)
       .filter(([k, v]) => (v === false || v === "unknown") && ["cancel", "intercept_tool", "limit_dir", "control_subagent"].includes(k))
       .map(([k, v]) => k + "=" + v);
-    $("adapter-note").textContent = note + (unknown.length ? " · 未验证: " + unknown.join(", ") : "");
+    $("adapter-note").textContent = (admission.reason || "控制能力尚未确认，禁止执行。") + " " + note +
+      (unknown.length ? " · 能力限制: " + unknown.join(", ") : "") +
+      " · 配额仅统计 Hub 登记的调用；名额为 0 不证明历史原生子 Agent 已停止。";
     $("adapter-note").className = "muted";
-  } else {
+  } else if (a.kind === "mock") {
     S.adapterLabel = "Mock";
     document.title = "Agent Hub 控制台 · Mock";
     badge.textContent = "Mock 模式 · 未接入真实 Agent";
@@ -246,6 +254,11 @@ function applyAdapter(a) {
     badge.style.color = "#e8b339";
     badge.style.borderColor = "#5a4020";
     $("adapter-note").textContent = "Mock 适配器只记录启动次数，不启动任何真实进程。";
+  } else {
+    S.adapterLabel = "未确认";
+    document.title = "Agent Hub 控制台";
+    badge.textContent = "适配器未确认 · 禁止执行";
+    $("adapter-note").textContent = "请连接服务并读取适配器状态。";
   }
   applyAgentOptions(a);
 }
@@ -567,10 +580,14 @@ $("apply-policy").onclick = async () => {
 
 $("drain").onclick = async () => {
   try {
+    await loadAdapter();
+    if (!S.adapter || !S.adapter.execution_admission || S.adapter.execution_admission.allowed !== true) {
+      throw new Error((S.adapter && S.adapter.execution_admission && S.adapter.execution_admission.reason) || "适配器控制能力未确认");
+    }
     const out = await api("POST", "/api/worker/drain");
     const started = out.filter(o => o.ok).length;
     const refused = out.filter(o => !o.ok);
-    log(`推进调度：启动 ${started}，拒绝 ${refused.length}` + (refused.length ? "（" + refused.map(r => r.code).join(", ") + "）" : ""));
+    log(`推进调度：启动 ${started}，拒绝 ${refused.length}` + (refused.length ? "（" + refused.map(r => r.error || r.code).join("；") + "）" : ""));
     await refresh(); await loadTasks();
   } catch (e) { toast(e.message, "bad"); }
 };

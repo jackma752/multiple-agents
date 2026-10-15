@@ -75,9 +75,9 @@ def main() -> None:
         "--adapter",
         choices=["mock", "codex"],
         default=None,
-        help="adapter to serve with: 'mock' is inert (default), 'codex' launches "
-             "the real Codex CLI and needs the pinned executable plus proxy/CA "
-             "settings in place",
+        help="adapter to serve with: 'mock' is inert (default); 'codex' exposes "
+             "records and capabilities, but real launches are blocked until "
+             "native-agent controls are verified",
     )
     args = parser.parse_args()
 
@@ -94,7 +94,7 @@ def main() -> None:
 
     print("=" * 72)
     if kind == "codex":
-        print("Agent Hub - REAL Codex adapter (launches the local Codex CLI)")
+        print("Agent Hub - Codex adapter (real launches blocked; bundled stub allowed)")
     else:
         print("Agent Hub - Mock API (no real Agent is contacted)")
     print(f"  adapter  : {kind}")

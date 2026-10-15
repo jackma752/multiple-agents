@@ -556,6 +556,11 @@ def main() -> int:
         print("running adapter before any call. danger-full-access is not reachable here.")
         return 0
 
+    if args.mode == "real":
+        print("REFUSING: native_subagents_uncontrolled; real Codex probes are suspended.")
+        print("See docs/p3-strict-adapter-admission.md. --mode stub remains available.")
+        return 2
+
     spec = probes.PROBE_SPECS[args.probe]
     if args.quiet:
         print(f"PROBE {spec.name}: {spec.title}  (mode={args.mode})")

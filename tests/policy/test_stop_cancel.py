@@ -247,7 +247,11 @@ def test_adapter_without_cancel_reports_unsupported(tmp_path):
 
 
 class NoCancelAdapter:
-    """An adapter that cannot cancel at all - Codex's honest position today."""
+    """Inert fixture without cancellation, isolating the tree-stop gate."""
+
+    def execution_admission(self):
+        from agenthub.contracts import ExecutionAdmission
+        return ExecutionAdmission(True, "simulation", "test_only", "inert fixture")
 
     def start(self, *a, **k):  # pragma: no cover - unused here
         raise NotImplementedError

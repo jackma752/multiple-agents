@@ -4,7 +4,13 @@
 
 定义、方案与验收标准见 `E:\plug\AGENT_HUB_PLAN.md`。
 
-## 当前状态：P3（真实 Codex 适配器已接入并通过真实 HTTP 联调）
+## 当前状态：P3（真实 Codex 新调用已阻止，Mock 可用）
+
+**2026-10-15 更新**：真实记录确认，当前配置在传入 `--disable multi_agent` 后仍派生原生子 Agent，
+且未登记到 Hub 审批/配额。已实现后端执行准入：当前真实 Codex 在消费审批、预留配额、启动进程前被拒绝。
+没有通过降低控制要求继续运行的开关。Mock 和固定离线桩可继续验证。
+见 [准入契约与验证](docs/p3-strict-adapter-admission.md)、[原生派生观测](docs/p3-native-subagent-incident.md)。
+以下真实成功记录是此前联调证据，不代表当前符合严格协作要求。历史子任务现状仍未知。
 
 阶段：**P2 审批与配额内核已验收**，**P3 已接入第一个真实适配器（Codex）**并完成一次
 经用户逐次批准的真实调用。控制台 `/ui` 可切换 Mock 与真实 Codex 适配器。
@@ -32,13 +38,13 @@
 ### 未验证（**不得当作已支持**）
 
 取消（Codex 侧返回 `unsupported`）、工具操作的**启动前拦截**、
-**原生子 Agent 阻断**（`--disable multi_agent` 目前只是传参）、
+原生子 Agent 阻断已在当前配置观测到**失败**（见上方记录）；
 **只读沙箱是否真拒绝写入**（2026-10-14 已做 **1 次真实探测：结果 = 无法判断**——
 文件未创建，但 JSONL 里没有任何工具/文件类 item、驱动通道无相关拒绝证据（即**探针未取得实际尝试及拒绝证据**；官方文档列出 exec JSON 工具事件，本机版本差异需核实），
 助手自述 `REFUSED` 不算证据；见 `docs/p3-probe-readonly-write-2026-10-14.md`）、app-server 协议。
 四项验证方案、判定条件与清理步骤见 `docs/p3-permission-probes.md`。
 
-**当前 304 个测试全部通过**。P3 验收与逐条证据见 **`docs/p3-acceptance.md`**；
+历史 P3 收尾为 304 个测试通过；接续开发的实际验证见 **`docs/HANDOFF_CURRENT.md`**。P3 验收与逐条证据见 **`docs/p3-acceptance.md`**；
 真实调用记录见 `docs/p3-codex-real-run-2026-10-14.md`；P2 验收矩阵见 **`docs/p2-acceptance.md`**；
 控制台说明见 **`docs/p3-ui.md`**，试用步骤见 **`docs/p3-console-trial-steps.md`**；
 Codex 能力与未决项见 `docs/agent-codex-capabilities.md`；
@@ -97,7 +103,7 @@ Codex 能力与未决项见 `docs/agent-codex-capabilities.md`；
 
 > Mock 试用只验证审批与配额这套安全阀本身：Mock 适配器仅记录"被启动次数"与执行记录，
 > 不调用真实产品、不发外部网络请求。
-> **真实 Codex 模式**另需登录与逐次审批：`.\.venv\Scripts\python.exe tools\demo\serve.py --adapter codex`；
+> `serve.py --adapter codex` 目前仅供查看能力与记录，**真实启动被后端阻止**；
 > 凭据位置与登录步骤见 **`docs/p3-codex-credentials.md`**（凭证放在仓库之外，由你本人登录）。
 
 ## 目录结构

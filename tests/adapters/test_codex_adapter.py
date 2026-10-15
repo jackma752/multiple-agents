@@ -348,7 +348,7 @@ def test_capabilities_mark_unverified_items():
     assert caps["cancel"] is False
     assert caps["intercept_tool"] is False
     assert caps["limit_dir"] == "unknown"
-    assert caps["control_subagent"] == "unknown"
+    assert caps["control_subagent"] is False  # observed native spawn despite disable flag
 
 
 # --------------------------------------------------------------------------- #

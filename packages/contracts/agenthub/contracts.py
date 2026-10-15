@@ -234,6 +234,48 @@ class Policy:
 # --------------------------------------------------------------------------- #
 
 
+@dataclass(frozen=True)
+class ExecutionAdmission:
+    """Host-owned launch eligibility, independent of a user's approval.
+
+    Unknown controls fail closed (plan §4.3). Only reviewed adapter code may
+    declare eligibility; requests, registry capability flags and environment
+    variables cannot grant it. ``simulation`` never certifies a real Agent.
+    """
+
+    allowed: bool = False
+    mode: str = "blocked"
+    code: str = "adapter_controls_unverified"
+    reason: str = "适配器控制能力未验证，已阻止启动。"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allowed": self.allowed,
+            "mode": self.mode,
+            "code": self.code,
+            "reason": self.reason,
+        }
+
+
+def execution_admission(adapter: Any) -> ExecutionAdmission:
+    """Safely query the trusted adapter; missing/broken declarations deny."""
+    try:
+        admission = adapter.execution_admission()
+    except Exception:
+        return ExecutionAdmission()
+    if (
+        not isinstance(admission, ExecutionAdmission)
+        or type(admission.allowed) is not bool
+        or not isinstance(admission.mode, str)
+        or not isinstance(admission.code, str)
+        or not isinstance(admission.reason, str)
+        or admission.mode not in {"blocked", "simulation", "strict"}
+        or admission.allowed != (admission.mode != "blocked")
+    ):
+        return ExecutionAdmission()
+    return admission
+
+
 @dataclass
 class AdapterStartResult:
     """What the worker takes away from an attempt to start a call.
@@ -265,6 +307,10 @@ class AdapterContract:
 
     name: str = "base"
     version: str = "0.0.0"
+
+    def execution_admission(self) -> ExecutionAdmission:
+        """No launch until this adapter's controls have been established."""
+        return ExecutionAdmission()
 
     def capabilities(self) -> dict[str, Any]:
         raise NotImplementedError

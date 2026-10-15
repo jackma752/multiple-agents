@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from sqlalchemy import select
 
-from agenthub.contracts import AdapterContract, InvocationStatus
+from agenthub.contracts import AdapterContract, InvocationStatus, execution_admission
 from agenthub_kernel.db import Database, InvocationRow, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
 
@@ -435,6 +435,20 @@ class Worker:
             if inv is None:
                 return None
             invocation_id = inv.id
+
+            # Eligibility precedes consumption: an approval cannot compensate
+            # for an adapter that bypasses native-child approval/quota controls.
+            # Keep the call queued and its approval untouched. This is NOT an
+            # unknown execution: nothing has started or reserved a slot.
+            admission = execution_admission(self.adapter)
+            if not admission.allowed:
+                return {
+                    "invocation_id": invocation_id,
+                    "ok": False,
+                    "code": admission.code,
+                    "error": admission.reason,
+                    "launch_attempted": False,
+                }
 
             try:
                 plan = svc.consume(invocation_id)

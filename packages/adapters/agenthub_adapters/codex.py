@@ -5,7 +5,8 @@ its JSONL event stream into the kernel's adapter result.
 
 What this adapter does NOT do
 -----------------------------
-It does **not** decide whether a call may run. The approval gate lives in the
+It does **not** grant user approval. Execution eligibility is checked here;
+the approval gate lives in the
 Worker/PolicyService: ``Worker._process_one`` only calls ``start()`` after
 ``consume()`` has atomically validated the approval and reserved a quota slot.
 This adapter therefore refuses to start unless the caller passes an explicit
@@ -16,7 +17,8 @@ invocation results in **zero** process launches.
 Safety posture (per project rules)
 ----------------------------------
 * read-only sandbox (``--sandbox read-only``)
-* native sub-agents disabled (``--disable multi_agent``)
+* ``--disable multi_agent`` requested, but a native spawn was observed despite it
+* real launches are blocked under plan §4.3; only offline simulators are admitted
 * the executable path is pinned and its identity (size + sha256) is checked
 * proxy/CA/CODEX_HOME are injected into **this process only**
 * ``cancel`` is reported as **unsupported**: cancellation has never been verified
@@ -35,6 +37,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -42,6 +45,7 @@ from typing import Any, Callable, Optional
 from agenthub.contracts import (
     AdapterContract,
     AdapterStartResult,
+    ExecutionAdmission,
     InvocationSnapshot,
 )
 
@@ -63,6 +67,37 @@ EVENT_ERROR = "error"
 
 DEFAULT_SANDBOX = "read-only"
 SUBAGENT_FEATURE = "multi_agent"
+
+NATIVE_SUBAGENT_BLOCK_REASON = (
+    "当前 Codex 配置曾在传入禁用参数后派生原生子 Agent，无法保证逐次审批和配额；"
+    "不满足严格协作要求，已阻止新的真实调用。可使用 Mock 或手动交接。"
+)
+
+
+def blocked_codex_admission() -> ExecutionAdmission:
+    return ExecutionAdmission(
+        False, "blocked", "native_subagents_uncontrolled", NATIVE_SUBAGENT_BLOCK_REASON
+    )
+
+
+def bundled_stub_path() -> str:
+    return os.path.realpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "tools", "demo", "stub_codex.py"
+    ))
+
+
+def is_bundled_stub_command(path: str, prefix: list[str]) -> bool:
+    """Only the checked-in inert stub and this Python interpreter, no flags.
+
+    An arbitrary command prefix or a claimed capability is never an opt-out.
+    The stub is trusted source code, like the rest of the installed application.
+    """
+    return (
+        bool(path)
+        and os.path.normcase(os.path.realpath(path)) == os.path.normcase(bundled_stub_path())
+        and len(prefix) == 1
+        and os.path.normcase(os.path.realpath(prefix[0])) == os.path.normcase(os.path.realpath(sys.executable))
+    )
 
 
 class CodexNotConfigured(RuntimeError):
@@ -353,6 +388,15 @@ class SubprocessCodexRunner:
         )
 
 
+class StubCodexRunner(SubprocessCodexRunner):
+    """Offline process runner restricted to the bundled stub, checked again at launch."""
+
+    def run(self, argv: list[str], env: dict, timeout: float) -> CodexRun:
+        if len(argv) < 3 or not is_bundled_stub_command(argv[1], argv[:1]) or argv[2] != "exec":
+            raise CodexLaunchFailed("offline runner refuses any command except the bundled stub")
+        return super().run(argv, env, timeout)
+
+
 class FakeCodexRunner:
     """Simulated Codex process for offline integration tests.
 
@@ -477,8 +521,7 @@ class CodexAdapter(AdapterContract):
             "limit_dir": "unknown",        # read-only run left the workdir empty,
                                            # but the prompt never asked it to write
             "intercept_tool": False,       # UNVERIFIED
-            "control_subagent": "unknown", # flag exists and is disabled; whether it
-                                           # actually blocks spawning is unverified
+            "control_subagent": False,     # native spawn observed despite disable flag
             "real_usage": True,            # verified: turn.completed.usage tokens
             "verified": {
                 "post_message": True,
@@ -486,8 +529,19 @@ class CodexAdapter(AdapterContract):
                 "real_usage": True,
                 "cancel": False,
                 "intercept_tool": False,
+                "control_subagent": False,
             },
         }
+
+    def execution_admission(self) -> ExecutionAdmission:
+        # These are trusted code-level fixtures, never a user-provided flag.
+        # Replacing a fixture with a real runner immediately revokes admission.
+        if type(self.runner) is FakeCodexRunner or (
+            type(self.runner) is StubCodexRunner
+            and is_bundled_stub_command(self.codex_path, self.command_prefix)
+        ):
+            return ExecutionAdmission(True, "simulation", "offline_fixture", "离线桩验证，不调用真实 Codex。")
+        return blocked_codex_admission()
 
     def health(self) -> bool:
         return bool(self.codex_path and os.path.isfile(self.codex_path))
@@ -527,6 +581,12 @@ class CodexAdapter(AdapterContract):
                 terminal=True,
                 detail="refused: no kernel gate token (invocation not approved)",
             )
+        admission = self.execution_admission()
+        if not admission.allowed:
+            # Defence in depth for direct callers and a runner changed after
+            # the Worker's eligibility check. No home, run directory or process
+            # record is created here, and start_count remains zero.
+            return AdapterStartResult("", ok=False, terminal=True, detail=admission.reason)
         # Agent identity must match. The snapshot records which agent the user
         # approved; running a different one would execute something that was
         # never consented to.

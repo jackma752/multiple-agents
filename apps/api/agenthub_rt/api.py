@@ -475,7 +475,7 @@ def create_app(
         """Which adapter is live, and (for Codex) its pinned identity/limits.
 
         Read-only: lets the console show 'Mock mode' vs 'REAL Codex' and surface
-        the safety posture (read-only sandbox, sub-agents disabled, pinned hash)
+        the safety posture (requested sandbox/disable flag, launch admission)
         without the operator having to trust the page's own text.
         """
         from agenthub_kernel.adapters import describe
