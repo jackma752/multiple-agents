@@ -1,4 +1,40 @@
-# 当前交接：严格执行准入修复（2026-10-15）
+# 当前交接：app-server S1 真实验证通过（2026-10-17）
+
+## 分支与目录
+
+- `fix/appserver-s1-verification`，基于 `fix/strict-adapter-gate` 的 `b6e6c88`。
+- worktree：`E:\plug\agent-hub\.worktrees\appserver-s1-verification`。
+- Python：`E:\plug\agent-hub\.venv\Scripts\python.exe`。
+- 本次提交即代码/文档交付。原目录和其它分支未切换；未合并、未推送、未重启 8080。
+
+## 已完成与真实边界
+
+1. S1 发送前白名单、精确 home 预检、独占随机写探针、脱敏结果、reader join 与可信进程清理；修复 QueueStream 分片忙等及 stdio 短写。
+2. 内存桩与真正 Python 子进程管道均已验证，`--mode process-stub` → `S1 PASSED`，自有进程退出。
+3. 旧 Codex 固定文件不存在，首次仅预检失败（启动 0）；用户另行明确授权后，核验现装文件并建立 **S1 专用身份**，只启动 **一次** app-server，真实 S1 PASS，**模型回合 0**。
+4. thread `01a1469e-eb8b-7dd1-a645-ffa3c3134b27`；发送恰为 `initialize → initialized → thread/start`，本次进程 PID 13632 已退出，退出码 0。证据 `var/appserver-s1/s1-real-euxv5bb_/result.json`。
+5. 长期 home 保留；工具未读取/复制/删除凭据内容，Codex 自身复用登录并可写运行状态。没有触碰历史 DB 或清理共享 daemon。
+
+完整身份、权限审核、命令、输出与限制见 [S1 实录](appserver-s1-2026-10-17.md)。现装文件的版本字符串和旧版本相同，但哈希不同；**exec 旧身份与后端拒绝真实调用的规则完全保留**。
+
+## 验证
+
+- 新增 33 项（S1 18 + stdio/QueueStream 15），相关三文件 **72 passed in 1.80s**。
+- 全量 **396 passed in 16.07s**。
+- 首次全量为 395 passed / 1 failed，原因是新测试用 Windows 默认 GBK 读取 UTF-8 JSON；已显式指定 UTF-8 后全量通过。
+- `tools/probes/appserver_s1.py --mode process-stub`：PASS；真实 S1：PASS（以上单次，没有重试握手）。
+
+## 下一步
+
+**S1 已完成，不要重复运行。** 接下来准备 S2 单回合探针及离线正反对照，再单独申请一次真实模型回合。用户此次授权仅到零模型 S1，不包含 S2。现有 S1 工具按设计拒绝 `turn/start`，不得去掉它的白名单以凑通 S2。
+
+S2 验证真实回合事件与载荷；S3 工具审批；S4 中断和确切终态；S5 thread 恢复；S6 满足严格控制条件后再接内核。app-server 尚未接入 `build_adapter()`。原生子 Agent 控制未解决，S1 不能作为恢复真实执行准入的依据。
+
+SSE、会话恢复、第二个真实 Agent 仍未完成；历史原生子 Agent 状态未知；两项 `0xc0000142` 记录继续 OPEN。保持长期 home、现有会话和审计证据。勿将本地 app-server 进程已退出外推为远端任务、共享 daemon 或历史子 Agent 已停止。
+
+---
+
+# 历史交接：严格执行准入修复（2026-10-15）
 
 ## 当前工作目录
 

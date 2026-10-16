@@ -172,7 +172,7 @@ def codex_home_status() -> dict:
     }
 
 
-def codex_home_write_check() -> tuple[bool, str]:
+def codex_home_write_check(path: str | None = None) -> tuple[bool, str]:
     """Can THIS process actually write inside CODEX_HOME?
 
     ``os.access`` is unreliable on Windows and does not see a sandbox policy, and
@@ -183,14 +183,18 @@ def codex_home_write_check() -> tuple[bool, str]:
 
     Writes one tiny file and removes it. Returns ``(ok, detail)``.
     """
-    path = codex_home()
+    import tempfile
+
+    path = os.fspath(path) if path is not None else codex_home()
     if not os.path.isdir(path):
         return False, f"{path} does not exist"
-    probe = os.path.join(path, ".agenthub-write-probe")
     try:
-        with open(probe, "w", encoding="ascii") as fh:
-            fh.write("ok")
-        os.remove(probe)
+        # Exclusive random name: never truncate a pre-existing file and never
+        # collide with another worker's preflight. Check the selected home,
+        # not a different path obtained from an inherited environment override.
+        with tempfile.NamedTemporaryFile(prefix=".agenthub-write-probe-", dir=path) as fh:
+            fh.write(b"ok")
+            fh.flush()
     except OSError as exc:
         return False, f"{path} is not writable by this process ({exc})"
     return True, f"{path} is writable by this process"

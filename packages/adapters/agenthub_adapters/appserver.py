@@ -1,4 +1,4 @@
-"""Minimal Codex app-server client (prototype, offline-verified).
+"""Minimal Codex app-server client (prototype; real S1 handshake verified).
 
 WHY THIS EXISTS
 ---------------
@@ -15,12 +15,10 @@ Verified offline, against a scripted stub server: id matching, notification
 ordering, delta assembly, approval round-trips (allow/decline/timeout), interrupt
 handling, disconnect and timeout behaviour, and the kernel-facing rules.
 
-NOT verified: anything about the real binary. The wire framing, the exact method
-names, the handshake, and every runtime behaviour are taken from the local schema
-and captured `--help` output and remain BEHAVIOUR-UNVERIFIED until a real
-app-server session is run and approved. In particular the stdio framing is not
-stated in `codex app-server --help`, so this client auto-detects between the two
-plausible encodings instead of assuming one.
+Real S1 verified JSONL, initialize -> initialized -> one empty thread, and local
+process shutdown on 2026-10-17. No real model turn was started. Real tool approval,
+turn interruption, session resumption and native-child control remain unverified.
+JSONL is the default; other framing modes are diagnostic opt-ins only.
 
 SAFETY RULES THIS MODULE ENCODES (mirroring the exec adapter and AGENTS.md)
 -------------------------------------------------------------------------
@@ -109,9 +107,8 @@ def encode_message(message: dict, framing: str = FRAMING_LINES) -> bytes:
 def read_message(stream: Any, framing: str = FRAMING_AUTO) -> tuple[dict, str]:
     """Read one JSON-RPC message. Returns ``(message, framing_used)``.
 
-    Auto-detection is deliberate: `codex app-server --help` documents the transport
-    URL (`stdio://`) but not the framing, so assuming one would be a guess. A JSON
-    message always starts with `{`; LSP framing always starts with a header line.
+    Auto-detection is a diagnostic option. The production client explicitly
+    selects JSONL. JSON objects start with `{`; LSP starts with a header line.
     """
     first = stream.readline()
     if not first:
@@ -207,8 +204,10 @@ class QueueStream:
 
     # -- consumer side (file-like, as read_message expects) -----------------
     def _fill(self) -> bool:
-        if self._buffer:
-            return True
+        # A partial line/body already in the buffer still needs another chunk.
+        # Treating it as a successful fill spins forever without reading the queue.
+        if self._closed.is_set() and self._chunks.empty():
+            return False
         try:
             chunk = self._chunks.get(timeout=0.1)
         except queue.Empty:
@@ -251,11 +250,13 @@ class StdioTransport:
     transport writes and reads that; ``framing`` is exposed only so a diagnostic
     can be explicit about what it expects.
 
-    NOTE (environment): piped stdio to native processes is denied in the
-    restricted sandbox this code was developed in, so this path could not be
-    exercised offline. It is written to the same interface as QueueStream and must
-    be smoke-tested in a terminal where pipes are allowed before any real call.
+    Process lifecycle is covered with a Python stdio stub and simulated shutdown
+    failures. That does not establish real Codex server behaviour.
     """
+
+    _EOF_TIMEOUT = 1.0
+    _TERMINATE_TIMEOUT = 3.0
+    _KILL_TIMEOUT = 3.0
 
     def __init__(self, argv: list[str], *, env: Optional[dict] = None,
                  cwd: Optional[str] = None,
@@ -264,14 +265,22 @@ class StdioTransport:
         import subprocess
 
         self.framing = framing
-        # stderr goes to a FILE (a handle works here; pipes are denied by the
-        # sandbox) so a failure still leaves evidence behind.
+        self._closed = False
+        self._close_lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        # Keep diagnostics without a separate stderr pipe or reader thread.
         self._stderr_file = open(stderr_path, "w", encoding="utf-8", errors="replace") \
             if stderr_path else subprocess.DEVNULL
-        self._proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=self._stderr_file, env=env, cwd=cwd,
-        )
+        try:
+            # Raw pipes have no buffered I/O lock for close() to wait on while
+            # the client reader is blocked; stdin.close() also cannot flush.
+            self._proc = subprocess.Popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
+                stderr=self._stderr_file, env=env, cwd=cwd,
+            )
+        except BaseException:
+            self._close_handle(self._stderr_file)
+            raise
         self.reader = self._proc.stdout
 
     @property
@@ -279,27 +288,62 @@ class StdioTransport:
         return self._proc.pid
 
     def write(self, data: bytes) -> None:
-        assert self._proc.stdin is not None
-        self._proc.stdin.write(data)
-        self._proc.stdin.flush()
+        # A short write must not let another request interleave in the same line.
+        with self._write_lock:
+            if self._closed:
+                raise AppServerDisconnected("transport closed")
+            assert self._proc.stdin is not None
+            remaining = memoryview(data)
+            while remaining:
+                written = self._proc.stdin.write(remaining)
+                if not written:
+                    raise AppServerDisconnected("stdin write made no progress")
+                remaining = remaining[written:]
 
-    def close(self) -> None:
-        try:
-            if self._proc.stdin:
-                self._proc.stdin.close()
-        except OSError:
-            pass
-        if self._proc.poll() is None:
-            self._proc.terminate()
+    @staticmethod
+    def _close_handle(handle: Any) -> None:
+        if hasattr(handle, "close"):
             try:
-                self._proc.wait(timeout=10)
-            except Exception:  # noqa: BLE001
-                self._proc.kill()
-        if hasattr(self._stderr_file, "close"):
-            try:
-                self._stderr_file.close()
+                handle.close()
             except OSError:
                 pass
+
+    def close(self) -> None:
+        """Reap only our child, or raise without claiming that it has stopped."""
+        import subprocess
+
+        with self._close_lock:
+            if self._closed and self._proc.poll() is not None:
+                return
+            self._closed = True
+            try:
+                self._close_handle(self._proc.stdin)
+                # EOF lets a healthy server flush state and exit normally.
+                try:
+                    self._proc.wait(timeout=self._EOF_TIMEOUT)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
+                for stop, timeout in (
+                    (self._proc.terminate, self._TERMINATE_TIMEOUT),
+                    (self._proc.kill, self._KILL_TIMEOUT),
+                ):
+                    try:
+                        stop()
+                    except OSError:
+                        # The process may have exited between wait and signal.
+                        if self._proc.poll() is None:
+                            raise
+                    try:
+                        self._proc.wait(timeout=timeout)
+                        return
+                    except subprocess.TimeoutExpired:
+                        pass
+                raise AppServerTimeout("child exit unconfirmed after kill")
+            finally:
+                self._close_handle(self._proc.stdin)
+                self._close_handle(self._proc.stdout)
+                self._close_handle(self._stderr_file)
 
     @property
     def alive(self) -> bool:

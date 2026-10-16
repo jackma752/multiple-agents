@@ -17,7 +17,7 @@ WHAT S1 IS ALLOWED TO DO
 * send `initialize`, then the `initialized` notification;
 * create AT MOST ONE thread via `thread/start` and stop there.
 
-WHAT S1 MUST NEVER DO (enforced by an assertion over the wire transcript)
+WHAT S1 MUST NEVER DO (enforced BEFORE sending, plus transcript assertions)
 ------------------------------------------------------------------------
 * no `turn/start` - therefore no prompt, no model turn, no quota;
 * no `turn/resume`, `turn/steer`, `thread/fork`;
@@ -31,7 +31,8 @@ IT KEEPS EVIDENCE AND FAILS CLOSED
 * the FIRST failed check stops the run - no retry, no relaxation;
 * only the process THIS script started is terminated (by its own handle), and only
   the run directory THIS script created is removed. The long-term CODEX_HOME and the
-  operator's own ~/.codex are never written to or deleted - cleanup prints that.
+  operator's own ~/.codex are never deleted. Codex can write runtime state in
+  the selected home; the write probe touches only its own random temporary file.
 
 NEGATIVE CONTROLS (offline, `--mode stub`)
 ------------------------------------------
@@ -50,6 +51,8 @@ import os
 import shutil
 import sys
 import time
+import tempfile
+import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -63,6 +66,12 @@ from agenthub_adapters import appserver as A  # noqa: E402
 from agenthub_adapters import appserver_stub as S  # noqa: E402
 
 RUN_ROOT = os.path.join(REPO, "var", "appserver-s1")
+# Reviewed 2026-10-17 with explicit user authorization for ZERO-TURN S1 only.
+# The exec adapter's historical identity and blocked admission are unchanged.
+S1_CODEX_PATH = r"C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\9614f1d9b40d9c4f\codex.exe"
+S1_CODEX_SHA256 = "e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242e031c495b99e"
+S1_CODEX_SIZE = 334121776
+S1_CODEX_VERSION = "codex-cli 0.162.0-alpha.17.2"
 #: Methods S1 must never send. Checked against the raw transcript.
 FORBIDDEN_METHODS = (
     "turn/start", "turn/steer", "turn/interrupt", "review/start",
@@ -73,6 +82,85 @@ APPROVAL_METHOD_SUBSTRINGS = ("requestApproval", "Approval", "requestUserInput")
 
 class CheckFailed(Exception):
     """A failed check: stop immediately (fail closed), do not retry."""
+
+
+class S1Client(A.AppServerClient):
+    """S1 has a pre-send allowlist, not a retrospective ban on model calls.
+
+    No prompt, resumed session, tool response or second thread can leave this
+    client. Evidence contains envelopes only, never server payloads or errors.
+    """
+
+    def __init__(self, transport, *, workdir: str, request_timeout: float = 20.0):
+        super().__init__(transport, request_timeout=request_timeout)
+        self.workdir = workdir
+        self.sent: list[dict] = []
+        self.received: list[dict] = []
+        self._s1_lock = threading.Lock()
+        self.violation = False
+
+    def _send(self, message: dict) -> None:
+        with self._s1_lock:
+            index = len(self.sent)
+            method = message.get("method")
+            valid = (
+                index == 0 and method == A.INITIALIZE and "id" in message
+                and message.get("params") == {
+                    "clientInfo": {"name": "agent-hub-s1", "version": "0.1.0"}}
+            ) or (
+                index == 1 and method == A.INITIALIZED and "id" not in message
+                and message.get("params") == {} and self._initialization_received()
+            ) or (
+                index == 2 and method == A.THREAD_START and "id" in message
+                and message.get("params") == {
+                    "cwd": self.workdir, "sandbox": "read-only", "approvalPolicy": "never"}
+            )
+            if not valid:
+                self.violation = True
+                raise CheckFailed("S1 rejected outgoing message before transmission")
+            super()._send(message)
+            self.sent.append({"method": method, "id": message.get("id")})
+
+    def _initialization_received(self) -> bool:
+        return any(m.get("id") == self.sent[0]["id"] and m["kind"] == "result"
+                   for m in self.received)
+
+    def _dispatch(self, message: dict) -> None:
+        method = message.get("method")
+        kind = ("request" if "id" in message else "notification") if method else (
+            "error" if "error" in message else "result")
+        self.received.append({"kind": kind, "method": method, "id": message.get("id")})
+        if kind == "request" or (isinstance(method, str) and
+                                  (method.startswith(("turn/", "item/")) or
+                                   "Approval" in method)):
+            self.violation = True
+            raise A.AppServerProtocolError("unexpected activity during zero-turn S1")
+        super()._dispatch(message)
+
+    def close(self) -> None:
+        super().close()
+        if self._reader is not None:
+            self._reader.join(timeout=1.0)
+            if self._reader.is_alive():
+                raise A.AppServerTimeout("S1 reader did not stop")
+
+
+def exercise_s1(client: S1Client, child) -> str:
+    client.start()
+    session = A.AppServerSession(client)
+    info = session.initialize(client_name="agent-hub-s1", version="0.1.0")
+    report("initialize 有响应", isinstance(info, dict))
+    report("handshake_complete = True", session.handshake_complete)
+    result = client.request(A.THREAD_START, {
+        "cwd": client.workdir, "sandbox": "read-only", "approvalPolicy": "never"})
+    thread = result.get("thread") or {}
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    report("thread id 非空", isinstance(thread_id, str) and bool(thread_id))
+    report("framing 为 JSONL", client.detected_framing == A.FRAMING_LINES)
+    report("无异常服务端活动", not client.violation and not client.disconnected)
+    check_transcript(client.sent, "real")
+    report("进程仍存活", child.alive and child.returncode is None)
+    return thread_id
 
 
 def sha256(path: str) -> str:
@@ -101,7 +189,7 @@ def print_plan() -> None:
     print("              thread/fork、命令执行、任何审批请求、第二个 thread")
     print("  真实回合  : 0 次（S1 不产生模型输出）")
     print("  进程      : 仅使用固定路径 + sha256/size 校验通过的可执行文件")
-    print("  证据      : 子进程 stderr 落文件；线级 transcript 打印并存盘")
+    print("  证据      : stderr 留在被忽略的本地目录；仅消息类型/id 写入 result.json")
     print("  失败处理  : 第一项检查失败即停止；不重试、不放宽")
     print("  清理范围  : 只终止**本脚本启动**的进程，只删除 var/appserver-s1/<本次运行>/")
     print("              **长期 CODEX_HOME 与用户 ~/.codex 一律保留**（含登录凭证）")
@@ -231,128 +319,147 @@ def _wait_until(predicate, *, timeout: float) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def run_real(codex_home: str, clean: bool) -> int:
+def build_real_environment(codex_home: str) -> dict:
     from agenthub_kernel import config
 
-    codex_path = os.environ.get("AGENT_HUB_CODEX_PATH") or config.PINNED_CODEX_PATH
-    expected_sha = os.environ.get("AGENT_HUB_CODEX_SHA256") or config.PINNED_CODEX_SHA256
-    expected_size = int(os.environ.get("AGENT_HUB_CODEX_SIZE") or config.PINNED_CODEX_SIZE)
+    env = dict(os.environ)
+    env["CODEX_HOME"] = codex_home
+    proxy = os.environ.get(config.ENV_PROXY) or "http://127.0.0.1:8090"
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        env[key] = proxy
+    for key in ("NO_PROXY", "no_proxy"):
+        env[key] = "localhost,127.0.0.1"
+    ca = os.environ.get(config.ENV_CA_BUNDLE) or config._default_ca_bundle()
+    if ca:
+        report("CA bundle 可读", os.path.isfile(ca))
+        env["CODEX_CA_CERTIFICATE"] = ca
+    return env
 
-    run_dir = os.path.join(RUN_ROOT, f"s1-{int(time.time())}")
-    os.makedirs(run_dir, exist_ok=True)
+
+def preflight(codex_home: str) -> tuple[list[str], dict]:
+    from agenthub_kernel import config
+
+    # This probe validates the reviewed binary, never an environment-selected
+    # replacement. A new version requires a separately reviewed identity update.
+    codex_path = S1_CODEX_PATH
+    for key, expected in ((config.ENV_CODEX_PATH, codex_path),
+                          (config.ENV_CODEX_SHA256, S1_CODEX_SHA256),
+                          (config.ENV_CODEX_SIZE, str(S1_CODEX_SIZE))):
+        report("固定身份未被覆盖: " + key,
+               os.environ.get(key, str(expected)) == str(expected))
+    report("固定可执行文件存在", os.path.isfile(codex_path), codex_path)
+    report("size 与固定值一致", os.path.getsize(codex_path) == S1_CODEX_SIZE)
+    report("sha256 与固定值一致", sha256(codex_path) == S1_CODEX_SHA256)
+    report("CODEX_HOME 位于仓库之外", not _inside(codex_home, REPO)
+           and not _inside(codex_home, os.path.join(REPO, "..", "..")))
+    report("CODEX_HOME 是目录", os.path.isdir(codex_home))
+    report("CODEX_HOME 有登录凭证", os.path.isfile(os.path.join(codex_home, "auth.json")))
+    writable, detail = config.codex_home_write_check(codex_home)
+    report("本进程可写所选 CODEX_HOME", writable, detail)
+    return [codex_path, "app-server", "--stdio"], build_real_environment(codex_home)
+
+
+def run_real(codex_home: str, clean: bool) -> int:
+    return run_process_probe(codex_home=codex_home, clean=clean, stub=False)
+
+
+def run_process_probe(*, codex_home: str = "", clean: bool = False, stub: bool = True) -> int:
+    os.makedirs(RUN_ROOT, exist_ok=True)
+    run_dir = tempfile.mkdtemp(prefix="s1-stub-" if stub else "s1-real-", dir=RUN_ROOT)
     workdir = os.path.join(run_dir, "thread-cwd")
-    os.makedirs(workdir, exist_ok=True)
+    os.mkdir(workdir)
     stderr_path = os.path.join(run_dir, "appserver-stderr.log")
-    print(f"  run dir    : {run_dir}")
-    print(f"  stderr     : {stderr_path}")
-    print(f"  CODEX_HOME : {codex_home}（只读使用；**不会**被删除）")
-
-    transcript: list[dict] = []
-    child = None
+    result = {"mode": "process-stub" if stub else "real", "passed": False,
+              "process_started": False, "process_stopped": None, "thread_id": None,
+              "sent": [], "received": [], "error_type": None}
+    child = client = None
+    protocol_ok = False
     try:
-        # ---- identity before anything else -------------------------------
-        report("可执行文件存在", os.path.isfile(codex_path), codex_path)
-        actual_size = os.path.getsize(codex_path)
-        report("size 与固定值一致", actual_size == expected_size,
-               f"{actual_size} vs {expected_size}")
-        actual_sha = sha256(codex_path)
-        report("sha256 与固定值一致", actual_sha == expected_sha,
-               f"{actual_sha[:16]}… vs {expected_sha[:16]}…")
-
-        # ---- CODEX_HOME access (distinguish denial from absence) ----------
-        report("CODEX_HOME 是目录", os.path.isdir(codex_home), codex_home)
-        report("CODEX_HOME 有登录凭证", os.path.isfile(os.path.join(codex_home, "auth.json")))
-        write_ok, write_detail = config.codex_home_write_check()
-        report("本进程可写 CODEX_HOME", write_ok, write_detail)
-
-        env = dict(os.environ)
-        env["CODEX_HOME"] = codex_home
-        argv = [codex_path, "app-server", "--stdio"]
-        print(f"\n  启动: {' '.join(argv)}   (cwd={workdir})")
+        if stub:
+            argv = [sys.executable, os.path.join(REPO, "tools", "demo", "stub_appserver.py")]
+            env = dict(os.environ)
+            # The stub has no authentication path; isolate all incidental state.
+            env["CODEX_HOME"] = workdir
+        else:
+            argv, env = preflight(codex_home)
         child = A.StdioTransport(argv, env=env, cwd=workdir, stderr_path=stderr_path)
-        print(f"  child pid  : {child.pid}")
-        report("child.pid 存在", isinstance(child.pid, int) and child.pid > 0)
-
-        client = A.AppServerClient(child, request_timeout=60.0)
-        session = A.AppServerSession(client)
-
-        def note_outgoing(message: dict) -> None:
-            transcript.append(dict(message))
-
-        original_send = client._send  # noqa: SLF001 - instrumentation for the report
-
-        def recording_send(message: dict) -> None:
-            note_outgoing(message)
-            original_send(message)
-
-        client._send = recording_send  # type: ignore[assignment]  # noqa: SLF001
-
-        print("\n[1] 握手（initialize 请求 + initialized 通知）")
-        client.start()
-        info = session.initialize(client_name="agent-hub-s1", version="0.1.0")
-        report("initialize 有响应", isinstance(info, dict), json.dumps(info)[:200])
-        report("handshake_complete = True", session.handshake_complete is True)
-        report("framing 为 JSONL", (client.detected_framing or client.framing) == A.FRAMING_LINES,
-               f"detected={client.detected_framing!r}")
-
-        print("\n[2] 创建一个空 thread（不发送任何回合）")
-        thread_id = session.start_thread(cwd=workdir)
-        report("thread id 非空", bool(thread_id), thread_id)
-
-        print("\n[3] 线级检查（禁止项断言）")
-        check_transcript(transcript, "real")
-
-        print("\n[4] 结果")
-        print(f"  thread_id  : {thread_id}")
-        print(f"  wire       : {json.dumps([m.get('method') for m in transcript])}")
-        report("进程仍存活（未崩溃）", child.alive or child.returncode is not None,
-               f"returncode={child.returncode}")
-        print("\nREAL S1 COMPLETE - 握手与空 thread 已验证；**没有**发起任何模型回合")
-        print("（thread 与 turn 的完整行为属 S2+，需另行批准）")
-        return 0
-    except CheckFailed as exc:
-        print(f"\nFAILED (stopped immediately, no retry): {exc}")
-        return 1
+        result.update(process_started=True, pid=child.pid)
+        client = S1Client(child, workdir=workdir)
+        result["thread_id"] = exercise_s1(client, child)
+        protocol_ok = True
+    except (CheckFailed, A.AppServerError, OSError, ValueError) as exc:
+        result["error_type"] = type(exc).__name__
+        if isinstance(exc, CheckFailed):
+            result["failed_check"] = str(exc)
+        # Do not print peer error text: it can contain user content or secrets.
+        print(f"S1 FAILED: {type(exc).__name__}; no retry")
     finally:
         if child is not None:
-            child.close()
-            print(f"  已终止本次启动的 app-server 进程（pid={child.pid}）")
-        if transcript:
-            path = os.path.join(run_dir, "wire-transcript.json")
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(transcript, fh, ensure_ascii=False, indent=2)
-            print(f"  线级 transcript: {path}")
-        if os.path.exists(stderr_path):
-            size = os.path.getsize(stderr_path)
-            print(f"  stderr 保留（{size} 字节）: {stderr_path}")
-        if clean:
-            _clean_own_run_dir(run_dir)
-        else:
-            print(f"  证据保留在 {run_dir}")
-            print(f"  （要删除它：加上 --clean；或手工 "
-                  f"rmdir /s /q \"{run_dir}\"）")
-        print("  全程未写入、未删除长期 CODEX_HOME 与 %USERPROFILE%\\.codex")
+            try:
+                if client is not None:
+                    client.close()
+                else:
+                    child.close()
+                result["process_stopped"] = not child.alive and child.returncode is not None
+                result["returncode"] = child.returncode
+            except (A.AppServerError, OSError, TimeoutError) as exc:
+                result["process_stopped"] = False
+                result["cleanup_error_type"] = type(exc).__name__
+            print(f"Owned process stopped: {result['process_stopped']}")
+        if client is not None:
+            result["sent"] = client.sent
+            result["received"] = client.received
+            result["protocol_violation"] = client.violation
+            result["reader_error"] = type(client._error).__name__ if client._error else None
+        result["passed"] = bool(protocol_ok and result["process_stopped"]
+                                and not result.get("protocol_violation")
+                                and not result.get("reader_error"))
+        with open(os.path.join(run_dir, "result.json"), "w", encoding="utf-8") as fh:
+            json.dump(result, fh, ensure_ascii=False, indent=2)
+        print(f"Evidence: {run_dir}")
+        print("S1 PASSED" if result["passed"] else "S1 FAILED")
+        print("No model turn sent. Long-term homes are preserved; Codex may write runtime state there.")
+        if clean and result["passed"]:
+            _clean_own_run_dir(run_dir, protected_home=codex_home)
+        elif clean:
+            print("Failure evidence retained; cleanup not attempted.")
+    return 0 if result["passed"] else 1
 
 
-def _clean_own_run_dir(run_dir: str) -> None:
-    """Delete ONLY a run directory this script created, and never a credential home."""
-    run_root = os.path.abspath(RUN_ROOT)
-    target = os.path.abspath(run_dir)
-    if os.path.commonpath([run_root, target]) != run_root or target == run_root:
-        print(f"  REFUSING to clean {target}: not inside {run_root}")
-        return
-    for home_key in ("LOCALAPPDATA", "USERPROFILE"):
-        home = os.path.abspath(os.environ.get(home_key) or "")
-        if home and os.path.commonpath([home, target]) == home:
-            print(f"  REFUSING to clean {target}: it is inside {home_key}")
-            return
-    shutil.rmtree(target, ignore_errors=True)
-    print(f"  已删除本次运行目录（仅此目录）: {target}")
+def _inside(path: str, root: str) -> bool:
+    p, r = (os.path.normcase(os.path.realpath(v)) for v in (path, root))
+    try:
+        return os.path.commonpath([p, r]) == r
+    except ValueError:  # different Windows drives
+        return False
+
+
+def _clean_own_run_dir(run_dir: str, *, protected_home: str = "") -> bool:
+    root = os.path.realpath(RUN_ROOT)
+    target = os.path.realpath(run_dir)
+    if not _inside(target, root) or os.path.normcase(target) == os.path.normcase(root):
+        print("REFUSING cleanup outside a run directory")
+        return False
+    for home in (protected_home, os.environ.get("LOCALAPPDATA"), os.environ.get("USERPROFILE")):
+        if home and (_inside(target, home) or _inside(home, target)):
+            print("REFUSING cleanup overlapping a protected home")
+            return False
+    # Resolving first catches links/junctions escaping the run root. Never cross
+    # a directory reparse point inside the owned run either.
+    for directory, children, _ in os.walk(target, followlinks=False):
+        for name in [directory, *(os.path.join(directory, c) for c in children)]:
+            import stat
+            attrs = getattr(os.lstat(name), "st_file_attributes", 0)
+            if os.path.islink(name) or attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+                print("REFUSING cleanup through a link/junction")
+                return False
+    shutil.rmtree(target)
+    return not os.path.exists(target)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="S1: app-server handshake verification.")
-    ap.add_argument("--mode", choices=["stub", "real"], default="stub")
+    ap.add_argument("--mode", choices=["stub", "process-stub", "real"], default="stub")
     ap.add_argument("--list", action="store_true", help="print the plan and exit")
     ap.add_argument("--codex-home", default=None)
     ap.add_argument("--i-understand-this-starts-an-app-server-process", action="store_true",
@@ -371,6 +478,9 @@ def main() -> int:
     if args.list:
         print("Nothing was executed.")
         return 0
+
+    if args.mode == "process-stub":
+        return run_process_probe(clean=args.clean)
 
     if args.mode == "stub":
         os.makedirs(RUN_ROOT, exist_ok=True)
