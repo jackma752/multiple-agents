@@ -1,4 +1,33 @@
-# 当前交接：app-server S1 真实验证通过（2026-10-17）
+# 当前交接：S2 工具离线完成，等待单次真实授权（2026-10-17）
+
+- 分支：`feat/appserver-s2-probe`；基于 `bdc6b40`，本提交为工具与文档交付。
+- 目录：`E:\plug\agent-hub\.worktrees\appserver-s2-probe`；解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`。
+- S1 已通过，**不要重跑 S1**。本轮没有启动真实 Codex/app-server、没有模型回合，没有读取/复制/删除凭据。
+- 普通执行准入仍默认拒绝真实 Codex；本探针未接入内核或生产数据库。原目录、8080 服务及其他分支未动，未合并/推送。
+
+## 本轮成果
+
+独立 `tools/probes/appserver_s2.py` 在发送前固定握手、新 thread 和一个固定提示词 turn，真实模式必须同时确认一次主回合与控制风险。禁止额外 turn、恢复、fork、工具审批响应；部分写入也不能重试。证据归集器精确匹配 thread/turn/item，分别判断匹配终态与本地进程退出；保存独立 usage 通知，缺少证据不补造。仓库外空临时工作目录仅在确认可安全清理时非递归移除，长期 home 不删除。
+
+复核修复：额外消息 item 的 delta 被忽略、turn/started 未检查状态、finally 中工作目录检查异常丢失审计。均有回归。
+
+## 实际验证
+
+- 新增 93 项测试，最终全量 **489 passed in 26.59s**。
+- 八个真实 Python 子进程桩场景：happy PASS；failed/no-usage/foreign-turn/approval/tool/disconnect/timeout 均正确拒绝，所有本次自有桩进程退出。
+- 独立 CLI `--mode stub` → S2 PASSED；证据 `var/appserver-s2/stub-gxqegnrt/result.json`，仅合成用量。
+
+## 下一步
+
+用户此前明确授权仅到“零模型 S1”，**真实 S2 仍未获批或执行**。完整可审阅范围与命令见 [S2 方案](appserver-s2-probe.md)。获批后最多执行一次，不重试、不换模型、不放宽模型沙箱。若宿主不能写长期 home，只针对该条获批命令走权限审核，不复制凭据。
+
+此探针不能保证工具或原生派生事前受控；历史 `--disable multi_agent` 绕过仍是实证。确认 S2 不等于解除 Hub 准入。没有匹配终态则标记 unconfirmed，保留证据、人工核对；它不占用生产内核名额，不能称“已保留生产配额”。继续保留历史子 Agent 状态未知、两项 DLL 问题 OPEN。
+
+S3 审批、S4 中断、S5 恢复以及 SSE/第二个真实 Agent 尚待完成；本次不预授权这些回合。
+
+---
+
+# 历史交接：app-server S1 真实验证通过（2026-10-17）
 
 ## 分支与目录
 
