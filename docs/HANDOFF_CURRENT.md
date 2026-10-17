@@ -1,8 +1,8 @@
-# 当前交接：S2 工具离线完成，等待单次真实授权（2026-10-17）
+# 当前交接：S2 工具与一次真实验证完成（2026-10-17）
 
-- 分支：`feat/appserver-s2-probe`；基于 `bdc6b40`，本提交为工具与文档交付。
+- 分支：`feat/appserver-s2-probe`；基于 `bdc6b40`，工具提交 `f65bca8`，本提交归档真实结果。
 - 目录：`E:\plug\agent-hub\.worktrees\appserver-s2-probe`；解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`。
-- S1 已通过，**不要重跑 S1**。本轮没有启动真实 Codex/app-server、没有模型回合，没有读取/复制/删除凭据。
+- S1/S2 已通过，**不要重跑**。S2 准备完成后用户另行批准一次，已执行并 PASS。工具未读取/复制/删除凭据内容；Codex 自身复用登录并可能写入专用 home 运行状态。
 - 普通执行准入仍默认拒绝真实 Codex；本探针未接入内核或生产数据库。原目录、8080 服务及其他分支未动，未合并/推送。
 
 ## 本轮成果
@@ -16,12 +16,13 @@
 - 新增 93 项测试，最终全量 **489 passed in 26.59s**。
 - 八个真实 Python 子进程桩场景：happy PASS；failed/no-usage/foreign-turn/approval/tool/disconnect/timeout 均正确拒绝，所有本次自有桩进程退出。
 - 独立 CLI `--mode stub` → S2 PASSED；证据 `var/appserver-s2/stub-gxqegnrt/result.json`，仅合成用量。
+- 真实 S2 → **S2 PASSED**，恰好一次 turn/start；最终 OK、同一 item 增量拼接 OK、匹配终态、服务端用量；自有 PID 7692 退出码 0，仓库外空临时目录已清理。证据 `var/appserver-s2/real-5j0vung8/result.json`，完整身份/授权/ID/用量见 [真实记录](appserver-s2-2026-10-17.md)。
 
 ## 下一步
 
-用户此前明确授权仅到“零模型 S1”，**真实 S2 仍未获批或执行**。完整可审阅范围与命令见 [S2 方案](appserver-s2-probe.md)。获批后最多执行一次，不重试、不换模型、不放宽模型沙箱。若宿主不能写长期 home，只针对该条获批命令走权限审核，不复制凭据。
+用户在 S2 工具离线准备完成后明确回复“批准这一次 S2，接受上述限制”。此次一次性授权已用完。**下一步准备 S3 工具审批探针及离线正反对照，再申请一次真实 S3；不得重跑 S2或直接执行 S3。** [S2 方案](appserver-s2-probe.md) 中的真实命令只供审计，不是持续授权。
 
-此探针不能保证工具或原生派生事前受控；历史 `--disable multi_agent` 绕过仍是实证。确认 S2 不等于解除 Hub 准入。没有匹配终态则标记 unconfirmed，保留证据、人工核对；它不占用生产内核名额，不能称“已保留生产配额”。继续保留历史子 Agent 状态未知、两项 DLL 问题 OPEN。
+此探针不能保证工具或原生派生事前受控；历史 `--disable multi_agent` 绕过仍是实证。确认 S2 不等于解除 Hub 准入。没有匹配终态则标记 unconfirmed，保留证据、人工核对；此次终态已确认，无需该项裁决。它不占用生产内核名额，不能称“已保留生产配额”。继续保留历史子 Agent 状态未知、两项 DLL 问题 OPEN。
 
 S3 审批、S4 中断、S5 恢复以及 SSE/第二个真实 Agent 尚待完成；本次不预授权这些回合。
 

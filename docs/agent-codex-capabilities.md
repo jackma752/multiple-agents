@@ -1,5 +1,7 @@
 # Codex 适配器能力表（P3 受控接入验证 · 第一批）
 
+> **2026-10-17 app-server 独立探针更新**：S1 与经单独批准的一次 S2 均 PASS。S2 验证了同一消息 item 的增量/最终 OK、匹配 turn 终态和独立真实 token 用量，见 [实录](appserver-s2-2026-10-17.md)。现装文件身份与历史 exec 不同，旧版信息仍作历史记录。app-server 未接内核，工具审批/取消/恢复/原生派生控制未升级；普通真实执行准入继续关闭。
+
 > **2026-10-15 结论更新**：当前配置在请求禁用后仍创建了原生子 Agent，故 `control_subagent=false`，
 > 不满足严格协作要求，新的真实启动已被后端拦截。以下较早的“待验证”表述是历史记录，
 > 以 [最新观测](p3-native-subagent-incident.md) 和 [准入契约](p3-strict-adapter-admission.md) 为准。

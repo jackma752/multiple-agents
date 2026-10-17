@@ -2,7 +2,7 @@
 
 日期：2026-10-17。分支 `feat/appserver-s2-probe`，基于 S1 提交 `bdc6b40`。
 
-**当前只完成离线工具与验证，没有执行真实 S2。** S1 的“允许重新核验现装文件，仅做零模型 S1”不授权本次模型回合。普通 Hub 适配器的真实执行准入继续关闭；本工具只用于另行批准的诊断，不经过生产数据库，也不为生产调用预留/释放名额。
+**状态更新：离线工具完成后，用户另行批准的一次真实 S2 已 PASS，见 [实录](appserver-s2-2026-10-17.md)。** S1 的“允许重新核验现装文件，仅做零模型 S1”未被当成模型回合授权。普通 Hub 适配器的真实执行准入继续关闭；本工具只用于另行批准的诊断，不经过生产数据库，也不为生产调用预留/释放名额。
 
 ## 工具范围
 
@@ -49,7 +49,7 @@ Reply with exactly: OK. Do not use tools, create subagents, or modify any files.
 - 结构化记录在忽略的 `var/appserver-s2/<run>/result.json`。仅保存固定 `OK`、ID、事件名称/计数、usage、状态与错误类型；不保存任意回复、reasoning、请求参数或远端错误原文。原始服务端 stderr 只留本地忽略目录，发布前仍需审阅，不作为公开日志。
 - 临时工作目录独立创建于系统临时目录。仅在可确认没有存活自有进程且目录为空时调用非递归 `rmdir()`；非空/无法检查时保留并记录。不递归删除任何目录。结构化证据保留。长期 home、用户 `~/.codex`、共享 daemon 与历史会话不清理。
 
-## 离线复核与待批准命令
+## 离线复核与真实运行命令
 
 CMD（worktree 没有 `.venv`）：
 
@@ -64,7 +64,7 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s2.py --mode s
 
 实际验证：新增 **93 项**离线测试；最终全套 `python -m pytest -o addopts='' -q` → **489 passed in 26.59s**。涵盖八种真正 Python 子进程场景、发送前授权和白名单、早到通知、跨 ID 混淆、部分发送不重试、异常工作目录仍保存审计记录。独立 CLI `--mode stub` → `S2 PASSED`，进程退出、空临时目录已移除；证据 `var/appserver-s2/stub-gxqegnrt/result.json`。复核发现并修复“忽略额外消息 item 的 delta”和“未检查 turn/started 的 inProgress 状态”两处误报；回归已包含在上述最终结果中。
 
-下面是**尚未执行、需要单独批准**的真实命令：
+下面是**已经单独批准并执行一次**的真实命令，仅供审计；再次执行需要新的授权：
 
 ```bat
 cd /d E:\plug\agent-hub\.worktrees\appserver-s2-probe
