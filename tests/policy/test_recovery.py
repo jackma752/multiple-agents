@@ -188,7 +188,7 @@ def test_unrecognised_external_state_becomes_unknown(tmp_path):
 
 def test_recovery_is_idempotent_and_never_restarts(tmp_path):
     url = f"sqlite:///{(tmp_path / 'recIdem.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=5, max_subagents_concurrent=3), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=3), url=url)
 
     # Both calls must live in the SAME root tree so the quota counters are shared.
     root = h.create_root()

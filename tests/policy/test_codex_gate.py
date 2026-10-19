@@ -43,7 +43,7 @@ def build_codex(tmp_path, script=None, **kw) -> CodexAdapter:
 def harness_with_codex(tmp_path, policy=None, script=None, **kw):
     adapter = build_codex(tmp_path, script=script, **kw)
     h = KernelHarness(
-        policy=policy or Policy(max_subagents_total=3, max_subagents_concurrent=2),
+        policy=policy or Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2),
         url=f"sqlite:///{(tmp_path / 'kernel.db').as_posix()}",
         adapter=adapter,
     )
@@ -166,7 +166,7 @@ def test_double_approval_still_launches_at_most_once(tmp_path):
 
 def test_quota_cap_blocks_the_codex_process(tmp_path):
     h, codex = harness_with_codex(
-        tmp_path, policy=Policy(max_subagents_total=1, max_subagents_concurrent=1)
+        tmp_path, policy=Policy(collaboration_enabled=True, max_subagents_total=1, max_subagents_concurrent=1)
     )
     root, _s1, _i1, _a1 = _approved_sub(h, "first")
     h.drain()
@@ -271,7 +271,7 @@ def test_completed_codex_call_does_not_leak_its_slot(tmp_path):
     concurrent slot indefinitely (only an unrelated later reaper would clean it).
     """
     h, codex = harness_with_codex(
-        tmp_path, policy=Policy(max_subagents_total=2, max_subagents_concurrent=1)
+        tmp_path, policy=Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=1)
     )
     root, _sub, inv, _appr = _approved_sub(h)
     h.drain()
@@ -431,7 +431,7 @@ def test_adapter_crash_keeps_the_slot_and_records_why(tmp_path):
     """Worker backstop: an escaping adapter exception must not leak silently."""
     adapter = ExplodingAdapter(store_path=str(tmp_path / "mock.db"))
     h = KernelHarness(
-        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=1),
         url=f"sqlite:///{(tmp_path / 'kernel.db').as_posix()}",
         adapter=adapter,
     )

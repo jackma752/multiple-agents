@@ -14,10 +14,10 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from agenthub.contracts import AdapterContract, InvocationStatus, execution_admission
-from agenthub_kernel.db import Database, InvocationRow, TaskRow
+from agenthub_kernel.db import Database, EventRow, InvocationRow, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
@@ -32,6 +32,43 @@ class Worker:
 
     def stop(self) -> None:
         self._stopped = True
+
+    def stop_local(self, invocation_id: str, *, requested_by: str = "local-user") -> dict[str, Any]:
+        """Freeze scheduling, then terminate only the runner-owned entry process.
+
+        A local exit is not proof that remote work or native children stopped.
+        The unknown state is committed before signalling so a racing completion
+        cannot silently release the reservation.
+        """
+        with self.db.session() as session:
+            # Acquire SQLite's writer lock before reading status. The completion
+            # transaction uses the same ordering, including across API workers.
+            session.execute(text("BEGIN IMMEDIATE"))
+            inv = session.get(InvocationRow, invocation_id)
+            if inv is None:
+                raise QuotaError("no_invocation", "invocation not found")
+            if inv.status not in {"starting", "running", "unknown"}:
+                raise QuotaError("not_active", "invocation is not active")
+            task = session.get(TaskRow, inv.task_id)
+            svc = PolicyService(session)
+            svc.request_stop(task.root_task_id, requested_by=requested_by)
+            svc.mark_unknown(invocation_id, reason="local_stop_requested: remote/native child stop unconfirmed; quota retained")
+            session.add(EventRow(root_task_id=task.root_task_id,
+                seq=svc._next_seq(task.root_task_id), type="local_stop_requested",
+                payload={"invocation_id": invocation_id, "actor": requested_by}))
+        stop_fn = getattr(self.adapter, "stop_local_invocation", None)
+        try:
+            result = stop_fn(invocation_id) if stop_fn else {"reason": "unsupported"}
+        except Exception as exc:
+            result = {"reason": type(exc).__name__}
+        return {
+            "invocation_id": invocation_id,
+            "local_stop_requested": bool(result.get("local_stop_requested")),
+            "local_process_exited": bool(result.get("local_process_exited")),
+            "remote_stop_confirmed": False, "status": "unknown",
+            "scheduling_stopped": True, "quota_retained": True,
+            "reason": result.get("reason", "unconfirmed"),
+        }
 
     # ------------------------------------------------------------------ #
     # Stop / cancel
@@ -200,6 +237,10 @@ class Worker:
         must withhold both the slot release and any retry.
         """
         ever_started = False
+        with self.db.session() as session:
+            prior_stops = session.scalars(select(EventRow).where(EventRow.type == "local_stop_requested")).all()
+            if any(e.payload.get("invocation_id") == invocation_id for e in prior_stops):
+                return False, "local stop is not remote/native-child stop evidence", {"ok": False, "reason": "unconfirmed"}
         if kernel_status is None:
             with self.db.session() as session:
                 row = session.get(InvocationRow, invocation_id)
@@ -440,7 +481,7 @@ class Worker:
             # for an adapter that bypasses native-child approval/quota controls.
             # Keep the call queued and its approval untouched. This is NOT an
             # unknown execution: nothing has started or reserved a slot.
-            admission = execution_admission(self.adapter)
+            admission = execution_admission(self.adapter, inv.snapshot.get("execution_mode", "strict"))
             if not admission.allowed:
                 return {
                     "invocation_id": invocation_id,
@@ -497,6 +538,7 @@ class Worker:
 
         # ---- Phase 3: record the outcome ----
         with self.db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             svc = PolicyService(session)
             inv = session.get(InvocationRow, invocation_id)
             # Persist the adapter's own id in BOTH branches. Together with
@@ -507,6 +549,11 @@ class Worker:
             # could then wrongly free a slot that is still occupied.
             if inv is not None and start.adapter_invocation_id:
                 inv.adapter_invocation_id = start.adapter_invocation_id
+            if inv is not None and inv.status == InvocationStatus.UNKNOWN.value:
+                # A concurrent stop/reaper already recorded uncertainty.
+                return {"invocation_id": invocation_id, "ok": False,
+                        "terminal": False, "adapter_invocation_id": inv.adapter_invocation_id,
+                        "error": inv.error}
             if start.ok:
                 # Set started_at first (durable evidence the call reached the
                 # adapter), then either settle a completed run or leave it

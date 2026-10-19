@@ -91,7 +91,7 @@ def test_explain_names_the_order():
 
 def test_service_syncs_the_task_row_after_a_status_change(tmp_path):
     h = KernelHarness(
-        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=1),
         url=f"sqlite:///{(tmp_path / 'sync.db').as_posix()}",
     )
     root = h.create_root()

@@ -100,7 +100,7 @@ def test_stop_request_reports_running_and_persists_actor(tmp_path):
 
 def test_cancel_tree_stops_in_flight_call_and_releases_slot(tmp_path):
     url = f"sqlite:///{(tmp_path / 'cancel.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, _sub, inv, _appr = _running_sub(h)
 
     before = _tree_quota(h, root.root_task_id)
@@ -132,7 +132,7 @@ def test_cancel_tree_stops_in_flight_call_and_releases_slot(tmp_path):
 def test_duplicate_stop_is_idempotent(tmp_path):
     """Stopping twice must not double-release the slot or raise."""
     url = f"sqlite:///{(tmp_path / 'stop2x.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, _sub, inv, _appr = _running_sub(h)
 
     first = h.worker.cancel_tree(root.root_task_id)
@@ -159,7 +159,7 @@ def test_duplicate_stop_is_idempotent(tmp_path):
 def test_release_is_idempotent_on_repeat_calls(tmp_path):
     """Calling release() repeatedly frees exactly one concurrent slot."""
     url = f"sqlite:///{(tmp_path / 'rel.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, _sub, inv, _appr = _running_sub(h)
 
     for _ in range(4):
@@ -175,7 +175,7 @@ def test_release_is_idempotent_on_repeat_calls(tmp_path):
 def test_cancel_racing_completion_releases_once(tmp_path):
     """A cancel concurrent with a normal completion must free one slot only."""
     url = f"sqlite:///{(tmp_path / 'race_rel.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, _sub, inv, _appr = _running_sub(h)
 
     errors: list[str] = []
@@ -269,7 +269,7 @@ def test_unconfirmed_cancel_keeps_the_slot_and_marks_unknown(tmp_path):
     """
     url = f"sqlite:///{(tmp_path / 'nocancel-slot.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=1), url=url
     )
     root, _sub, inv, _appr = _running_sub(h)
     assert _tree_quota(h, root.root_task_id).concurrent == 1
@@ -300,7 +300,7 @@ def test_stop_still_blocks_new_calls_when_cancel_is_unsupported(tmp_path):
     """The stop is persisted first, so it holds even if the cancel cannot."""
     url = f"sqlite:///{(tmp_path / 'nocancel-stop.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=2, max_subagents_concurrent=2), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=2), url=url
     )
     root, _sub, _inv, _appr = _running_sub(h)
 
@@ -324,7 +324,7 @@ def test_confirmed_cancel_still_settles_and_releases(tmp_path):
     """The honest rule must not break the adapter that CAN cancel."""
     url = f"sqlite:///{(tmp_path / 'cancel-ok.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=2, max_subagents_concurrent=1), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=1), url=url
     )
     root, _sub, inv, _appr = _running_sub(h)
 

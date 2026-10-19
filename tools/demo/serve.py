@@ -76,8 +76,8 @@ def main() -> None:
         choices=["mock", "codex"],
         default=None,
         help="adapter to serve with: 'mock' is inert (default); 'codex' exposes "
-             "records and capabilities, but real launches are blocked until "
-             "native-agent controls are verified",
+             "records and capabilities; real launches require explicit per-call "
+             "supervised consent while strict controls remain unverified",
     )
     args = parser.parse_args()
 
@@ -94,7 +94,7 @@ def main() -> None:
 
     print("=" * 72)
     if kind == "codex":
-        print("Agent Hub - Codex adapter (real launches blocked; bundled stub allowed)")
+        print("Agent Hub - Codex adapter (strict blocked; explicit supervised approval available)")
     else:
         print("Agent Hub - Mock API (no real Agent is contacted)")
     print(f"  adapter  : {kind}")

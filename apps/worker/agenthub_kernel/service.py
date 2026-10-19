@@ -114,6 +114,10 @@ class PolicyService:
             # Inherit the tree's CURRENT policy version, so a call created after
             # a policy update is not immediately invalidated by that update.
             root = self.session.get(TaskRow, root_task_id)
+            effective = Policy(**{k: v for k, v in (root.policy or {}).items() if k != "version"})
+            if not effective.collaboration_enabled:
+                raise QuotaError("collaboration_disabled", "Hub 子任务协作扩展未启用。")
+            policy = effective
             effective_policy_version = int(
                 (root.policy_version if root is not None else parent.policy_version) or 1
             )
@@ -248,7 +252,7 @@ class PolicyService:
             task.status = derived
         return derived
 
-    def approve(self, approval_id: str) -> ApprovalRow:
+    def approve(self, approval_id: str, *, supervised_consent: bool = False) -> ApprovalRow:
         """Mark pending->approved. Only a valid pending approval can be approved.
 
         The invocation moves to ``queued``: the user has consented, so the call
@@ -257,6 +261,10 @@ class PolicyService:
         appr = self.session.get(ApprovalRow, approval_id)
         if appr is None:
             raise QuotaError("no_approval", f"approval {approval_id} not found")
+        invocation = self.session.get(InvocationRow, appr.invocation_id)
+        if invocation is not None and invocation.snapshot.get("execution_mode") == "supervised":
+            if supervised_consent is not True:
+                raise QuotaError("boundary_consent_required", "请明确同意用户监督边界：原生派生与远端停止不保证受控。")
         if appr.status != ApprovalStatus.PENDING.value:
             raise QuotaError("not_pending", f"approval {approval_id} is {appr.status}")
         appr.status = ApprovalStatus.APPROVED.value
@@ -535,6 +543,8 @@ class PolicyService:
         # WHERE clause encodes the limits. Exactly one racer can win the last
         # slot; losers see rowcount 0 and are refused.
         policy = self._quotas(inv)
+        if task.depth > 0 and not policy.collaboration_enabled:
+            raise QuotaError("collaboration_disabled", "Hub 子任务协作扩展未启用。")
         is_subagent = task.depth >= 1
         if not self._reserve_quota_atomic(
             root_task_id=task.root_task_id,
@@ -1074,6 +1084,7 @@ class PolicyService:
                 permissions=dict(inv.snapshot.get("permissions") or {}),
                 resources=dict(inv.snapshot.get("resources") or {}),
                 policy_version=policy_version,
+                execution_mode=inv.snapshot.get("execution_mode", "strict"),
             )
             new_inv = InvocationRow(
                 id=new_id("inv"),

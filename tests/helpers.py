@@ -8,7 +8,8 @@ from agenthub_kernel.db import Database, InvocationRow, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.worker import Worker
 
-DEFAULT_POLICY = Policy()
+# Legacy collaboration scenarios explicitly enable the now-optional extension.
+DEFAULT_POLICY = Policy(collaboration_enabled=True)
 
 
 def _store_path_for(url: str) -> str:

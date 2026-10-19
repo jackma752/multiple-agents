@@ -142,7 +142,7 @@ def test_consume_requires_queued_state(tmp_path):
 
 def test_pause_blocks_new_scheduling_without_cancelling(tmp_path):
     url = f"sqlite:///{(tmp_path / 'pause.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root = h.create_root()
 
     sub1 = h.create_subtask(root.id, "one")

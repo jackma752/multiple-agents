@@ -44,7 +44,7 @@ def _one_slot_tree(tmp_path, name, limit=60):
     """A tree whose concurrent cap is exactly 1, with one sub-agent running."""
     url = f"sqlite:///{(tmp_path / name).as_posix()}"
     h = KernelHarness(
-        policy=Policy(
+        policy=Policy(collaboration_enabled=True,
             max_subagents_total=5,
             max_subagents_concurrent=1,
             run_time_limit_seconds=limit,
@@ -127,7 +127,7 @@ def test_second_approved_call_blocked_after_unknown_recovery(tmp_path):
     """Same guarantee for an unknown produced by crash recovery (window A)."""
     url = f"sqlite:///{(tmp_path / 'cap1_rec.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=5, max_subagents_concurrent=1),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=1),
         url=url,
     )
     root = h.create_root()

@@ -114,6 +114,14 @@
       <span id="agent-note" class="muted"></span>
     </div>
     <div class="row">
+      <label for="execution-mode">执行模式</label>
+      <select id="execution-mode" style="max-width:240px">
+        <option value="strict">严格模式</option>
+        <option value="supervised">用户监督模式（有限控制）</option>
+      </select>
+    </div>
+    <div id="boundary-note" class="unsupported hidden">用户监督模式：原生子 Agent 与工具操作没有逐次拦截保障，不计入 Hub 子任务配额。手动停止仅结束本次本地入口进程，不能保证远端或原生子 Agent 已停止。每次调用仍需明确批准。</div>
+    <div class="row">
       <button id="send" class="primary" disabled>发送并创建调用（先创建会话）</button>
       <span id="conv-label" class="muted">未选择会话</span>
     </div>
@@ -135,12 +143,14 @@
     <div id="adapter-note" class="muted" style="margin-top:8px;"></div>
 
     <h2 style="margin-top:16px;">控制</h2>
-    <div class="row"><button id="stop" class="danger" disabled>停止整棵树</button>
-      <button id="pause" disabled>暂停</button>
+    <div class="row"><button id="stop" class="danger" disabled>停止调度并请求取消</button>
+      <button id="pause" disabled>暂停调度</button>
       <button id="resume" disabled>恢复</button></div>
     <div id="state-label" class="muted">—</div>
 
     <h2 style="margin-top:16px;">修改配额（仅登录用户）</h2>
+    <div class="row"><label><input id="collaboration-enabled" type="checkbox" style="width:auto" /> 启用 Hub 子任务协作扩展</label></div>
+    <div class="muted">默认关闭；开启后仍须逐项审批。此开关不控制 Codex 原生子 Agent。</div>
     <div class="row">
       <input id="p-total" type="number" min="0" placeholder="子 Agent 总量" />
       <input id="p-conc" type="number" min="0" placeholder="并发" />
@@ -215,9 +225,10 @@ async function loadAdapter() {
 }
 
 function applyAdapter(a) {
+  S.adapter = a;
   const badge = $("adapter-badge");
   const admission = a.execution_admission || {};
-  const launchAllowed = admission.allowed === true;
+  const launchAllowed = admission.allowed === true || (a.supervised_admission || {}).allowed === true;
   $("drain").disabled = !launchAllowed;
   $("drain").title = launchAllowed ? "执行已批准的调用" : (admission.reason || "尚未确认适配器可执行");
   if (a.kind === "codex") {
@@ -226,7 +237,7 @@ function applyAdapter(a) {
     // a title that says Mock.
     document.title = "Agent Hub 控制台 · REAL Codex";
     badge.textContent = admission.mode === "simulation" ? "Codex 离线桩 · 无模型调用" :
-      (launchAllowed ? "REAL Codex · 将启动真实进程" : "REAL Codex · 已阻止新调用");
+      (launchAllowed ? "REAL Codex · 用户监督模式可选" : "REAL Codex · 已阻止新调用");
     badge.style.background = "#3a1a1d";
     badge.style.color = "#ffb4b7";
     badge.style.borderColor = "#5c2a2e";
@@ -242,7 +253,8 @@ function applyAdapter(a) {
     const unknown = Object.entries(caps)
       .filter(([k, v]) => (v === false || v === "unknown") && ["cancel", "intercept_tool", "limit_dir", "control_subagent"].includes(k))
       .map(([k, v]) => k + "=" + v);
-    $("adapter-note").textContent = (admission.reason || "控制能力尚未确认，禁止执行。") + " " + note +
+    $("adapter-note").textContent = "严格模式：" + (admission.reason || "控制能力尚未确认，禁止执行。") +
+      " 用户监督模式：" + ((a.supervised_admission || {}).reason || "不可用") + " " + note +
       (unknown.length ? " · 能力限制: " + unknown.join(", ") : "") +
       " · 配额仅统计 Hub 登记的调用；名额为 0 不证明历史原生子 Agent 已停止。";
     $("adapter-note").className = "muted";
@@ -325,6 +337,7 @@ async function selectTask(taskId) {
   S.taskId = taskId;
   $("stop").disabled = $("pause").disabled = $("resume").disabled = $("apply-policy").disabled = false;
   await refresh();
+  $("collaboration-enabled").checked = S.view.policy.collaboration_enabled === true;
 }
 
 async function refresh() {
@@ -369,6 +382,7 @@ $("send").onclick = async () => {
     // The API returns task_id / invocation_id / approval_id; we keep them.
     const inv = await api("POST", "/api/invocations", {
       task_id: "-", agent_id: agentId, task_input: goal,
+      execution_mode: $("execution-mode").value,
     });
     S.taskId = inv.task_id;
     $("stop").disabled = $("pause").disabled = $("resume").disabled = $("apply-policy").disabled = false;
@@ -377,16 +391,27 @@ $("send").onclick = async () => {
     $("msg").value = "";
     await loadTasks();
     await refresh();
+    $("collaboration-enabled").checked = S.view.policy.collaboration_enabled === true;
     toast("调用已创建，请在右侧审批队列中批准", "ok");
   } catch (e) { toast("发送失败：" + e.message, "bad"); }
 };
 
 $("agent-id").oninput = noteAgentChoice;
+$("execution-mode").onchange = () => {
+  $("boundary-note").classList.toggle("hidden", $("execution-mode").value !== "supervised");
+};
 
 /* ---------------- approvals ---------------- */
 async function act(path) {
   try { await api("POST", path); await refresh(); await loadTasks(); }
   catch (e) { toast(e.message, "bad"); }
+}
+
+async function approveInvocation(id, supervised) {
+  try {
+    await api("POST", `/api/approvals/${id}/approve`, {accept_unmanaged_native_agents: supervised});
+    await refresh(); await loadTasks();
+  } catch (e) { toast(e.message, "bad"); }
 }
 
 function renderApprovals() {
@@ -396,6 +421,7 @@ function renderApprovals() {
   $("approvals").innerHTML = pending.map(a => {
     const inv = byId[a.invocation_id] || {};
     const task = S.view.tasks.find(t => t.id === inv.task_id) || {};
+    const supervised = inv.execution_mode === "supervised";
     return `<div class="card approval">
       <h3>${escapeHtml(task.goal || "(任务)")}</h3>
       <div class="kv">
@@ -404,8 +430,9 @@ function renderApprovals() {
         <div>深度</div><div>${task.depth ?? "?"}</div>
         <div>过期</div><div>${a.expires_at ? a.expires_at.replace("T", " ").slice(0, 19) : "—"}</div>
       </div>
+      ${supervised ? '<div class="unsupported">有限控制：原生子 Agent、工具操作不保证事前受控；本地停止不保证远端已停，未确认时保留配额。</div>' : ''}
       <div class="row" style="margin-top:8px;">
-        <button class="primary" onclick="act('/api/approvals/${a.id}/approve')">同意并允许执行</button>
+        <button class="primary" ${a.status !== 'pending' ? 'disabled' : ''} onclick="approveInvocation('${a.id}', ${supervised})">${supervised ? '同意上述边界并执行本次调用' : '同意并允许执行'}</button>
         <button onclick="act('/api/approvals/${a.id}/reject')">拒绝</button>
         <button class="danger" onclick="act('/api/approvals/${a.id}/revoke')">撤销</button>
       </div>
@@ -425,9 +452,23 @@ function renderTree() {
       <b>d${t.depth}</b> ${escapeHtml(t.goal)}
       <span class="muted">· ${t.agent_id}${t.kind === "auto" ? " · 自动" : ""}</span>
       <div class="muted">${badges || '<span class="pill draft">无调用</span>'}</div>
-      ${invs.map(i => `<code>${i.id}</code>`).join("<br/>")}
+      ${invs.map(i => `<code>${i.id}</code>${localStopButton(i)}`).join("<br/>")}
     </li>`;
   }).join("") || '<li class="muted">无</li>';
+}
+
+function localStopButton(inv) {
+  if (!((S.adapter || {}).capabilities || {}).stop_local_process || !["starting", "running", "unknown"].includes(inv.status)) return "";
+  return ` <button class="danger" onclick="stopLocal('${inv.id}')">结束本次本地进程</button>`;
+}
+
+async function stopLocal(id) {
+  if (!confirm("停止本任务树后续调度，并结束本次自有的本地入口进程？远端及原生子 Agent 停止无法保证；配额将保留，需人工核对。")) return;
+  try {
+    const r = await api("POST", `/api/invocations/${id}/stop-local`);
+    log(`调度已停止；本地进程${r.local_process_exited ? '已退出' : '退出未确认'}；远端停止未确认，保留配额。`);
+    await refresh(); await loadTasks();
+  } catch (e) { toast(e.message, "bad"); }
 }
 
 function renderQuota() {
@@ -445,6 +486,7 @@ function renderQuota() {
       <div>深度</div><div>最大 ${cap(p.max_depth)}</div>
       <div>调用数</div><div>${q.total_invocations} / ${cap(p.max_agent_invocations)}</div>
       <div>名额占用</div><div>${q.open_reservations}</div>
+      <div>Hub 协作扩展</div><div>${p.collaboration_enabled ? '已开启（逐项审批）' : '已关闭'}</div>
       <div>策略版本</div><div>v${S.view.root.policy_version}（历史 ${S.view.policy_versions.join(", ") || "—"}）</div>
     </div>
     <div style="margin-top:8px">${bar(q.launched_total, p.max_subagents_total)}</div>
@@ -462,7 +504,8 @@ function treeStateLabel() {
   const invs = (S.view && S.view.invocations) || [];
   const live = invs.filter(i => i.status === "running" || i.status === "starting").length;
   const waiting = invs.filter(i => i.status === "queued").length;
-  if (S.view.stopped) return "已停止（不再调度新调用）" + (S.view.paused ? " · 已暂停" : "");
+  const unknown = invs.filter(i => i.status === "unknown").length;
+  if (S.view.stopped) return `调度已停止（不再调度新调用） · ${unknown} 个调用停止未确认`;
   const parts = ["调度已启用（未停止）"];
   parts.push(live ? `有 ${live} 个调用正在运行` : "当前没有运行中的调用");
   if (waiting) parts.push(`${waiting} 个已批准待调度`);
@@ -524,7 +567,7 @@ function cancelNote(caps, invocationStatus) {
   const supported = caps.cancel === true;
   if (!supported) {
     return `<div class="unsupported">取消：<b>不支持</b>（适配器未验证取消能力；` +
-      `运行中的调用只能等待超时，届时若无法确认已停会标记 unknown 并保留配额）</div>`;
+      `可请求结束自有本地进程，但不代表远端或原生子 Agent 已停；未确认时标记 unknown 并保留配额）</div>`;
   }
   if (invocationStatus === "running" || invocationStatus === "starting") {
     return `<div class="muted">取消：支持（由适配器确认停止后才会结算为 canceled）</div>`;
@@ -535,7 +578,7 @@ function cancelNote(caps, invocationStatus) {
 /* ---------------- controls ---------------- */
 $("stop").onclick = async () => {
   if (!S.taskId) return;
-  if (!confirm("停止整棵树？运行中的调用会被取消，累计用量不会返还。")) return;
+  if (!confirm("停止后续调度并尝试取消运行中的调用？未确认停止时保留配额，累计用量不会返还。")) return;
   try {
     const r = await api("POST", `/api/tasks/${S.taskId}/stop`);
     const reasons = (r.outcomes || [])
@@ -570,6 +613,7 @@ $("apply-policy").onclick = async () => {
     max_subagents_concurrent: body.max_subagents_concurrent ?? cur.max_subagents_concurrent ?? 2,
     max_depth: body.max_depth ?? cur.max_depth ?? 1,
     max_agent_invocations: body.max_agent_invocations ?? cur.max_agent_invocations ?? 10,
+    collaboration_enabled: $("collaboration-enabled").checked,
   };
   try {
     const r = await api("PATCH", `/api/tasks/${S.taskId}/policy`, merged);
@@ -579,17 +623,27 @@ $("apply-policy").onclick = async () => {
 };
 
 $("drain").onclick = async () => {
+  let poll;
+  let refreshing = false;
   try {
     await loadAdapter();
-    if (!S.adapter || !S.adapter.execution_admission || S.adapter.execution_admission.allowed !== true) {
+    if (!S.adapter || ![S.adapter.execution_admission, S.adapter.supervised_admission].some(a => a && a.allowed === true)) {
       throw new Error((S.adapter && S.adapter.execution_admission && S.adapter.execution_admission.reason) || "适配器控制能力未确认");
     }
+    $("drain").disabled = true;
+    poll = setInterval(async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try { await refresh(); } catch (e) { /* next poll can recover */ }
+      finally { refreshing = false; }
+    }, 1000);
     const out = await api("POST", "/api/worker/drain");
     const started = out.filter(o => o.ok).length;
     const refused = out.filter(o => !o.ok);
     log(`推进调度：启动 ${started}，拒绝 ${refused.length}` + (refused.length ? "（" + refused.map(r => r.error || r.code).join("；") + "）" : ""));
     await refresh(); await loadTasks();
   } catch (e) { toast(e.message, "bad"); }
+  finally { clearInterval(poll); applyAdapter(S.adapter || {}); }
 };
 $("recover").onclick = async () => {
   try { const r = await api("POST", "/api/worker/recover"); log(`恢复核对：确认运行 ${r.confirmed_running.length}，结算 ${r.settled.length}，未知 ${r.unknown.length}`); await refresh(); }

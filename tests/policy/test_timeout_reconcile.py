@@ -49,7 +49,7 @@ def _quota(h, root_id):
 def test_overdue_invocation_is_timed_out_and_releases_slot(tmp_path):
     url = f"sqlite:///{(tmp_path / 'to.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=2, run_time_limit_seconds=60),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2, run_time_limit_seconds=60),
         url=url,
     )
     root, _sub, inv, _appr = _running_sub(h)
@@ -74,7 +74,7 @@ def test_overdue_invocation_is_timed_out_and_releases_slot(tmp_path):
 def test_not_overdue_is_left_alone(tmp_path):
     url = f"sqlite:///{(tmp_path / 'noTo.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=2, run_time_limit_seconds=3600),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2, run_time_limit_seconds=3600),
         url=url,
     )
     root, _sub, inv, _appr = _running_sub(h)
@@ -90,7 +90,7 @@ def test_timeout_with_unconfirmed_cancel_goes_unknown_and_keeps_slot(tmp_path):
     """If we cannot confirm the call stopped, we must NOT time it out or free the slot."""
     url = f"sqlite:///{(tmp_path / 'toUnc.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1, run_time_limit_seconds=60),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=1, run_time_limit_seconds=60),
         url=url,
     )
     root, _sub, inv, _appr = _running_sub(h)
@@ -122,7 +122,7 @@ def test_timeout_with_running_external_record_is_unconfirmed(tmp_path):
     """A record that still says 'running' is not proof of stopping."""
     url = f"sqlite:///{(tmp_path / 'toRun.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1, run_time_limit_seconds=60),
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=1, run_time_limit_seconds=60),
         url=url,
     )
     root, _sub, inv, _appr = _running_sub(h)
@@ -170,7 +170,7 @@ def _make_unknown(h, goal="u"):
 
 def test_settle_unknown_releases_slot_once(tmp_path):
     url = f"sqlite:///{(tmp_path / 'settle.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, inv = _make_unknown(h)
     assert _quota(h, root.root_task_id).concurrent == 1
 
@@ -207,7 +207,7 @@ def test_settle_rejects_bad_outcome(tmp_path):
 
 def test_retry_requires_a_new_approval_and_does_not_auto_start(tmp_path):
     url = f"sqlite:///{(tmp_path / 'retry.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, inv = _make_unknown(h)
     starts_before = h.adapter.start_count
 
@@ -240,10 +240,10 @@ def test_retry_requires_a_new_approval_and_does_not_auto_start(tmp_path):
 def test_retry_snapshot_carries_current_policy_version(tmp_path):
     """A retry created after a policy change must not be born stale."""
     url = f"sqlite:///{(tmp_path / 'retryPol.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root, inv = _make_unknown(h)
 
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=5, max_subagents_concurrent=3))
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=3))
 
     result = h.worker.reconcile(inv.id, action="retry", actor="local-user")
     new_inv = result["retry_invocation_id"]

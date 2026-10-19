@@ -216,6 +216,8 @@ def test_simulated_ui_session_end_to_end(client):
     assert v["quota"]["total_invocations"] == 1
 
     # --- delegate two sub-agents (the UI would call the same endpoint) --
+    assert client.patch(f"/api/tasks/{root}/policy", headers=token,
+                        json={"collaboration_enabled": True}).status_code == 200
     subs = [
         client.post(
             f"/api/tasks/{root}/delegations",
@@ -245,7 +247,7 @@ def test_simulated_ui_session_end_to_end(client):
     )
     assert r.status_code == 200
     v = client.get(f"/api/tasks/{root}/view", headers=token).json()
-    assert v["root"]["policy_version"] == 2
+    assert v["root"]["policy_version"] == 3  # extension enablement was version 2
     assert v["policy"]["max_subagents_concurrent"] == 1
     # Lowering the cap must not reset what was already used.
     assert v["quota"]["launched_total"] == 2

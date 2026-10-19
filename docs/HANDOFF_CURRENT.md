@@ -1,4 +1,15 @@
-# 当前交接：S2 工具与一次真实验证完成（2026-10-17）
+# 当前交接：用户监督边界与手动停止（2026-10-20）
+
+- 分支 `feat/manual-control-boundaries`，worktree `E:\plug\agent-hub\.worktrees\manual-control-boundaries`，基于 S2 `023d0ab`。
+- 按用户要求保留严格模式，新增逐调用显式同意的监督模式；默认关闭 Hub 子任务协作扩展；手动停止只作用于自有本地入口进程，未知远端状态保留配额。
+- 实现、接口、试用、限制与测试入口见 [本轮说明](manual-control-boundaries.md)。本轮未追加真实模型调用，未操作凭据、旧 8080 服务或共享 daemon。
+- 另一目录 `appserver-s3-probe` 的 S3 离线修改保持原样，没有纳入本分支；后续整合前检查其提交状态，避免覆盖。
+- 下一步：会话/事件桥接与网页增量输出；真实 S3/S4/S5 仍须各自授权。两项 DLL 记录 OPEN。
+- 验证：全套 512 passed；之后补充一个 Popen 替换测试，边界组 24 passed（新增后未重复全套）。浏览器 Mock 流程通过，8156 测试服务已停止。未合并、未推送，原 S3 worktree 的 10 个已暂存文件保持原样。
+
+---
+
+# 历史交接：S2 工具与一次真实验证完成（2026-10-17）
 
 - 分支：`feat/appserver-s2-probe`；基于 `bdc6b40`，工具提交 `f65bca8`，本提交归档真实结果。
 - 目录：`E:\plug\agent-hub\.worktrees\appserver-s2-probe`；解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`。

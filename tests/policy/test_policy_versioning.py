@@ -39,15 +39,15 @@ from tests.helpers import KernelHarness
 
 def test_policy_persists_and_version_increments(tmp_path):
     url = f"sqlite:///{(tmp_path / 'pol.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3), url=url)
     root = h.create_root()
     assert root.policy_version == 1
 
-    r2 = h.update_policy(root.root_task_id, Policy(max_subagents_total=5, max_subagents_concurrent=2))
+    r2 = h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=2))
     assert r2["version"] == 2
     assert r2["policy"]["max_subagents_total"] == 5
 
-    r3 = h.update_policy(root.root_task_id, Policy(max_subagents_total=7, max_subagents_concurrent=3))
+    r3 = h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=7, max_subagents_concurrent=3))
     assert r3["version"] == 3
 
     with h.open_session() as s:
@@ -68,7 +68,7 @@ def test_policy_update_emits_event_and_records_actor(tmp_path):
     url = f"sqlite:///{(tmp_path / 'pol_ev.db').as_posix()}"
     h = KernelHarness(url=url)
     root = h.create_root()
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=2), updated_by="local-user")
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=2), updated_by="local-user")
 
     from agenthub_kernel.db import EventRow
 
@@ -86,7 +86,7 @@ def test_policy_restart_is_preserved(tmp_path):
     url = f"sqlite:///{(tmp_path / 'pol_restart.db').as_posix()}"
     h = KernelHarness(url=url)
     root = h.create_root()
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=0, max_subagents_concurrent=0))
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0))
 
     # Fresh objects, same file.
     from agenthub_adapters.mock import MockAdapter
@@ -119,7 +119,7 @@ def test_policy_restart_is_preserved(tmp_path):
 def test_policy_applies_to_whole_tree_after_update(tmp_path):
     """Raising then lowering the cap is enforced for descendants too."""
     url = f"sqlite:///{(tmp_path / 'pol_tree.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=0, max_subagents_concurrent=0), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0), url=url)
     root = h.create_root()
 
     # Under the initial cap of 0, a sub-agent cannot start.
@@ -131,7 +131,7 @@ def test_policy_applies_to_whole_tree_after_update(tmp_path):
     assert h.adapter.start_count == 0
 
     # Raise the cap for the WHOLE tree: the same approved call can now run.
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=2, max_subagents_concurrent=2))
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=2, max_subagents_concurrent=2))
     # A new approval is required because the update revoked the old one.
     inv2 = h.create_invocation(sub.id)
     appr2 = h.create_approval(inv2.id)
@@ -147,7 +147,7 @@ def test_policy_applies_to_whole_tree_after_update(tmp_path):
 
 def test_policy_update_voids_unconsumed_but_keeps_consumed_and_running(tmp_path):
     url = f"sqlite:///{(tmp_path / 'pol_inv.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=5, max_subagents_concurrent=5), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=5), url=url)
     root = h.create_root()
 
     # (c) first: an already-consumed / running call. Approve ONLY this one and
@@ -170,7 +170,7 @@ def test_policy_update_voids_unconsumed_but_keeps_consumed_and_running(tmp_path)
     appr_a = h.create_approval(inv_a.id)
     h.approve(appr_a.id)
 
-    result = h.update_policy(root.root_task_id, Policy(max_subagents_total=1, max_subagents_concurrent=1))
+    result = h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=1, max_subagents_concurrent=1))
     assert result["revoked_approvals"] == 2  # the pending and the approved one
 
     with h.open_session() as s:
@@ -188,7 +188,7 @@ def test_policy_update_voids_unconsumed_but_keeps_consumed_and_running(tmp_path)
 def test_lowering_limit_keeps_cumulative_and_running(tmp_path):
     """Lowering a cap must not reset the cumulative count or cancel running work."""
     url = f"sqlite:///{(tmp_path / 'pol_lower.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root = h.create_root()
 
     ids = []
@@ -201,7 +201,7 @@ def test_lowering_limit_keeps_cumulative_and_running(tmp_path):
     h.drain()
     assert h.adapter.start_count == 2
 
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=1, max_subagents_concurrent=1))
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=1, max_subagents_concurrent=1))
 
     with h.open_session() as s:
         # Two sub-agent invocations were launched; the count is NOT reset.
@@ -244,7 +244,7 @@ def test_lowering_limit_keeps_cumulative_and_running(tmp_path):
 )
 def test_illegal_policy_writes_nothing(tmp_path, bad):
     url = f"sqlite:///{(tmp_path / 'pol_bad.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root = h.create_root()
 
     # A live approval that must survive the rejected update.
@@ -254,7 +254,7 @@ def test_illegal_policy_writes_nothing(tmp_path, bad):
     h.approve(appr.id)
 
     with pytest.raises(ValueError):
-        h.update_policy(root.root_task_id, Policy(**bad))
+        h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, **bad))
 
     with h.open_session() as s:
         row = s.get(TaskRow, root.root_task_id)
@@ -276,7 +276,7 @@ def test_concurrent_race_for_last_concurrent_slot(tmp_path):
     Exactly one may occupy it; the others must be refused and reserve nothing.
     """
     url = f"sqlite:///{(tmp_path / 'pol_conc_slot.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=5, max_subagents_concurrent=1), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=1), url=url)
     root = h.create_root()
 
     invocations = []
@@ -356,7 +356,7 @@ def test_consume_is_refused_after_policy_change(tmp_path):
     appr = h.create_approval(inv.id)
     h.approve(appr.id)
 
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=5, max_subagents_concurrent=5))
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=5))
 
     h.drain()
     assert h.adapter.start_count == 0, "a call approved under the old policy was started"
@@ -384,7 +384,7 @@ def test_consume_refuses_when_approval_survived_but_version_moved(tmp_path):
     appr = h.create_approval(inv.id)
     h.approve(appr.id)
 
-    h.update_policy(root.root_task_id, Policy(max_subagents_total=5, max_subagents_concurrent=5))
+    h.update_policy(root.root_task_id, Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=5))
 
     # Deliberately resurrect the approval to bypass the revocation defence.
     with h.open_session() as s:
@@ -405,7 +405,7 @@ def test_policy_update_racing_consume_never_uses_stale_policy(tmp_path):
     the tree has already moved past.
     """
     url = f"sqlite:///{(tmp_path / 'pol_race.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=5, max_subagents_concurrent=5), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=5, max_subagents_concurrent=5), url=url)
     root = h.create_root()
 
     invocations = []
@@ -426,7 +426,7 @@ def test_policy_update_racing_consume_never_uses_stale_policy(tmp_path):
             with h.db.session() as s:
                 PolicyService(s, h.policy).update_policy(
                     root.root_task_id,
-                    Policy(max_subagents_total=0, max_subagents_concurrent=0),
+                    Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0),
                 )
                 s.commit()
             out = "update:ok"

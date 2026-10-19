@@ -134,6 +134,8 @@ def _running(client, goal="run me"):
 
 def test_pause_blocks_new_start_and_resume_unblocks(client):
     task_id, first_inv = _running(client, "first")
+    assert client.patch(f"/api/tasks/{task_id}/policy", headers=USER,
+                        json={"collaboration_enabled": True}).status_code == 200
     assert client.app.state.worker.adapter.start_count == 1
 
     r = client.post(f"/api/tasks/{task_id}/pause", headers=USER)

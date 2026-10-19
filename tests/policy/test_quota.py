@@ -24,7 +24,7 @@ def _ready_sub(h, root_id, goal="sub"):
 
 
 def test_total_limit_blocks_new_subagent():
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2))
     root = h.create_root()
 
     # Launch three authorised sub-agents, each finishing before the next so
@@ -55,7 +55,7 @@ def test_total_limit_blocks_new_subagent():
 
 
 def test_concurrent_limit_blocks_when_at_cap():
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2))
     root = h.create_root()
 
     # Two concurrent sub-agents occupy the concurrent cap.
@@ -76,7 +76,7 @@ def test_concurrent_limit_blocks_when_at_cap():
 
 
 def test_releasing_concurrent_slot_allows_next():
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2))
     root = h.create_root()
 
     t1, i1, _ = _ready_sub(h, root.id, "c-1")
@@ -107,7 +107,7 @@ def test_releasing_concurrent_slot_allows_next():
 def test_total_zero_blocks_all_subagents():
     from agenthub.contracts import Policy
 
-    h = KernelHarness(policy=Policy(max_subagents_total=0, max_subagents_concurrent=0))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0))
     root = h.create_root()
 
     sub = h.create_subtask(root.id, "sub")
@@ -125,7 +125,7 @@ def test_total_zero_blocks_auto_delegation_too():
     from agenthub.contracts import Policy
     from agenthub_kernel.service import PolicyService
 
-    h = KernelHarness(policy=Policy(max_subagents_total=0, max_subagents_concurrent=0))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0))
     root = h.create_root()
 
     # An auto-proposed delegation (kind="auto") must not run either.
@@ -152,7 +152,7 @@ def test_total_zero_blocks_grandchild_dispatch():
     # max_depth=2 so a grandchild is structurally creatable; the total cap of 0
     # must be what stops it from ever starting.
     h = KernelHarness(
-        policy=Policy(max_subagents_total=0, max_subagents_concurrent=0, max_depth=2)
+        policy=Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0, max_depth=2)
     )
     root = h.create_root()
 
@@ -173,7 +173,7 @@ def test_depth_limit_blocks_grandchild():
     from agenthub.contracts import Policy
 
     # max_depth=1 means a sub-agent may not spawn its own sub-agent (depth 2).
-    h = KernelHarness(policy=Policy(max_depth=1, max_subagents_total=5, max_subagents_concurrent=3))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_depth=1, max_subagents_total=5, max_subagents_concurrent=3))
     root = h.create_root()
 
     sub = h.create_subtask(root.id, "sub")  # depth 1, allowed
@@ -193,7 +193,7 @@ def test_depth_limit_blocks_grandchild():
 def test_mixed_total_and_concurrent_never_exceed():
     from agenthub.contracts import Policy
 
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2))
     root = h.create_root()
 
     outcomes = []

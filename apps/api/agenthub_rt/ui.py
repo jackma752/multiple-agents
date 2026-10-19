@@ -168,6 +168,7 @@ def _task_view(db: Database, root_task_id: str) -> dict[str, Any]:
                     "task_id": i.task_id,
                     "status": i.status,
                     "payload_hash": i.payload_hash,
+                    "execution_mode": i.snapshot.get("execution_mode", "strict"),
                     "adapter_invocation_id": i.adapter_invocation_id,
                     "started_at": i.started_at.isoformat() if i.started_at else None,
                     "finished_at": i.finished_at.isoformat() if i.finished_at else None,

@@ -145,6 +145,11 @@ class InvocationSnapshot:
     resources: dict[str, Any] = field(default_factory=dict)
     adapter_version: str = "unknown"
     policy_version: int = 0
+    execution_mode: str = "strict"
+
+    def __post_init__(self) -> None:
+        if self.execution_mode not in {"strict", "supervised"}:
+            raise ValueError("execution_mode must be strict or supervised")
 
     def payload_hash(self) -> str:
         digest = hashlib.sha256()
@@ -152,7 +157,7 @@ class InvocationSnapshot:
         return digest.hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "agent_id": self.agent_id,
             "task_input": self.task_input,
             "parent_task_id": self.parent_task_id,
@@ -162,6 +167,10 @@ class InvocationSnapshot:
             "adapter_version": self.adapter_version,
             "policy_version": self.policy_version,
         }
+        # Preserve hashes of existing strict-mode snapshots.
+        if self.execution_mode != "strict":
+            result["execution_mode"] = self.execution_mode
+        return result
 
 
 # --------------------------------------------------------------------------- #
@@ -184,8 +193,11 @@ class Policy:
     max_agent_invocations: int = 10
     run_time_limit_seconds: int = 600
     root_task_ttl_seconds: int = 3600
+    collaboration_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.collaboration_enabled) is not bool:
+            raise ValueError("collaboration_enabled must be a boolean")
         # Validate the whole policy up front so an illegal update is rejected
         # before anything is persisted (the caller rolls back on ValueError).
         for name in (
@@ -225,6 +237,7 @@ class Policy:
             "max_agent_invocations": self.max_agent_invocations,
             "run_time_limit_seconds": self.run_time_limit_seconds,
             "root_task_ttl_seconds": self.root_task_ttl_seconds,
+            "collaboration_enabled": self.collaboration_enabled,
             "version": self.version,
         }
 
@@ -238,7 +251,9 @@ class Policy:
 class ExecutionAdmission:
     """Host-owned launch eligibility, independent of a user's approval.
 
-    Unknown controls fail closed (plan §4.3). Only reviewed adapter code may
+    Strict mode fails closed for unknown controls (plan §4.3). Supervised mode
+    is an explicit per-invocation boundary waiver, not a capability claim.
+    Only reviewed adapter code may
     declare eligibility; requests, registry capability flags and environment
     variables cannot grant it. ``simulation`` never certifies a real Agent.
     """
@@ -257,10 +272,14 @@ class ExecutionAdmission:
         }
 
 
-def execution_admission(adapter: Any) -> ExecutionAdmission:
+def execution_admission(adapter: Any, execution_mode: str = "strict") -> ExecutionAdmission:
     """Safely query the trusted adapter; missing/broken declarations deny."""
     try:
         admission = adapter.execution_admission()
+        if execution_mode not in {"strict", "supervised"}:
+            return ExecutionAdmission()
+        if execution_mode == "supervised" and not admission.allowed:
+            admission = adapter.supervised_execution_admission()
     except Exception:
         return ExecutionAdmission()
     if (
@@ -269,7 +288,8 @@ def execution_admission(adapter: Any) -> ExecutionAdmission:
         or not isinstance(admission.mode, str)
         or not isinstance(admission.code, str)
         or not isinstance(admission.reason, str)
-        or admission.mode not in {"blocked", "simulation", "strict"}
+        or admission.mode not in {"blocked", "simulation", "strict", "supervised"}
+        or (admission.mode == "supervised" and execution_mode != "supervised")
         or admission.allowed != (admission.mode != "blocked")
     ):
         return ExecutionAdmission()

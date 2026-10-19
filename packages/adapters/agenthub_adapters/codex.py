@@ -39,6 +39,9 @@ import os
 import subprocess
 import sys
 import time
+import threading
+import uuid
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -47,6 +50,7 @@ from agenthub.contracts import (
     AdapterStartResult,
     ExecutionAdmission,
     InvocationSnapshot,
+    execution_admission,
 )
 
 from agenthub_adapters.store import (
@@ -129,6 +133,7 @@ class CodexRun:
     elapsed: float
     stdout_text: str
     argv: list[str]
+    local_stop_requested: bool = False
 
     @property
     def ok(self) -> bool:
@@ -258,6 +263,8 @@ def classify_outcome(run: CodexRun, parsed: ParsedRun) -> tuple[str, bool, str]:
     5. ``turn.completed`` AND exit code 0 -> success;
     6. no turn events at all -> failure (nothing ran), reported as abnormal.
     """
+    if run.local_stop_requested:
+        return RUNNING, False, "local process stop requested; remote/native children not confirmed stopped"
     if run.timed_out:
         return (
             RUNNING,
@@ -341,23 +348,59 @@ class SubprocessCodexRunner:
 
     def __init__(self, scratch_dir: str) -> None:
         self.scratch_dir = scratch_dir
+        self._lock = threading.RLock()
+        self._processes: dict[str, subprocess.Popen] = {}
+        self._stop_requests: set[str] = set()
         os.makedirs(scratch_dir, exist_ok=True)
 
     def run(self, argv: list[str], env: dict, timeout: float) -> CodexRun:
-        out_path = os.path.join(self.scratch_dir, f"codex-{int(time.time()*1000)}.jsonl")
+        return self._run(uuid.uuid4().hex, argv, env, timeout)
+
+    def run_for_invocation(self, invocation_id: str, argv: list[str], env: dict, timeout: float) -> CodexRun:
+        # Keep the bundled stub's command validation when called by the adapter.
+        if isinstance(self, StubCodexRunner) and (
+            len(argv) < 3 or not is_bundled_stub_command(argv[1], argv[:1]) or argv[2] != "exec"
+        ):
+            raise CodexLaunchFailed("offline runner refuses any command except the bundled stub")
+        return self._run(invocation_id, argv, env, timeout)
+
+    def stop_local(self, invocation_id: str) -> dict:
+        """Only this runner's process handle. Never find/kill processes by name or PID input."""
+        with self._lock:
+            self._stop_requests.add(invocation_id)
+            proc = self._processes.get(invocation_id)
+            if proc is None:
+                return {"local_stop_requested": True, "local_process_exited": False,
+                        "remote_stop_confirmed": False, "reason": "no_owned_process_or_launch_pending"}
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        return {"local_stop_requested": True, "local_process_exited": proc.poll() is not None,
+                "remote_stop_confirmed": False, "reason": "local_entry_process_only"}
+
+    def _run(self, invocation_id: str, argv: list[str], env: dict, timeout: float) -> CodexRun:
+        out_path = os.path.join(self.scratch_dir, f"codex-{uuid.uuid4().hex}.jsonl")
         start = time.time()
         timed_out = False
         exit_code: Optional[int] = None
         with open(out_path, "w", encoding="utf-8", errors="replace") as fh:
             try:
-                proc = subprocess.Popen(
-                    argv,
-                    stdout=fh,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    env=env,
-                    cwd=self.scratch_dir,
-                )
+                with self._lock:
+                    if invocation_id in self._stop_requests:
+                        self._stop_requests.discard(invocation_id)
+                        return CodexRun(None, False, 0, "", argv, local_stop_requested=True)
+                    proc = subprocess.Popen(
+                        argv, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                        env=env, cwd=self.scratch_dir,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    self._processes[invocation_id] = proc
             except OSError as exc:
                 # The OS refused to create the process: NOTHING is running, so
                 # this error is definitively terminal. (Seen in practice as
@@ -367,11 +410,20 @@ class SubprocessCodexRunner:
                 exit_code = proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                proc.kill()
                 try:
-                    proc.wait(timeout=10)
+                    proc.kill()
+                except OSError:
+                    pass  # a concurrent user stop may have already ended it
+                try:
+                    exit_code = proc.wait(timeout=10)
                 except Exception:  # noqa: BLE001
                     pass
+            finally:
+                with self._lock:
+                    local_stop_requested = invocation_id in self._stop_requests
+                    self._stop_requests.discard(invocation_id)
+                    if proc.poll() is not None:
+                        self._processes.pop(invocation_id, None)
 
         elapsed = time.time() - start
         try:
@@ -385,6 +437,7 @@ class SubprocessCodexRunner:
             elapsed=elapsed,
             stdout_text=text,
             argv=argv,
+            local_stop_requested=local_stop_requested,
         )
 
 
@@ -518,6 +571,7 @@ class CodexAdapter(AdapterContract):
             "resume_session": True,        # interface exists + thread_id captured;
                                            # resuming BY it is not yet verified
             "cancel": False,               # UNVERIFIED - reported as unsupported
+            "stop_local_process": isinstance(getattr(self, "runner", None), SubprocessCodexRunner),
             "limit_dir": "unknown",        # read-only run left the workdir empty,
                                            # but the prompt never asked it to write
             "intercept_tool": False,       # UNVERIFIED
@@ -542,6 +596,22 @@ class CodexAdapter(AdapterContract):
         ):
             return ExecutionAdmission(True, "simulation", "offline_fixture", "离线桩验证，不调用真实 Codex。")
         return blocked_codex_admission()
+
+    def supervised_execution_admission(self) -> ExecutionAdmission:
+        """User-selected bounded operation, not a claim that native children are controlled."""
+        if (type(self.runner) is not SubprocessCodexRunner or self.command_prefix
+                or self.sandbox != "read-only" or not self.disable_subagents
+                or not self.expected_identity or not math.isfinite(self.timeout_seconds)
+                or not 0 < self.timeout_seconds <= 600):
+            return ExecutionAdmission(reason="用户监督模式要求固定身份、只读、自有进程和最多 600 秒的本地时限。")
+        return ExecutionAdmission(True, "supervised", "user_supervised_boundary",
+            "仅保证 Hub 审批与本地入口进程控制；原生派生不在 Hub 配额内，远端停止不保证。")
+
+    def stop_local_invocation(self, invocation_id: str) -> dict:
+        if not isinstance(self.runner, SubprocessCodexRunner):
+            return {"local_stop_requested": False, "local_process_exited": False,
+                    "remote_stop_confirmed": False, "reason": "unsupported"}
+        return self.runner.stop_local(invocation_id)
 
     def health(self) -> bool:
         return bool(self.codex_path and os.path.isfile(self.codex_path))
@@ -581,7 +651,7 @@ class CodexAdapter(AdapterContract):
                 terminal=True,
                 detail="refused: no kernel gate token (invocation not approved)",
             )
-        admission = self.execution_admission()
+        admission = execution_admission(self, snapshot.execution_mode)
         if not admission.allowed:
             # Defence in depth for direct callers and a runner changed after
             # the Worker's eligibility check. No home, run directory or process
@@ -650,7 +720,10 @@ class CodexAdapter(AdapterContract):
         self.store.record_start(invocation_id, adapter_invocation_id="")
 
         try:
-            run = self.runner.run(argv, env, self.timeout_seconds)
+            if isinstance(self.runner, SubprocessCodexRunner):
+                run = self.runner.run_for_invocation(invocation_id, argv, env, self.timeout_seconds)
+            else:
+                run = self.runner.run(argv, env, self.timeout_seconds)
         except CodexLaunchFailed as exc:
             # The OS refused to create the process: nothing is running, so the
             # outcome is definitive and the slot may be freed.
@@ -690,6 +763,7 @@ class CodexAdapter(AdapterContract):
         self.store.set_payload(invocation_id, payload)
         verdict, terminal, detail = classify_outcome(run, parsed)
         payload["verdict"] = verdict
+        payload["local_stop_requested"] = run.local_stop_requested
         payload["terminal"] = terminal
         payload["detail"] = detail
         self.store.set_payload(invocation_id, payload)

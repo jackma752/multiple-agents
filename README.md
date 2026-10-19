@@ -4,15 +4,17 @@
 
 定义、方案与验收标准见 `E:\plug\AGENT_HUB_PLAN.md`。
 
-## 当前状态：P3（真实 Codex 新调用已阻止，Mock 可用）
+## 当前状态：P3（严格模式 + 可选用户监督模式）
 
-**2026-10-17**：app-server 真实 S1（零模型握手）与另行批准的一次 S2（回复 OK、消息增量、终态、真实用量）均已通过。[S1 记录](docs/appserver-s1-2026-10-17.md)、[S2 记录](docs/appserver-s2-2026-10-17.md)。S3+ 未验证，普通真实执行准入保持阻止。
+**2026-10-20 产品调整**：按用户要求增加“用户监督模式”、手动结束本次自有本地进程，以及默认关闭的 Hub 子任务协作扩展。每次调用仍需审批；原生子 Agent、工具操作与远端停止不保证受控。严格模式保留原有阻止规则。见 [边界、接口与启动步骤](docs/manual-control-boundaries.md)。本轮仅离线验证，没有追加真实模型调用。
+
+**2026-10-17 历史基线**：app-server 真实 S1（零模型握手）与另行批准的一次 S2（回复 OK、消息增量、终态、真实用量）均已通过。[S1 记录](docs/appserver-s1-2026-10-17.md)、[S2 记录](docs/appserver-s2-2026-10-17.md)。S3+ 的真实行为未验证。
 
 S2 单回合探针与离线正反对照已就绪，全套 489 项测试通过。[范围与判定](docs/appserver-s2-probe.md)。真实探测授权不等于开放控制台任意调用。
 
 **2026-10-15 更新**：真实记录确认，当前配置在传入 `--disable multi_agent` 后仍派生原生子 Agent，
 且未登记到 Hub 审批/配额。已实现后端执行准入：当前真实 Codex 在消费审批、预留配额、启动进程前被拒绝。
-没有通过降低控制要求继续运行的开关。Mock 和固定离线桩可继续验证。
+这一阻止规则继续适用于严格模式；后续新增用户监督模式的明确例外见上方修订。Mock 和固定离线桩可继续验证。
 见 [准入契约与验证](docs/p3-strict-adapter-admission.md)、[原生派生观测](docs/p3-native-subagent-incident.md)。
 以下真实成功记录是此前联调证据，不代表当前符合严格协作要求。历史子任务现状仍未知。
 
@@ -79,7 +81,7 @@ Codex 能力与未决项见 `docs/agent-codex-capabilities.md`；
 - **unknown 用户裁决**：`POST /api/invocations/{id}/reconcile`（仅 user）——`settle` 认定结果（人工确认）并幂等释放名额；`retry` **必须先确认旧执行已结束**（否则 409 `not_stopped`，不改旧状态、不释放名额、不新建调用），确认后释放一次并**新建调用 + 新待批审批**（重试必须重新审批，不自动启动）。
 - **统一原则**：并发名额只有在能确认对应执行已结束时才释放；无法确认时一律保留占位。
 - **API 与 Worker 共用同一数据库文件**：路径锚定仓库根（`config.py`，不依赖工作目录），文件型 SQLite 启用 WAL 与 busy timeout。
-- 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止一切子 Agent。
+- 三道配额在**整个根任务树**作用：`max_subagents_total`（累计，失败不返还）、`max_subagents_concurrent`（并发，结束即释放）、`max_depth`。`max_subagents_total=0` 禁止 Hub 分派子调用，不能据此阻止产品原生派生。
 - 快照绑定：审批绑定 `payload_hash`，输入 / 权限 / Agent / 策略变化后旧批准失效。
 - Mock 适配器：只记录"被启动次数"，另有可持久化、按 `invocation_id` 查询的执行记录（用于恢复对账）。
 - **P3 控制台**：`/ui` 提供统一聊天、审批卡片、任务树、配额显示与停止/暂停按钮；界面**自动管理** task_id / invocation_id / approval_id，用户无需复制或填写任何 id（零构建单页，见 `docs/p3-ui.md`）。

@@ -52,6 +52,10 @@ def _approve(client, invocation_id) -> str:
 
 
 def _propose_delegation(client, parent_task_id, goal) -> dict:
+    view = client.get(f"/api/tasks/{parent_task_id}/view", headers=USER).json()
+    if not view["policy"].get("collaboration_enabled"):
+        assert client.patch(f"/api/tasks/{parent_task_id}/policy", headers=USER,
+                            json={"collaboration_enabled": True}).status_code == 200
     r = client.post(
         f"/api/tasks/{parent_task_id}/delegations",
         json={"agent_id": "mock", "goal": goal, "parent_task_id": parent_task_id},

@@ -21,10 +21,10 @@ the agent / worker / model path can approve; this is the backend-enforced gate.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from agenthub.contracts import InvocationSnapshot, Policy
 from agenthub_kernel import Worker
@@ -57,6 +57,11 @@ class InvocationIn(BaseModel):
     depth: int = 0
     permissions: dict[str, Any] = {}
     resources: dict[str, Any] = {}
+    execution_mode: Literal["strict", "supervised"] = "strict"
+
+
+class ApprovalIn(BaseModel):
+    accept_unmanaged_native_agents: StrictBool = False
 
 
 class PolicyIn(BaseModel):
@@ -64,6 +69,7 @@ class PolicyIn(BaseModel):
     max_subagents_concurrent: int = 2
     max_depth: int = 1
     max_agent_invocations: int = 10
+    collaboration_enabled: StrictBool = False
 
 
 class MessageIn(BaseModel):
@@ -185,6 +191,7 @@ def create_app(
                     depth=task.depth,
                     permissions=body.permissions,
                     resources=body.resources,
+                    execution_mode=body.execution_mode,
                     # Must carry the tree's CURRENT policy version, otherwise the
                     # consume-time policy check would (correctly) reject this
                     # invocation as approved under a stale policy.
@@ -226,13 +233,14 @@ def create_app(
     @app.post("/api/approvals/{approval_id}/approve")
     def approve(
         approval_id: str,
+        body: Optional[ApprovalIn] = None,
         principal: Principal = Depends(authenticate),
     ) -> dict[str, Any]:
         require_approver(principal)
         with db.session() as session:
             svc = PolicyService(session)
             try:
-                appr = svc.approve(approval_id)
+                appr = svc.approve(approval_id, supervised_consent=bool(body and body.accept_unmanaged_native_agents))
                 session.commit()
                 return {
                     "approval_id": appr.id,
@@ -291,6 +299,7 @@ def create_app(
                 max_subagents_concurrent=body.max_subagents_concurrent,
                 max_depth=body.max_depth,
                 max_agent_invocations=body.max_agent_invocations,
+                collaboration_enabled=body.collaboration_enabled,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -371,6 +380,18 @@ def create_app(
             "unconfirmed": result.get("unconfirmed", 0),
             "outcomes": result["outcomes"],
         }
+
+    @app.post("/api/invocations/{invocation_id}/stop-local")
+    def stop_local_invocation(
+        invocation_id: str,
+        principal: Principal = Depends(authenticate),
+    ) -> dict[str, Any]:
+        require_approver(principal)
+        try:
+            return app.state.worker.stop_local(invocation_id, requested_by=principal.identity)
+        except QuotaError as exc:
+            raise HTTPException(status_code=404 if exc.code == "no_invocation" else 409,
+                                detail={"code": exc.code, "message": exc.message})
 
     @app.post("/api/tasks/{task_id}/pause")
     def pause_task(

@@ -114,7 +114,7 @@ def test_drain_examines_each_invocation_at_most_once(tmp_path):
     from agenthub.contracts import Policy
 
     url = f"sqlite:///{(tmp_path / 'drain_once.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=0, max_subagents_concurrent=0), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=0, max_subagents_concurrent=0), url=url)
     root = h.create_root()
 
     sub = h.create_subtask(root.id, "blocked")
@@ -135,7 +135,7 @@ def test_drain_processes_distinct_invocations_in_one_pass(tmp_path):
     from agenthub.contracts import Policy
 
     url = f"sqlite:///{(tmp_path / 'drain_many.db').as_posix()}"
-    h = KernelHarness(policy=Policy(max_subagents_total=3, max_subagents_concurrent=2), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)
     root = h.create_root()
 
     ids = []
@@ -156,7 +156,7 @@ def test_drain_processes_distinct_invocations_in_one_pass(tmp_path):
 
 def test_release_does_not_return_cumulative_total():
     """A finished sub-agent frees the concurrent slot but not the total budget."""
-    h = KernelHarness(policy=Policy(max_subagents_total=1, max_subagents_concurrent=1))
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=1, max_subagents_concurrent=1))
     root = h.create_root()
 
     sub = h.create_subtask(root.id, "sub")

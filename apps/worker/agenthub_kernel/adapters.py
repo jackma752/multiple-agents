@@ -4,8 +4,8 @@ One place decides which adapter the API/Worker use, so the console, tests and th
 CLI all agree:
 
 * ``mock``  - the inert default. No process is launched. Safe everywhere.
-* ``codex`` - Codex metadata/records. Real launches are currently denied by
-  execution admission; the fixed bundled stub remains available for offline QA.
+* ``codex`` - strict admission remains blocked. Explicit per-call supervised
+  mode allows bounded operation without attesting native-child control.
 """
 
 from __future__ import annotations
@@ -82,6 +82,7 @@ def describe(adapter: Any) -> dict:
     }
     admission = execution_admission(adapter)
     info["execution_admission"] = admission.to_dict()
+    info["supervised_admission"] = execution_admission(adapter, "supervised").to_dict()
     info["real_process"] = info["real_process"] and admission.mode != "simulation"
     if info["kind"] == CODEX:
         ok, why = adapter.identity_matches()

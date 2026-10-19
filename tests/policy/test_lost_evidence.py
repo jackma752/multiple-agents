@@ -66,7 +66,7 @@ def test_running_then_unknown_then_missing_record_keeps_the_slot(tmp_path):
     """The core regression: unknown + no record must NOT free the slot."""
     url = f"sqlite:///{(tmp_path / 'lost.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=1), url=url
     )
     root, inv = _one_slot_running(h)
 
@@ -105,7 +105,7 @@ def test_second_approved_call_blocked_after_lost_evidence(tmp_path):
     """With cap 1, a second approved call must still not start."""
     url = f"sqlite:///{(tmp_path / 'lost2.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=1), url=url
     )
     root, inv = _one_slot_running(h)
 
@@ -128,7 +128,7 @@ def test_reap_with_lost_evidence_goes_unknown_not_timed_out(tmp_path):
     """An overdue call whose record is gone must stay unknown with its slot."""
     url = f"sqlite:///{(tmp_path / 'lost_reap.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(
+        policy=Policy(collaboration_enabled=True,
             max_subagents_total=3,
             max_subagents_concurrent=1,
             run_time_limit_seconds=60,
@@ -158,7 +158,7 @@ def test_a_call_that_never_started_can_still_be_confirmed_and_retried(tmp_path):
     """
     url = f"sqlite:///{(tmp_path / 'never.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=1), url=url
     )
     root = h.create_root()
     sub = h.create_subtask(root.id, "never started")
@@ -192,7 +192,7 @@ def test_settle_still_resolves_lost_evidence(tmp_path):
     """The user can still adjudicate explicitly, releasing the slot once."""
     url = f"sqlite:///{(tmp_path / 'lost_settle.db').as_posix()}"
     h = KernelHarness(
-        policy=Policy(max_subagents_total=3, max_subagents_concurrent=1), url=url
+        policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=1), url=url
     )
     root, inv = _one_slot_running(h)
 

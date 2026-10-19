@@ -206,7 +206,7 @@ def test_concurrent_distinct_invocations_do_not_exceed_total_cap(tmp_path):
     win; the others must be refused by a quota code and reserve nothing.
     """
     url = _url(tmp_path, "quota_race.db")
-    h = KernelHarness(policy=Policy(max_subagents_total=1, max_subagents_concurrent=1), url=url)
+    h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=1, max_subagents_concurrent=1), url=url)
     root = h.create_root()
 
     invocations = []
