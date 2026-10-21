@@ -1,4 +1,15 @@
-# 当前交接：app-server 增量输出与原生续接（2026-10-21 续二）
+# 当前交接：异步执行与工具审批往返（2026-10-22）
+
+- 分支 `feat/async-tool-approval`，目录 `E:\plug\agent-hub\.worktrees\async-tool-approval`，基于 `feat/chat-workbench` 的 `c38d510`。本轮由 Agent 在本会话中直接提交（MinGit 副本可正常写入），提交号以 `git log` 为准。
+- 完成：`/run` 改为同步认领、后台执行（202，`?wait=true` 保留等待模式）；工具审批卡 `tool_approvals`，每个请求一张，绑定 request/thread/turn/item 并带 `card_hash`，只有用户批准的卡回 `accept`，拒绝、过期、void 都不构成授权。说明见 [会话后端契约](conversation-backend.md) 末节。
+- 门禁：认领阶段的所有检查都在消费审批之前完成，被拒时返回 409，审批保持原状。真实 app-server 仍被准入拒绝。卡的 `details` 只通过卡接口返回，事件只带 ID 和状态。
+- 验证（Windows `.venv`，离线）：新文件 22 passed，连续 4 次；全量 **618 passed in 51.76s**。没有真实模型回合，没有读取凭据，没有动 8080。
+- 未完成：网页前端（用 fetch 读取 SSE，展示审批卡与停止状态）、中断（S4）、原生子 thread 观测、用量事件、保留期。真实 S3–S5 仍需逐项授权；两项 DLL 问题仍 OPEN。
+- 下一步建议：前端演示闭环——发消息 → 批准 → 逐步输出 → 工具卡 → 拒绝 → 终态 → 刷新后恢复 → 新一轮待审批。
+
+---
+
+# 历史交接：app-server 增量输出与原生续接（2026-10-21 续二）
 
 - 分支 `feat/chat-workbench`，目录 `E:\plug\agent-hub\.worktrees\chat-workbench`。git 使用 `C:\Users\Administrator\AppData\Local\Programs\MinGit`（已加入用户 PATH）；`E:\ds_agent` 下的原件带 Low 完整性标签，无法写入任何正常目录。本轮和上一轮的改动由用户在自己的终端运行 `E:\plug\git-integration-2026-10-21\integrate.ps1` 提交。规则见 [Git 工作流](git-workflow.md)，证据见 [证据清单](evidence-manifest.md)。
 - 完成：可选传输 `AGENT_HUB_CODEX_TRANSPORT=app-server`（`AppServerCodexAdapter`）；增量输出进入同一会话事件流；`context_mode=native_resume`，thread id 绑定进待审批快照。说明见 [会话后端契约](conversation-backend.md) 末节。

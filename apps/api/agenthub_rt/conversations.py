@@ -6,7 +6,7 @@ import time
 from typing import Literal, Optional
 
 from fastapi import Depends, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, text
 from starlette.concurrency import run_in_threadpool
@@ -241,7 +241,19 @@ def register_conversations(app, db) -> None:
                 )
 
     @app.post("/api/invocations/{invocation_id}/run")
-    def run_invocation(invocation_id: str, principal: Principal = Depends(authenticate)):
+    def run_invocation(
+        invocation_id: str, wait: bool = Query(False),
+        principal: Principal = Depends(authenticate),
+    ):
+        """Claim the approved call now; execute it on the Worker's pool.
+
+        Every refusal (not approved, admission, quota, stopped, native resume)
+        is decided before this returns and answered 409 with the approval left
+        as it was. An accepted call answers 202 at once with ``status`` as
+        stored (``starting``); follow the conversation events for progress.
+        ``wait=true`` blocks until the same background execution settles and
+        answers 200 with its outcome - for scripts and tests, not for pages.
+        """
         require_approver(principal)
         with db.session() as session:
             if session.get(InvocationRow, invocation_id) is None:
@@ -251,9 +263,14 @@ def register_conversations(app, db) -> None:
             ))
             if link:
                 require_conversation(session, link.conversation_id, principal)
-        result = app.state.worker.run_one(invocation_id)
-        if not result.get("adapter_start_attempted"):
+        result = app.state.worker.submit(invocation_id)
+        future = result.pop("future", None)
+        if not result.get("accepted"):
             raise HTTPException(409, detail=result)
+        code = 202
+        if wait:
+            result = {**future.result(), "accepted": True}
+            code = 200
         with db.session() as session:
             result["status"] = session.get(InvocationRow, invocation_id).status
-        return result
+        return JSONResponse(status_code=code, content=result)

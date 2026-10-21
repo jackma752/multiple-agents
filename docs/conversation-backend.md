@@ -170,3 +170,59 @@ Windows `.venv` 实际输出：
 
 - `python -m pytest tests/http/test_conversation_stream.py -o addopts='' -q -p no:cacheprovider` → **28 passed**，连续 4 次（7.7–7.9 秒）。
 - 全量 `python -m pytest -o addopts='' -q -p no:cacheprovider` → **595 passed in 44.52s**。没有真实模型回合。
+
+## 异步执行与工具审批往返（2026-10-22）
+
+分支 `feat/async-tool-approval`。审批、配额、准入、unknown 和停止的规则不变；全程离线，没有真实模型回合。
+
+### 异步 `/run`
+
+| 接口 | 行为 |
+|---|---|
+| POST `/api/invocations/{id}/run` | 在请求内同步完成第 1 阶段：准入、原生续接检查、消费审批、预留名额，并提交事务。被拒仍返回 **409**，审批保持原状。被接受时立即返回 **202** `{accepted, launch_scheduled, status: "starting"}`，第 2、3 阶段（启动适配器、结算）交给 Worker 自己的有界线程池执行，进度通过会话事件流推送 |
+| 同上，`?wait=true` | 走同一条后台路径，等结算完成后返回 **200** 和结果，供脚本和测试使用，页面不要用 |
+
+- 线程数由 `AGENT_HUB_WORKER_THREADS` 配置，默认 4，范围 1–32。线程用满时，已接受的调用保持 `starting` 并占着名额排队。
+- 后台执行中，适配器异常或结算本身失败（例如数据库写入出错）时，调用一律记为 `unknown` 并保留名额，不猜测结果。
+- `recover()` 会跳过本进程正在执行的调用，因为它们的适配器还活着，不属于"重启后"需要对账的对象。
+- 应用关闭时会等待在途调用结束（最多 30 秒），不会强杀；之后不再接受新调用（409 `worker_stopped`）。超时仍未结束的调用，留给下一次 `recover()` 对账。
+- 同一调用重复 `/run` 返回 409，只会启动一次。
+
+### 工具审批卡（每个工具请求一张）
+
+批准运行 ≠ 批准工具操作。适配器支持 `supports_tool_approval()` 时，Worker 会传入 `tool_gate`。provider 在本 turn 内发来的每个工具审批请求都会生成一张卡（表 `tool_approvals`），turn 在等待期间暂停；只有用户能回应这张卡。
+
+| 接口 | 说明 |
+|---|---|
+| GET `/api/conversations/{id}/tool-approvals?status=` | 列出本会话的卡，包含 `details`（command/cwd/reason） |
+| GET `/api/tool-approvals/{id}` | 单张卡 |
+| POST `/api/tool-approvals/{id}/approve` | `{card_hash}` 必填。只批准这一个请求，不是会话级授权，也不覆盖以后的请求 |
+| POST `/api/tool-approvals/{id}/decline` | `card_hash` 可选，拒绝总是安全的 |
+
+- **绑定**：一张卡对应 `invocation_id` + JSON-RPC `request_key` + `thread_id`/`turn_id`/`item_id`。适配器内部按"卡 → 原请求对象"一一对应回复，批准卡 A 不可能回答请求 B。其他 turn 的请求不生成卡，直接回 `decline`。
+- **状态**：`pending → approved / declined / expired / void`。只有 `approved` 会被回复为 `accept`，而且只回一次；`declined`、`expired` 回 `decline`。`void` 表示请求、turn 或传输已先结束，不再回复。回复始终落在 provider 给出的 `availableDecisions` 范围内，不会被升级为 accept。
+- **用户决定的前提**：卡仍是 `pending`、未过期、调用仍在 `starting/running`；批准时还必须提交当前的 `card_hash`，这样过时的页面无法批准它没见过的内容；provider 必须提供了 `accept` 选项。任一条件不满足返回 409：`not_pending` / `expired` / `call_not_active` / `card_hash_required` / `card_changed` / `accept_not_offered`。
+- **过期**：`AGENT_HUB_TOOL_APPROVAL_TTL` 默认 120 秒（1–600），并且不超过本轮剩余的运行时限。没人回应时按过期处理，等同拒绝。
+- **并发**：所有状态变更都先取写锁（SQLite `BEGIN IMMEDIATE`，PostgreSQL `FOR UPDATE`）再读当前状态。同时提交多个批准，或批准与过期同时发生，最终只会有一个结果。
+- **送达**：`delivery` 记录 provider 是否真的收到回复（`sent / failed / not_sent`）和实际发出的决定（`decision_sent`）。批准不等于命令已经执行。
+- **清理**：turn 或传输结束、本地停止、`recover()` 时，未回应的卡一律置为 `void`；之后再批准返回 409。
+- **鉴权**：只有 user 身份可以读取或回应卡；agent/worker 令牌返回 403，未登录返回 401，他人会话的卡返回 404。
+- **敏感内容**：`details` 可能包含用户或模型的内容，按聊天内容管理，只通过上面的卡接口返回。事件只带 ID 和状态：`tool_approval.requested`（`tool_approval_id, invocation_id, method, thread_id, turn_id, item_id, status, expires_at`）、`tool_approval.status`（`from, to, decided_by`）、`tool_approval.delivery`（`delivery, decision_sent`）。
+- **没有 gate 时**（直接调用适配器）：行为和以前一样，全部回 `decline`。
+
+### 限制
+
+- 只在离线桩上验证。真实 app-server 在严格和监督模式下仍被准入拒绝，所以不会有 `accept` 发给真实 Codex。provider 是否会在每次工具操作前都先请求审批，属于 S3，**未验证**；本功能管的是"请求来了之后怎么答"，不能强迫 provider 先来问。
+- SSE 只推送卡的 ID 和状态，`details` 需要页面另外调用卡接口读取。
+- 仍未实现：中断（S4）、原生子 thread 的观测、用量事件、`stream_chunks` 与卡的保留期。
+
+### 验证（本节）
+
+新增 `tests/http/test_async_and_tool_approval.py`，共 22 项：
+- 异步：202 立即返回且后台完成结算；拒绝路径保持同步、不启动；在途调用不会被重复启动；后台适配器异常记为 unknown 并保留名额；结算失败记为 unknown；`recover()` 跳过在途调用；关闭时等待在途调用、之后拒绝新调用且审批不被消费。
+- 工具卡：批准只回答对应请求且回 `accept`，桩执行后输出 `ran`；事件顺序为 requested < status < delivery < 终态，事件和审计载荷里都没有 command；拒绝回 `decline` 且什么都不执行；过期回 `decline`，过期后不能补批；缺少或错误的 `card_hash` 被拒；401 / 403 / 他人会话 404；传输先结束时卡被置为 `void`，之后不能批准。
+- 内核规则：provider 未提供 `accept` 时不能批准；8 路并发批准只成功一次；过期优先于迟到的批准；已结束调用的卡不能批准；卡的有效期受本轮时限约束；`recover()` 清理孤立的卡；没有建表的旧库不受影响；适配器内一张卡只回答它自己的请求。
+
+另外按新规则改写了一项旧测试：没人回应的工具请求会过期并回复 `decline`；新增一项测试，确认没有 gate 时仍然全部回 `decline`。
+
+Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 秒）；全量 **618 passed in 51.76s**。

@@ -83,7 +83,9 @@ def approve(client, turn):
 
 
 def run(client, turn):
-    return client.post(f"/api/invocations/{turn['invocation_id']}/run", headers=USER)
+    """Run and wait for the outcome (the same background path as a 202 run)."""
+    return client.post(f"/api/invocations/{turn['invocation_id']}/run",
+                       params={"wait": "true"}, headers=USER)
 
 
 def messages(client, cid):

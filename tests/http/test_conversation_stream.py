@@ -346,18 +346,35 @@ def test_failed_turn_is_terminal_and_frees_slot(make_client):
     assert result["status"] == "failed" and held_slots(client) == 0
 
 
-def test_server_approval_requests_are_declined_never_accepted(make_client):
+def test_unanswered_tool_request_expires_into_decline_never_accept(make_client):
     factory = InMemoryStubFactory("approval-allow")
     client = make_client(factory)
+    client.app.state.worker.tool_approval_ttl = 0.3  # nobody answers the card
     cid = conversation(client)
     _turn, result = turn_and_run(client, cid, "one")
     assert factory.servers[0].answered_approvals() == [{"id": "srv-1", "decision": "decline"}]
-    declined = [e for e in events(client, cid)["events"] if e["type"] == "stream.request_declined"]
-    assert declined[0]["payload"]["method"] == "item/commandExecution/requestApproval"
-    assert declined[0]["payload"]["decision"] == "decline"
-    assert "command" not in declined[0]["payload"]
+    statuses = [(e["payload"]["from"], e["payload"]["to"]) for e in events(client, cid)["events"]
+                if e["type"] == "tool_approval.status"]
+    assert statuses == [("pending", "expired")]
+    delivery = [e["payload"] for e in events(client, cid)["events"] if e["type"] == "tool_approval.delivery"]
+    assert delivery and delivery[0]["delivery"] == "sent" and delivery[0]["decision_sent"] == "decline"
     assert not [e for e in events(client, cid)["events"] if e["type"] == STREAM_DELTA]
     assert result["status"] == "succeeded"
+
+
+def test_without_a_gate_tool_requests_are_still_declined(tmp_path):
+    """Direct adapter use (no Worker gate) keeps the old fail-closed answer."""
+    factory = InMemoryStubFactory("approval-allow")
+    adapter = make_adapter(tmp_path, factory)
+    snap = InvocationSnapshot(agent_id="codex", task_input="x", parent_task_id=None, depth=0)
+    seen = []
+    result = adapter.start_streaming("inv-direct", snap, gate_token="t",
+                                     emit=lambda etype, payload: seen.append((etype, payload)))
+    assert factory.servers[0].answered_approvals() == [{"id": "srv-1", "decision": "decline"}]
+    declined = [p for etype, p in seen if etype == "stream.request_declined"]
+    assert declined[0]["method"] == "item/commandExecution/requestApproval"
+    assert declined[0]["decision"] == "decline" and "command" not in declined[0]
+    assert result.ok is True
 
 
 # --------------------------------------------------------------------------- #

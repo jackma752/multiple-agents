@@ -391,6 +391,17 @@ class AdapterContract:
     # * ``supports_native_resume() -> bool`` - True only for code that sends
     #   ``snapshot.resume_thread_id`` to the provider. The Worker refuses a
     #   ``native_resume`` call before consuming its approval otherwise.
+    # * ``supports_tool_approval() -> bool`` - True when ``start_streaming``
+    #   accepts ``tool_gate`` and routes each provider tool-approval request
+    #   through it instead of declining automatically. The gate (kernel-owned,
+    #   see :data:`TOOL_APPROVAL_STATUSES`) offers:
+    #     ``open(method, request_key, thread_id, turn_id, item_id, details,
+    #     available_decisions, deadline) -> card_id | None`` (None: decline),
+    #     ``poll(card_id) -> status``,
+    #     ``delivered(card_id, decision, ok)`` and ``void_pending()``.
+    #   Only ``approved`` may be answered with ``accept``, once, for that exact
+    #   request; every other outcome is answered ``decline`` (or not at all
+    #   when the request is gone). Approving a run never approves its tools.
 
 
 #: Provisional, adapter-reported stream events. They are display hints only:
@@ -405,3 +416,23 @@ STREAM_TURN_ENDED = "stream.turn_ended"
 STREAM_EVENT_TYPES = frozenset({
     STREAM_TURN_STARTED, STREAM_DELTA, STREAM_REQUEST_DECLINED, STREAM_TURN_ENDED,
 })
+
+#: Lifecycle of one tool approval card (one provider request). ``pending`` is
+#: the only non-terminal state; ``approved`` is the only one answered with
+#: ``accept``. ``expired`` (time ran out) and ``void`` (the request, turn or
+#: transport went away first) never grant anything.
+TOOL_APPROVAL_PENDING = "pending"
+TOOL_APPROVAL_APPROVED = "approved"
+TOOL_APPROVAL_DECLINED = "declined"
+TOOL_APPROVAL_EXPIRED = "expired"
+TOOL_APPROVAL_VOID = "void"
+TOOL_APPROVAL_STATUSES = frozenset({
+    TOOL_APPROVAL_PENDING, TOOL_APPROVAL_APPROVED, TOOL_APPROVAL_DECLINED,
+    TOOL_APPROVAL_EXPIRED, TOOL_APPROVAL_VOID,
+})
+#: Whether the provider actually received the answer: ``sent``, ``failed``
+#: (the write failed) or ``not_sent`` (nothing left to answer).
+TOOL_DELIVERY_PENDING = "pending"
+TOOL_DELIVERY_SENT = "sent"
+TOOL_DELIVERY_FAILED = "failed"
+TOOL_DELIVERY_NOT_SENT = "not_sent"

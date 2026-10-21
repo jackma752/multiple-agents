@@ -9,7 +9,7 @@ The approval & quota kernel and persistent local chat use these tables:
 ``tasks`` (the root-task tree), ``invocations``, ``approvals``,
 ``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
 ``conversations``, ``chat_messages``, ``conversation_events``,
-``conversation_event_cursors`` and ``stream_chunks``.
+``conversation_event_cursors``, ``stream_chunks`` and ``tool_approvals``.
 """
 
 from __future__ import annotations
@@ -243,6 +243,39 @@ class StreamChunkRow(Base):
     invocation_id = Column(ForeignKey("invocations.id"), index=True, nullable=False)
     item_id = Column(String, nullable=True)
     text = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ToolApprovalRow(Base):
+    """One provider tool-approval request during a running call (a "card").
+
+    Bound to the exact request: ``invocation_id`` + ``request_key`` (the
+    JSON-RPC id) + ``thread_id``/``turn_id``/``item_id``. Answerable once, by a
+    user, before ``expires_at`` and only while the call is active. ``details``
+    (command, cwd, reason) can quote user or model content and is managed like
+    chat text: it is returned only by the authenticated card endpoints, never
+    copied into events. ``delivery`` records whether the provider actually got
+    the answer - an approval is not proof that anything ran.
+    """
+
+    __tablename__ = "tool_approvals"
+    __table_args__ = (UniqueConstraint("invocation_id", "request_key"),)
+
+    id = Column(String, primary_key=True)
+    invocation_id = Column(ForeignKey("invocations.id"), index=True, nullable=False)
+    method = Column(String, nullable=False)
+    request_key = Column(String, nullable=False)
+    thread_id = Column(String, nullable=False)
+    turn_id = Column(String, nullable=False)
+    item_id = Column(String, nullable=False, default="")
+    details = Column(JSON, nullable=False, default=dict)
+    available_decisions = Column(JSON, nullable=True)
+    status = Column(String, nullable=False, default="pending")
+    expires_at = Column(DateTime, nullable=False)
+    decided_by = Column(String, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    delivery = Column(String, nullable=False, default="pending")
+    decision_sent = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 

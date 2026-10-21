@@ -8,7 +8,10 @@ Exposes the endpoints from AGENT_HUB_PLAN §5 (a pragmatic subset):
     POST   /api/conversations/{id}/invocations  save a message and pending approval
     GET    /api/conversations/{id}/events   ordered events after a seq cursor
     GET    /api/conversations/{id}/events/stream  SSE replay + follow (Last-Event-ID)
-    POST   /api/invocations/{id}/run        execute only the named approved call
+    POST   /api/invocations/{id}/run        claim the named approved call; 202, runs in background
+    GET    /api/conversations/{id}/tool-approvals  tool approval cards of a conversation
+    POST   /api/tool-approvals/{id}/approve  user approves ONE tool request (card_hash required)
+    POST   /api/tool-approvals/{id}/decline  user declines one tool request
     POST   /api/tasks/{id}/delegations     propose a subtask (does not execute)
     POST   /api/invocations                create an awaiting-approval invocation
     POST   /api/approvals/{id}/approve     user approves
@@ -25,6 +28,8 @@ the agent / worker / model path can approve; this is the backend-enforced gate.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any, Optional, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -109,7 +114,15 @@ def create_app(
             config.ensure_data_dir()
         db = Database(url)
     db.create_all()
-    app = FastAPI(title="Agent Hub", version="0.1.0")
+
+    @asynccontextmanager
+    async def lifespan(app_: FastAPI):
+        yield
+        # Wait for calls the pool is executing; never kill them. Anything still
+        # running afterwards is reconciled by the next recover().
+        await asyncio.to_thread(app_.state.worker.shutdown, 30)
+
+    app = FastAPI(title="Agent Hub", version="0.1.0", lifespan=lifespan)
     app.state.db = db
     if adapter is None:
         adapter = build_adapter(adapter_kind)
@@ -121,8 +134,10 @@ def create_app(
 
     register_ui(app, db)
     from agenthub_rt.conversations import register_conversations
+    from agenthub_rt.tool_approvals import register_tool_approvals
 
     register_conversations(app, db)
+    register_tool_approvals(app, db)
 
     @app.get("/api/agents")
     def list_agents() -> list[dict[str, Any]]:

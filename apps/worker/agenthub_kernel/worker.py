@@ -7,11 +7,19 @@ adapter is only ever started for a genuinely approved + in-quota call.
 
 After starting the adapter, the Worker tracks the invocation as ``running`` and,
 on completion, calls :meth:`PolicyService.release` to free the concurrent slot.
+
+:meth:`submit` splits that into a synchronous claim (eligibility, consume and
+reservation, committed before it returns) and an execution that runs on the
+Worker's own bounded thread pool, so ``POST /run`` returns immediately while
+progress reaches the conversation event stream.
 """
 
 from __future__ import annotations
 
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from sqlalchemy import select, text
@@ -19,25 +27,136 @@ from sqlalchemy import select, text
 from agenthub.contracts import (
     NATIVE_RESUME, AdapterContract, InvocationStatus, execution_admission,
 )
+from agenthub_kernel import config
 from agenthub_kernel.db import Database, EventRow, InvocationRow, TaskRow
 from agenthub_kernel.events import StreamSink
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.conversations import (
     capture_reply, native_resume_blocker, restore_replies,
 )
+from agenthub_kernel.tool_approvals import ToolGate, void_pending
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
 MOCK_RUNNING_STATE = "running"
 
 
+@dataclass(frozen=True)
+class _Claim:
+    """A consumed approval with a reserved slot, ready for the adapter."""
+
+    invocation_id: str
+    snapshot: dict[str, Any]
+    gate_token: str
+
+
 class Worker:
-    def __init__(self, db: Database, adapter: AdapterContract) -> None:
+    def __init__(self, db: Database, adapter: AdapterContract, *,
+                 background_threads: Optional[int] = None,
+                 tool_approval_ttl: Optional[float] = None) -> None:
         self.db = db
         self.adapter = adapter
         self._stopped = False
+        self.background_threads = background_threads or config.worker_threads()
+        self.tool_approval_ttl = (config.tool_approval_ttl() if tool_approval_ttl is None
+                                  else tool_approval_ttl)
+        self._pool: Optional[ThreadPoolExecutor] = None
+        self._pool_lock = threading.Lock()
+        self._inflight: dict[str, Future] = {}
 
     def stop(self) -> None:
         self._stopped = True
+
+    # ------------------------------------------------------------------ #
+    # Background execution
+    # ------------------------------------------------------------------ #
+
+    def _executor(self) -> ThreadPoolExecutor:
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(
+                    max_workers=self.background_threads, thread_name_prefix="agenthub-run",
+                )
+            return self._pool
+
+    def inflight(self) -> set[str]:
+        """Calls this process is executing right now (claimed, not settled)."""
+        with self._pool_lock:
+            return set(self._inflight)
+
+    def submit(self, invocation_id: str) -> dict[str, Any]:
+        """Claim one approved call now; execute it in the background.
+
+        The claim (admission, native-resume checks, consume, reservation) is
+        committed before this returns, exactly as in :meth:`run_one`, so every
+        refusal is still synchronous and leaves the approval untouched. An
+        accepted call is ``starting`` with its slot held; the returned
+        ``future`` resolves to the same outcome :meth:`run_one` would give.
+        """
+        if self._stopped:
+            return {"invocation_id": invocation_id, "ok": False, "accepted": False,
+                    "code": "worker_stopped", "launch_attempted": False}
+        claim = self._claim(target_id=invocation_id)
+        if claim is None:
+            return {"invocation_id": invocation_id, "ok": False, "accepted": False,
+                    "code": "not_ready", "launch_attempted": False}
+        if isinstance(claim, dict):
+            return {**claim, "accepted": False}
+        pool = self._executor()
+        # Register under the lock that _forget also takes, so a call that
+        # finishes instantly cannot be forgotten before it is recorded.
+        with self._pool_lock:
+            future = pool.submit(self._execute_background, claim)
+            self._inflight[invocation_id] = future
+
+        def _forget(_f: Future, iid: str = invocation_id) -> None:
+            with self._pool_lock:
+                if self._inflight.get(iid) is _f:
+                    del self._inflight[iid]
+
+        future.add_done_callback(_forget)
+        return {"invocation_id": invocation_id, "ok": True, "accepted": True,
+                "launch_scheduled": True, "future": future}
+
+    def _execute_background(self, claim: _Claim) -> dict[str, Any]:
+        try:
+            return self._execute(claim)
+        except Exception as exc:  # noqa: BLE001 - recorded as uncertainty, not logged
+            # Settlement itself failed (e.g. the database). Whether the adapter
+            # ran is unknown, so the slot is kept; recovery can reconcile.
+            reason = f"background execution failed: {type(exc).__name__}"
+            try:
+                with self.db.session() as session:
+                    session.execute(text("BEGIN IMMEDIATE"))
+                    inv = session.get(InvocationRow, claim.invocation_id)
+                    if inv is not None and inv.status in {"starting", "running"}:
+                        PolicyService(session).mark_unknown(claim.invocation_id, reason=reason)
+            except Exception:  # noqa: BLE001
+                pass
+            return {"invocation_id": claim.invocation_id, "ok": False, "terminal": False,
+                    "error": reason, "adapter_start_attempted": True}
+
+    def wait_idle(self, timeout: Optional[float] = None) -> bool:
+        """Block until every background call has finished; False on timeout."""
+        with self._pool_lock:
+            pending = list(self._inflight.values())
+        if not pending:
+            return True
+        _done, not_done = wait(pending, timeout=timeout)
+        return not not_done
+
+    def shutdown(self, timeout: Optional[float] = 30.0) -> bool:
+        """Stop accepting work and wait for in-flight calls; never kills them.
+
+        A call still running after ``timeout`` stays ``starting``/``running``
+        in the database; the next :meth:`recover` reconciles it.
+        """
+        self._stopped = True
+        finished = self.wait_idle(timeout)
+        with self._pool_lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=False)
+        return finished
 
     def stop_local(self, invocation_id: str, *, requested_by: str = "local-user") -> dict[str, Any]:
         """Freeze scheduling, then terminate only the runner-owned entry process.
@@ -374,8 +493,14 @@ class Worker:
           released early, because we cannot prove the call has stopped.
         * Never silently restart a call.
         """
+        busy = self.inflight()
         with self.db.session() as session:
-            candidates = PolicyService(session).list_recoverable()
+            # Calls this process is still executing are not "after a restart":
+            # their adapter is live, so they are not second-guessed here.
+            candidates = [c for c in PolicyService(session).list_recoverable()
+                          if c["invocation_id"] not in busy]
+        # Whoever was waiting on these cards is gone; nobody can deliver them.
+        void_pending(self.db, invocation_ids=[c["invocation_id"] for c in candidates])
 
         summary = {
             "examined": len(candidates),
@@ -492,9 +617,15 @@ class Worker:
 
         Returns None when there is nothing ready, else a diagnostic dict.
         """
-        snapshot_data: dict[str, Any]
-        invocation_id: str
+        claim = self._claim(exclude=exclude, target_id=target_id)
+        if claim is None or isinstance(claim, dict):
+            return claim
+        return self._execute(claim)
 
+    def _claim(
+        self, exclude: Optional[set[str]] = None, *, target_id: Optional[str] = None,
+    ) -> "Optional[dict[str, Any] | _Claim]":
+        """Phase 1 only: None (nothing ready), a refusal dict, or a claim."""
         # ---- Phase 1: atomic consume + reservation, committed first ----
         with self.db.session() as session:
             session.execute(text("BEGIN IMMEDIATE"))
@@ -558,21 +689,41 @@ class Worker:
             gate_token = plan.get("gate_token", "")
             # Exiting this block COMMITS the consumed approval + reservation.
             # Any failure here propagates and the adapter is never started.
+        return _Claim(invocation_id, snapshot_data, gate_token)
+
+    def _supports_tool_approval(self) -> bool:
+        supports = getattr(self.adapter, "supports_tool_approval", None)
+        try:
+            return bool(supports()) if callable(supports) else False
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _execute(self, claim: _Claim) -> dict[str, Any]:
+        """Phases 2 and 3 for a committed claim (inline or on the pool)."""
+        invocation_id = claim.invocation_id
+        snapshot_data = claim.snapshot
+        gate_token = claim.gate_token
 
         # ---- Phase 2: only now start the adapter, outside that transaction ----
         # The gate token proves an approval was consumed and a slot reserved; an
         # adapter that launches a real process requires it. A streaming adapter
         # additionally reports provisional output, appended to the same
-        # conversation event stream while it runs; it settles nothing.
+        # conversation event stream while it runs; it settles nothing. One that
+        # supports tool approval gets a gate: each tool request becomes a card
+        # only a user can answer (approving the run approved no tools).
         start_streaming = getattr(self.adapter, "start_streaming", None)
         sink = StreamSink(self.db, invocation_id) if callable(start_streaming) else None
+        gate = (ToolGate(self.db, invocation_id, ttl_seconds=self.tool_approval_ttl)
+                if sink is not None and self._supports_tool_approval() else None)
         try:
             if sink is not None:
+                extra: dict[str, Any] = {"tool_gate": gate} if gate is not None else {}
                 start = start_streaming(
                     invocation_id,
                     _snapshot_from_dict(snapshot_data),
                     gate_token=gate_token,
                     emit=sink.emit,
+                    **extra,
                 )
             else:
                 start = self.adapter.start(
@@ -583,6 +734,8 @@ class Worker:
         except Exception as exc:  # noqa: BLE001
             if sink is not None:
                 sink.close()
+            if gate is not None:
+                gate.void_pending()
             # Last-resort guard. By now the approval is consumed and the slot
             # reserved, so letting the exception escape would leave a call stuck
             # in `starting` holding that slot forever, with no explanation. An
@@ -603,6 +756,10 @@ class Worker:
             }
         # Flush before settlement so every delta precedes the terminal status.
         stream_stats = sink.close() if sink is not None else None
+        if gate is not None:
+            # Belt and braces: an adapter must close its own cards, but none
+            # may outlive the call it belonged to.
+            gate.void_pending()
 
         # ---- Phase 3: record the outcome ----
         with self.db.session() as session:

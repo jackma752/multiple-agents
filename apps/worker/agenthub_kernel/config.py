@@ -228,6 +228,29 @@ def codex_sandbox() -> str:
     return value if value in CODEX_SANDBOX_MODES else DEFAULT_CODEX_SANDBOX
 
 
+#: Background threads that drive approved calls after ``POST /run`` returns.
+ENV_WORKER_THREADS = "AGENT_HUB_WORKER_THREADS"
+#: Seconds a tool approval card stays answerable before it expires (= decline).
+ENV_TOOL_APPROVAL_TTL = "AGENT_HUB_TOOL_APPROVAL_TTL"
+
+
+def _bounded_number(name: str, default: float, low: float, high: float) -> float:
+    """An env number clamped to [low, high]; junk falls back to the default."""
+    try:
+        value = float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return min(max(value, low), high)
+
+
+def worker_threads() -> int:
+    return int(_bounded_number(ENV_WORKER_THREADS, 4, 1, 32))
+
+
+def tool_approval_ttl() -> float:
+    return _bounded_number(ENV_TOOL_APPROVAL_TTL, 120, 1, 600)
+
+
 def codex_transport() -> str:
     """Selected Codex transport; anything unrecognised falls back to exec."""
     value = (os.environ.get(ENV_CODEX_TRANSPORT) or "").strip().lower()

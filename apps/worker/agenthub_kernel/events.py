@@ -121,16 +121,60 @@ def _sorted(objs: Iterable[Any], key: str) -> list[Any]:
     return sorted(objs, key=lambda o: getattr(o, key) or 0)
 
 
+def _changed(obj: Any, attr: str) -> tuple[Any, Any] | None:
+    hist = get_history(obj, attr)
+    if not hist.added:
+        return None
+    before = hist.deleted[0] if hist.deleted else None
+    after = hist.added[-1]
+    return None if before == after else (before, after)
+
+
+def _tool_events(conn: Connection, new: list[Any], dirty: list[Any]) -> list[tuple[str, str, dict]]:
+    """Card lifecycle as ids and statuses; ``details`` never leaves its row."""
+    from agenthub_kernel.db import ToolApprovalRow
+
+    out: list[tuple[str, str, dict[str, Any]]] = []
+    for card in _sorted([o for o in new if isinstance(o, ToolApprovalRow)], "created_at"):
+        cid = _conversation_of_invocation(conn, card.invocation_id)
+        if cid:
+            out.append((cid, "tool_approval.requested", {
+                "tool_approval_id": card.id, "invocation_id": card.invocation_id,
+                "method": card.method, "thread_id": card.thread_id,
+                "turn_id": card.turn_id, "item_id": card.item_id, "status": card.status,
+                "expires_at": card.expires_at.isoformat() + "Z",
+            }))
+    for card in sorted([o for o in dirty if isinstance(o, ToolApprovalRow)], key=lambda c: c.id):
+        cid = None
+        status = _changed(card, "status")
+        delivery = _changed(card, "delivery")
+        if status or delivery:
+            cid = _conversation_of_invocation(conn, card.invocation_id)
+        if cid and status:
+            out.append((cid, "tool_approval.status", {
+                "tool_approval_id": card.id, "invocation_id": card.invocation_id,
+                "from": status[0], "to": status[1], "decided_by": card.decided_by,
+            }))
+        if cid and delivery:
+            out.append((cid, "tool_approval.delivery", {
+                "tool_approval_id": card.id, "invocation_id": card.invocation_id,
+                "delivery": delivery[1], "decision_sent": card.decision_sent,
+            }))
+    return out
+
+
 def _after_flush(session: Session, _ctx: Any) -> None:
     from agenthub_kernel.db import (
         ApprovalRow, ChatMessageRow, ConversationRow, EventRow, InvocationRow,
+        ToolApprovalRow,
     )
 
     new = list(session.new)
     dirty = list(session.dirty)
     if not new and not dirty:
         return
-    interesting = (ConversationRow, ChatMessageRow, ApprovalRow, InvocationRow, EventRow)
+    interesting = (ConversationRow, ChatMessageRow, ApprovalRow, InvocationRow, EventRow,
+                   ToolApprovalRow)
     if not any(isinstance(o, interesting) for o in new + dirty):
         return
     conn = session.connection()
@@ -189,6 +233,8 @@ def _after_flush(session: Session, _ctx: Any) -> None:
         out.append((msg.conversation_id, "message.created", {
             "message_id": msg.id, "role": msg.role, "invocation_id": msg.invocation_id,
         }))
+
+    out.extend(_tool_events(conn, new, dirty))
 
     if out:
         _append(conn, out)

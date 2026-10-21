@@ -6,6 +6,8 @@
 
 ## 当前状态：P3（严格模式 + 可选用户监督模式）
 
+**2026-10-22 异步执行与工具审批**：`POST /run` 先同步认领，再在后台执行并立即返回 202；进度通过会话 SSE 推送。provider 的每个工具请求生成一张用户审批卡，绑定 request/thread/turn/item；只有用户批准的那张卡回 `accept`，拒绝、过期或请求已结束都不构成授权。只在离线桩上验证，真实工具审批（S3）未验证。[契约与验证](docs/conversation-backend.md)
+
 **2026-10-21 续（app-server 增量与原生续接）**：新增可选传输 `AGENT_HUB_CODEX_TRANSPORT=app-server`，默认仍为 exec。增量文本写入专用表 `stream_chunks`，持久化事件只保存 ID、序号和状态，SSE 在服务端鉴权后组装文本。会话可选 `context_mode=native_resume`，thread id 绑定进待审批快照。目前**只在离线桩上验证**：真实 app-server 在严格和监督模式下都被拒，真实工具审批、中断和恢复（S3–S5）都没有运行。[契约与验证](docs/conversation-backend.md)
 
 **2026-10-21 后端进展**：会话与消息持久化、逐消息待审批调用、按调用 ID 定向执行、实际回复保存与离线恢复已实现。会话内配额持续累计，重复请求不重复启动，人工重试保留原调用输入。[接口与验收](docs/conversation-backend.md)。这是 Hub 本地历史恢复，原生上下文续接仍未接入；按用户要求前端交互留到最后。

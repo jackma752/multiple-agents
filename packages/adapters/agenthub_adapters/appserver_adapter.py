@@ -17,7 +17,11 @@ have not been run. Nothing here may be described as verified against Codex.
 
 Safety rules carried over from :mod:`agenthub_adapters.appserver`:
 
-* every server approval request is declined; nothing is ever accepted;
+* a tool approval request of this turn becomes a kernel card when the Worker
+  supplies a ``tool_gate``; only a user-approved card is answered ``accept``,
+  once. Without a gate, or for any other request, the answer is ``decline``;
+* real tool interception is still unverified (S3): the provider deciding to ask
+  is its behaviour, not something this adapter can force;
 * only this turn's ``turn/completed`` with a terminal status settles a call;
   timeout, disconnect or an unanswered ``turn/start`` stays unconfirmed, so the
   kernel keeps the quota slot and marks the call ``unknown``;
@@ -26,6 +30,8 @@ Safety rules carried over from :mod:`agenthub_adapters.appserver`:
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import os
 import threading
 import time
@@ -54,6 +60,7 @@ from agenthub_adapters.appserver import (
     AppServerSession,
     AppServerTimeout,
     ApprovalPolicy,
+    describe_approval,
     judge_turn_outcome,
     requires_explicit_decision,
     turn_status_of,
@@ -70,9 +77,27 @@ REAL_APPSERVER_BLOCK_REASON = (
 
 Emit = Callable[[str, dict], None]
 
+#: How often a pending card's status is re-read while the turn waits.
+CARD_POLL_SECONDS = 0.1
+
 
 def _ignore(_etype: str, _payload: dict) -> None:
     return None
+
+
+def _utc_naive() -> dt.datetime:
+    """Naive UTC, matching how the kernel stores ``expires_at``."""
+    return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+
+
+def _fit_decision(decision: str, offered: Any) -> str:
+    """Keep within the provider's ``availableDecisions``; never upgrade to accept."""
+    if not isinstance(offered, list) or decision in offered:
+        return decision
+    for fallback in ("decline", "cancel"):
+        if fallback in offered:
+            return fallback
+    return "decline"
 
 
 class CodexAppServerFactory:
@@ -142,6 +167,10 @@ class _Turn:
         self.terminal_seen = False
         self.foreign_events = 0
         self.declined: list[str] = []
+        # request id -> (ServerRequest, card id) while the user decides.
+        self.cards: dict[Any, tuple[Any, str]] = {}
+        self.card_ids: list[str] = []
+        self.last_card_poll = 0.0
 
     def ours(self, params: dict, *, turn_from_payload: bool = False) -> bool:
         """Exact binding: an event without this turn's id is never attributed."""
@@ -232,13 +261,22 @@ class AppServerCodexAdapter(AdapterContract):
 
     # -- start --------------------------------------------------------------
 
+    def supports_tool_approval(self) -> bool:
+        return True
+
     def start(self, invocation_id: str, snapshot: InvocationSnapshot, *,
               gate_token: Optional[str] = None) -> AdapterStartResult:
         return self.start_streaming(invocation_id, snapshot, gate_token=gate_token, emit=None)
 
     def start_streaming(self, invocation_id: str, snapshot: InvocationSnapshot, *,
                         gate_token: Optional[str] = None,
-                        emit: Optional[Emit] = None) -> AdapterStartResult:
+                        emit: Optional[Emit] = None,
+                        tool_gate: Any = None) -> AdapterStartResult:
+        """``tool_gate`` (kernel-owned) turns each tool request into a user card.
+
+        Without a gate every tool request is declined, as before: silence is
+        never an approval.
+        """
         emit = emit or _ignore
         if not gate_token:
             return AdapterStartResult("", ok=False, terminal=True,
@@ -258,14 +296,14 @@ class AppServerCodexAdapter(AdapterContract):
                                               detail="refused: provider thread already has a turn in this process")
                 self._threads_in_use.add(resume_id)
         try:
-            return self._run(invocation_id, snapshot, resume_id, emit)
+            return self._run(invocation_id, snapshot, resume_id, emit, tool_gate)
         finally:
             if resume_id:
                 with self._lock:
                     self._threads_in_use.discard(resume_id)
 
     def _run(self, invocation_id: str, snapshot: InvocationSnapshot,
-             resume_id: Optional[str], emit: Emit) -> AdapterStartResult:
+             resume_id: Optional[str], emit: Emit, gate: Any = None) -> AdapterStartResult:
         try:
             workdir = os.path.join(self.workdir_root, invocation_id)
             os.makedirs(workdir, exist_ok=True)
@@ -322,7 +360,7 @@ class AppServerCodexAdapter(AdapterContract):
             turn = _Turn(thread_id, turn_id)
             emit(STREAM_TURN_STARTED, {"thread_id": thread_id, "turn_id": turn_id,
                                        "resumed": bool(resume_id)})
-            timed_out = not self._pump(client, turn, emit)
+            timed_out = not self._pump(client, turn, emit, gate)
         except _Refused as exc:
             failure = f"refused before any turn: {exc}"
         except AppServerResponseError as exc:
@@ -336,6 +374,13 @@ class AppServerCodexAdapter(AdapterContract):
                 timed_out = isinstance(exc, AppServerTimeout)
         finally:
             local_exit_confirmed = self._close(invocation_id, transport)
+            if gate is not None and turn is not None and turn.cards:
+                # Unanswered requests died with the turn/transport: void them
+                # so a late click cannot "approve" something no one will run.
+                try:
+                    gate.void_pending()
+                except Exception:  # noqa: BLE001
+                    pass
 
         with self._lock:
             stop_requested = invocation_id in self._stop_requests
@@ -343,11 +388,13 @@ class AppServerCodexAdapter(AdapterContract):
         return self._settle(invocation_id, thread_id, turn, turn_requested, failure,
                             timed_out, stop_requested, local_exit_confirmed, resume_id, emit)
 
-    def _pump(self, client: AppServerClient, turn: _Turn, emit: Emit) -> bool:
+    def _pump(self, client: AppServerClient, turn: _Turn, emit: Emit, gate: Any = None) -> bool:
         """Follow this turn until its terminal event. False on timeout."""
         deadline = time.monotonic() + self.timeout_seconds
+        wall_deadline = _utc_naive() + dt.timedelta(seconds=self.timeout_seconds)
         while time.monotonic() < deadline:
-            self._decline_requests(client, turn, emit)
+            self._route_requests(client, turn, emit, gate, wall_deadline)
+            self._answer_decided(client, turn, gate)
             note = client.wait_for(lambda _n: True, timeout=0.05)
             if note is None:
                 if client.disconnected:
@@ -401,8 +448,70 @@ class AppServerCodexAdapter(AdapterContract):
                 turn.usage = dict(last)
         return False
 
-    def _decline_requests(self, client: AppServerClient, turn: _Turn, emit: Emit) -> None:
+    def _route_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
+                        gate: Any, wall_deadline: dt.datetime) -> None:
+        """New tool requests of THIS turn become cards; everything else is declined."""
         for request in client.server_requests():
+            if request.answered or request.id in turn.cards:
+                continue
+            params = request.params or {}
+            if (gate is not None and requires_explicit_decision(request.method)
+                    and turn.ours(params)):
+                try:
+                    card_id = gate.open(
+                        method=request.method, request_key=json.dumps(request.id),
+                        thread_id=turn.thread_id, turn_id=turn.turn_id,
+                        item_id=str(params.get("itemId") or ""),
+                        details={k: v for k, v in describe_approval(params).items()
+                                 if k not in ("itemId", "threadId", "turnId",
+                                              "availableDecisions")},
+                        available_decisions=params.get("availableDecisions"),
+                        deadline=wall_deadline,
+                    )
+                except Exception:  # noqa: BLE001
+                    card_id = None
+                if card_id:
+                    turn.cards[request.id] = (request, card_id)
+                    turn.card_ids.append(card_id)
+                    continue
+            self._decline_one(client, turn, emit, request)
+
+    def _answer_decided(self, client: AppServerClient, turn: _Turn, gate: Any) -> None:
+        """Send the user's decision for each card that left ``pending``."""
+        if gate is None or not turn.cards:
+            return
+        now_mono = time.monotonic()
+        if now_mono - turn.last_card_poll < CARD_POLL_SECONDS:
+            return
+        turn.last_card_poll = now_mono
+        for request_id, (request, card_id) in list(turn.cards.items()):
+            try:
+                status = gate.poll(card_id)
+            except Exception:  # noqa: BLE001
+                continue
+            if status == "pending":
+                continue
+            # Only an approved card becomes accept; declined/expired/void and
+            # anything unexpected are declined.
+            decision = _fit_decision("accept" if status == "approved" else "decline",
+                                     (request.params or {}).get("availableDecisions"))
+            ok = True
+            try:
+                client.answer_approval(request, decision)
+            except AppServerError:
+                ok = False
+            try:
+                gate.delivered(card_id, decision=decision, ok=ok)
+            except Exception:  # noqa: BLE001
+                pass
+            del turn.cards[request_id]
+
+    def _decline_one(self, client: AppServerClient, turn: _Turn, emit: Emit, request: Any) -> None:
+        self._decline_requests(client, turn, emit, only=request)
+
+    def _decline_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
+                          only: Any = None) -> None:
+        for request in ([only] if only is not None else client.server_requests()):
             if request.answered:
                 continue
             item_id = str((request.params or {}).get("itemId") or "")
@@ -463,6 +572,7 @@ class AppServerCodexAdapter(AdapterContract):
             "final_message": turn.final_message if turn else "",
             "usage": turn.usage if turn else {},
             "declined_requests": list(turn.declined) if turn else [],
+            "tool_approvals": list(turn.card_ids) if turn else [],
             "foreign_events": turn.foreign_events if turn else 0,
             "local_process_exit_confirmed": local_exit_confirmed,
             "verdict": verdict,

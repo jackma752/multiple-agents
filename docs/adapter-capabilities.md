@@ -7,7 +7,7 @@
 | 发消息 / 流式增量 | 离线桩已验证（内存桩与 stdio 子进程桩）；对真实 Codex，S2 只验证过一次单回合，**本适配器未对真实 Codex 运行** |
 | 恢复会话 | 只验证了协议调用：发出 `thread/resume`、只发新消息文本；桩不保存历史，**真实续接效果未验证（S5）** |
 | 取消 | `unsupported`（`turn/interrupt` 未验证，S4）；本地停止只关闭自有传输 |
-| 拦截工具 | 服务端审批请求一律回 `decline`；真实审批往返**未验证（S3）** |
+| 拦截工具 | 2026-10-22 起：有 Worker gate 时，每个工具审批请求生成一张用户审批卡，只有用户批准的那张卡回 `accept`，其余回 `decline`；没有 gate 时全部回 `decline`。只在离线桩上验证；provider 是否每次都先请求审批，以及真实审批往返，**未验证（S3）** |
 | 控制内部子 Agent / 限制目录 | 未验证；`sandbox` 显示为 `unknown`（`thread/start` 尚未传入 sandbox 参数） |
 | 准入 | 只有两种可信离线桩工厂按 simulation 放行；真实 app-server 在严格和监督模式下都被拒（`appserver_real_unverified`） |
 
