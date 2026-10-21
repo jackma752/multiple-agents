@@ -25,7 +25,13 @@ Safety rules carried over from :mod:`agenthub_adapters.appserver`:
 * only this turn's ``turn/completed`` with a terminal status settles a call;
   timeout, disconnect or an unanswered ``turn/start`` stays unconfirmed, so the
   kernel keeps the quota slot and marks the call ``unknown``;
-* cancellation is ``unsupported``; a local stop closes only our own transport.
+* ``interrupt_invocation`` sends ``turn/interrupt`` for a live turn only; an
+  accepted request proves nothing - the call settles ``canceled`` only when
+  this turn's ``turn/completed`` says ``interrupted``. Generic ``cancel`` (no
+  live turn, e.g. after a restart) stays ``unsupported``; a local stop closes
+  only our own transport. Real interrupt behaviour (S4) is unverified;
+* native child agents (``collabAgentToolCall`` / ``subAgentActivity`` items)
+  are observed and reported, never controlled or counted by this adapter.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ from typing import Any, Callable, Optional
 from agenthub.contracts import (
     NATIVE_RESUME,
     STREAM_DELTA,
+    STREAM_NATIVE_AGENT,
     STREAM_REQUEST_DECLINED,
     STREAM_TURN_ENDED,
     STREAM_TURN_STARTED,
@@ -52,7 +59,9 @@ from agenthub.contracts import (
 from agenthub_adapters.appserver import (
     DELTA_AGENT_MESSAGE,
     ITEM_COMPLETED,
+    ITEM_STARTED,
     TURN_COMPLETED,
+    TURN_INTERRUPT,
     AppServerClient,
     AppServerDisconnected,
     AppServerError,
@@ -79,6 +88,11 @@ Emit = Callable[[str, dict], None]
 
 #: How often a pending card's status is re-read while the turn waits.
 CARD_POLL_SECONDS = 0.1
+#: How long to wait for the server to acknowledge ``turn/interrupt``. The
+#: acknowledgement is not the stop; the terminal event is.
+INTERRUPT_REQUEST_TIMEOUT = 5.0
+#: Thread item types that mean a provider-native child agent (local schema).
+NATIVE_AGENT_ITEM_TYPES = frozenset({"collabAgentToolCall", "subAgentActivity"})
 
 
 def _ignore(_etype: str, _payload: dict) -> None:
@@ -171,6 +185,10 @@ class _Turn:
         self.cards: dict[Any, tuple[Any, str]] = {}
         self.card_ids: list[str] = []
         self.last_card_poll = 0.0
+        self.interrupt_requested = False
+        self.interrupt_accepted = False
+        # Provider-native child agents seen in this turn (ids/enums only).
+        self.native_agents: list[dict] = []
 
     def ours(self, params: dict, *, turn_from_payload: bool = False) -> bool:
         """Exact binding: an event without this turn's id is never attributed."""
@@ -208,6 +226,8 @@ class AppServerCodexAdapter(AdapterContract):
         self._start_count = 0
         self._lock = threading.Lock()
         self._active: dict[str, Any] = {}
+        # invocation id -> (AppServerClient, _Turn) while its turn is open.
+        self._live: dict[str, tuple[Any, Any]] = {}
         self._stop_requests: set[str] = set()
         self._threads_in_use: set[str] = set()
         os.makedirs(workdir_root, exist_ok=True)
@@ -223,7 +243,9 @@ class AppServerCodexAdapter(AdapterContract):
             "post_message": True,
             "stream": True,
             "resume_session": True,
-            "cancel": False,
+            "cancel": False,  # no stop without a live turn (e.g. after a restart)
+            "interrupt_live_turn": True,  # turn/interrupt; offline stub only
+            "observe_native_agents": True,  # collab/sub-agent items; observation, not control
             "stop_local_process": True,
             "limit_dir": "unknown",
             "intercept_tool": False,
@@ -358,6 +380,8 @@ class AppServerCodexAdapter(AdapterContract):
             if not turn_id:
                 raise AppServerError("turn/start returned no turn id")
             turn = _Turn(thread_id, turn_id)
+            with self._lock:
+                self._live[invocation_id] = (client, turn)
             emit(STREAM_TURN_STARTED, {"thread_id": thread_id, "turn_id": turn_id,
                                        "resumed": bool(resume_id)})
             timed_out = not self._pump(client, turn, emit, gate)
@@ -373,6 +397,8 @@ class AppServerCodexAdapter(AdapterContract):
                 failure = None
                 timed_out = isinstance(exc, AppServerTimeout)
         finally:
+            with self._lock:
+                self._live.pop(invocation_id, None)
             local_exit_confirmed = self._close(invocation_id, transport)
             if gate is not None and turn is not None and turn.cards:
                 # Unanswered requests died with the turn/transport: void them
@@ -418,6 +444,14 @@ class AppServerCodexAdapter(AdapterContract):
 
     def _observe(self, note: Any, turn: _Turn, emit: Emit) -> bool:
         params = note.params or {}
+        if note.method in (ITEM_STARTED, ITEM_COMPLETED):
+            item = params.get("item") or {}
+            if isinstance(item, dict) and item.get("type") in NATIVE_AGENT_ITEM_TYPES:
+                if turn.ours(params):
+                    self._observe_native(item, turn, emit)
+                else:
+                    turn.foreign_events += 1
+                return False
         if note.method == TURN_COMPLETED:
             if not turn.ours(params, turn_from_payload=True):
                 turn.foreign_events += 1
@@ -454,6 +488,55 @@ class AppServerCodexAdapter(AdapterContract):
             if isinstance(last, dict):
                 turn.usage = dict(last)
         return False
+
+    @staticmethod
+    def _observe_native(item: dict, turn: _Turn, emit: Emit) -> None:
+        """Record a provider-native child agent. Seeing it is not controlling it.
+
+        Field names follow the local schema capture (ThreadItem variants
+        ``collabAgentToolCall`` and ``subAgentActivity``). The collab call's
+        ``prompt`` is deliberately not copied.
+        """
+        kind = item.get("type")
+        if kind == "collabAgentToolCall":
+            children = [t for t in (item.get("receiverThreadIds") or []) if isinstance(t, str)]
+            entry = {"item_type": kind, "item_id": str(item.get("id") or ""),
+                     "tool": str(item.get("tool") or ""), "status": str(item.get("status") or ""),
+                     "child_thread_ids": children}
+        else:
+            child = item.get("agentThreadId")
+            entry = {"item_type": kind, "item_id": str(item.get("id") or ""), "tool": "",
+                     "status": str(item.get("kind") or ""),
+                     "child_thread_ids": [child] if isinstance(child, str) else []}
+        turn.native_agents.append(entry)
+        emit(STREAM_NATIVE_AGENT, entry)
+
+    def interrupt_invocation(self, invocation_id: str) -> dict[str, Any]:
+        """Send ``turn/interrupt`` for a turn this process is driving.
+
+        An accepted request is not a stop. The running ``start_streaming``
+        keeps following the turn; only its ``turn/completed`` with a terminal
+        status settles the call (``interrupted`` -> ``outcome="canceled"``).
+        """
+        with self._lock:
+            live = self._live.get(invocation_id)
+        if live is None:
+            return {"interrupt_requested": False, "interrupt_accepted": False,
+                    "remote_stop_confirmed": False, "reason": "no_live_turn"}
+        client, turn = live
+        turn.interrupt_requested = True
+        try:
+            client.request(TURN_INTERRUPT, {"threadId": turn.thread_id, "turnId": turn.turn_id},
+                           timeout=INTERRUPT_REQUEST_TIMEOUT)
+        except AppServerResponseError as exc:
+            return {"interrupt_requested": True, "interrupt_accepted": False,
+                    "remote_stop_confirmed": False, "reason": f"server_refused:{exc.code}"}
+        except AppServerError as exc:
+            return {"interrupt_requested": True, "interrupt_accepted": False,
+                    "remote_stop_confirmed": False, "reason": type(exc).__name__}
+        turn.interrupt_accepted = True
+        return {"interrupt_requested": True, "interrupt_accepted": True,
+                "remote_stop_confirmed": False, "reason": "awaiting_terminal_event"}
 
     @staticmethod
     def _has_unrouted(client: AppServerClient, turn: _Turn) -> bool:
@@ -563,13 +646,23 @@ class AppServerCodexAdapter(AdapterContract):
                 "local transport stop requested; remote turn and native children not confirmed stopped")
         elif turn is not None and turn.terminal_seen:
             judged, terminal, detail = judge_turn_outcome(
-                terminal_notification=TURN_COMPLETED, turn_status=turn.turn_status)
+                terminal_notification=TURN_COMPLETED, turn_status=turn.turn_status,
+                interrupt_requested=turn.interrupt_requested,
+                interrupt_accepted=turn.interrupt_accepted)
             verdict = {"finished": FINISHED, "failed": FAILED,
                        "cancelled": CANCELLED}.get(judged, RUNNING)
         else:
             judged, terminal, detail = judge_turn_outcome(
-                transport_closed=not timed_out, timed_out=timed_out)
+                transport_closed=not timed_out, timed_out=timed_out,
+                interrupt_requested=bool(turn and turn.interrupt_requested),
+                interrupt_accepted=bool(turn and turn.interrupt_accepted))
             verdict = RUNNING
+            if turn is not None and turn.interrupt_requested and "interrupt" not in detail:
+                # judge_turn_outcome reports the timeout first; the record must
+                # still say an interrupt was asked for and never confirmed.
+                detail += ("; interrupt "
+                           f"{'accepted by the server' if turn.interrupt_accepted else 'requested'}"
+                           " but no terminal turn status")
         if verdict == FINISHED and not local_exit_confirmed:
             detail += "; local app-server exit unconfirmed"
 
@@ -584,6 +677,9 @@ class AppServerCodexAdapter(AdapterContract):
             "usage": turn.usage if turn else {},
             "declined_requests": list(turn.declined) if turn else [],
             "tool_approvals": list(turn.card_ids) if turn else [],
+            "interrupt_requested": bool(turn and turn.interrupt_requested),
+            "interrupt_accepted": bool(turn and turn.interrupt_accepted),
+            "native_agents": list(turn.native_agents) if turn else [],
             "foreign_events": turn.foreign_events if turn else 0,
             "local_process_exit_confirmed": local_exit_confirmed,
             "verdict": verdict,
@@ -599,7 +695,11 @@ class AppServerCodexAdapter(AdapterContract):
                                      "terminal": terminal})
         if verdict == FINISHED:
             return AdapterStartResult(thread_id, ok=True, terminal=True, detail=detail[:200])
-        if verdict in (FAILED, CANCELLED):
+        if verdict == CANCELLED:
+            # The provider itself reported the turn interrupted: a confirmed stop.
+            return AdapterStartResult(thread_id, ok=False, terminal=True, detail=detail[:200],
+                                      outcome="canceled")
+        if verdict == FAILED:
             return AdapterStartResult(thread_id, ok=False, terminal=True, detail=detail[:200])
         return AdapterStartResult(thread_id, ok=False, terminal=False, detail=detail[:200])
 

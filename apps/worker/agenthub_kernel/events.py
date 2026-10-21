@@ -38,7 +38,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.orm.attributes import get_history
 
 from agenthub.contracts import (
-    STREAM_DELTA, STREAM_REQUEST_DECLINED, STREAM_TURN_ENDED, STREAM_TURN_STARTED,
+    STREAM_DELTA, STREAM_NATIVE_AGENT, STREAM_REQUEST_DECLINED, STREAM_TURN_ENDED,
+    STREAM_TURN_STARTED,
 )
 
 EVENT_TABLES = ("conversation_events", "conversation_event_cursors")
@@ -47,14 +48,14 @@ EVENT_TABLES = ("conversation_events", "conversation_event_cursors")
 # ``start`` is omitted: it duplicates invocation.status -> starting.
 TREE_EVENT_TYPES = {
     "tree_stop", "tree_pause", "tree_resume", "local_stop_requested",
-    "unknown_settled", "retry_requested", "policy_updated",
+    "unknown_settled", "retry_requested", "policy_updated", "interrupt_requested",
 }
 # Only these payload keys are copied; free-text fields (stop evidence, policy
 # blobs, errors) never enter the event stream.
 TREE_PAYLOAD_KEYS = (
     "invocation_id", "superseded_invocation_id", "retry_invocation_id",
     "retry_approval_id", "outcome", "version", "revoked_approvals", "repeat",
-    "requested_by", "actor",
+    "requested_by", "actor", "accepted",
 )
 
 
@@ -279,8 +280,12 @@ STREAM_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
     STREAM_DELTA: {"item_id": (str,)},
     STREAM_REQUEST_DECLINED: {"method": (str,), "item_id": (str,), "decision": (str,)},
     STREAM_TURN_ENDED: {"turn_status": (str,), "verdict": (str,), "terminal": (bool,)},
+    # Ids and enum values only; a collab call's prompt never enters the stream.
+    STREAM_NATIVE_AGENT: {"item_type": (str,), "tool": (str,), "item_id": (str,),
+                          "status": (str,), "child_thread_ids": (list,)},
 }
 MAX_ID_CHARS = 200
+MAX_LIST_ITEMS = 16
 MAX_DELTA_CHARS = 4000
 _TEXT = "_text"  # buffered chunk text; never part of a stored payload
 
@@ -334,6 +339,8 @@ class StreamSink:
         clean: dict[str, Any] = {}
         for key, kinds in fields.items():
             value = payload.get(key)
+            if isinstance(value, list):
+                value = [v for v in value if isinstance(v, str) and len(v) <= MAX_ID_CHARS][:MAX_LIST_ITEMS]
             if isinstance(value, kinds) and not (isinstance(value, str) and len(value) > MAX_ID_CHARS):
                 clean[key] = value
         piece = payload.get("text")

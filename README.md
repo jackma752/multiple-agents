@@ -6,6 +6,8 @@
 
 ## 当前状态：P3（严格模式 + 可选用户监督模式）
 
+**2026-10-22 中断与原生子 Agent 观测**：可以对活动回合发送 `turn/interrupt`，只有 provider 报告的终态才算确认停止，否则保留名额；能观测到原生子 Agent，但不能控制；页面加入“中断本轮”。只在离线桩上验证，真实中断（S4）未验证。[说明](docs/conversation-backend.md)
+
 **2026-10-22 会话页面 `/chat`**：新的零构建会话页面，用 fetch 流式读取 SSE，支持待审批调用、后台执行、逐步输出、工具审批卡、刷新恢复和续接 thread。已在离线桩上用浏览器走通完整闭环。启动命令：`tools\demo\serve.py --port 8170 --appserver-stub demo --data-dir var\demo-chat`。[说明与实测](docs/chat-frontend.md)
 
 **2026-10-22 异步执行与工具审批**：`POST /run` 先同步认领，再在后台执行并立即返回 202；进度通过会话 SSE 推送。provider 的每个工具请求生成一张用户审批卡，绑定 request/thread/turn/item；只有用户批准的那张卡回 `accept`，拒绝、过期或请求已结束都不构成授权。只在离线桩上验证，真实工具审批（S3）未验证。[契约与验证](docs/conversation-backend.md)

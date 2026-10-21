@@ -1,4 +1,20 @@
-# 当前交接：会话页面 `/chat` 演示闭环（2026-10-22）
+# 当前交接：中断与原生子 Agent 观测（2026-10-22 续）
+
+- 分支 `feat/interrupt-stop`，目录 `E:\plug\agent-hub\.worktrees\interrupt-stop`，基于 `feat/chat-frontend` 的 `0a25e84`。提交号以 `git log` 为准。
+- 完成：
+  - `POST /api/invocations/{id}/interrupt` 向活动回合发送 `turn/interrupt`，只有收到终态才结算为 `canceled`；
+  - 整树停止对在途调用改走中断路径，不会重复结算；
+  - 按本机 schema 观测原生子 Agent（`stream.native_agent_observed`）；
+  - 页面加入“中断本轮”及三种状态、原生子 Agent 提示和用量显示。
+
+  说明见 [会话后端契约](conversation-backend.md) 末节和 [会话页面](chat-frontend.md)。
+- 验证：新测试 8 项，连续 3 次通过；浏览器在 demo 桩上完成“工具卡等待时中断 → 已取消、卡片作废 → 刷新后恢复”；全量测试结果见提交说明。没有真实模型回合。
+- 待你决定：观测到原生子 Agent 之后，是否改变结算规则（例如保留名额或标记为需裁决）。目前只观测。
+- 未完成：真实 S3–S5 仍需逐项授权；监督模式、unknown 裁决和配额设置的页面入口；第二个真实 Agent。两项 DLL 问题仍 OPEN。
+
+---
+
+# 历史交接：会话页面 `/chat` 演示闭环（2026-10-22）
 
 - 分支 `feat/chat-frontend`，目录 `E:\plug\agent-hub\.worktrees\chat-frontend`，基于 `feat/async-tool-approval` 的 `4ba8099`。提交号以 `git log` 为准。
 - 完成：零构建页面 `/chat`，用 fetch 流式读取 SSE，接上会话调用、异步 run 和工具审批卡；新增 `demo` 离线桩场景；`serve.py --appserver-stub demo --data-dir ...`。说明和浏览器实测结果见 [会话页面](chat-frontend.md)。

@@ -227,3 +227,40 @@ Windows `.venv` 实际输出：
 另外按新规则改写了一项旧测试：没人回应的工具请求会过期并回复 `decline`；新增一项测试，确认没有 gate 时仍然全部回 `decline`。
 
 Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 秒）；全量 **618 passed in 51.76s**。
+
+## 中断与原生子 Agent 观测（2026-10-22 续）
+
+分支 `feat/interrupt-stop`。全程离线；真实中断（S4）未验证。
+
+### 中断一个调用
+
+| 接口 | 说明 |
+|---|---|
+| POST `/api/invocations/{id}/interrupt` | 仅限 user，权限归属规则与 `/run` 相同。只对 `starting/running` 的调用有效，否则返回 409 `not_active`。这**不是**停止整棵任务树，会话之后仍可以继续发消息 |
+
+- 适配器向本进程正在驱动的回合发送 `turn/interrupt`（`threadId` + `turnId`）。服务端接受请求不等于已经停止。
+- 调用继续由后台执行跟随。只有当**该回合自己的** `turn/completed` 报告 `interrupted` 时，`AdapterStartResult.outcome="canceled"` 才会生效，调用结算为 `canceled` 并释放名额。如果回合恰好自己正常结束或失败，则按实际结果结算。
+- 返回值逐项说明当前知道的情况：`interrupt_requested`、`interrupt_accepted`（服务端已应答）、`terminal_received`（已收到终态并结算）、`remote_stop_confirmed`、`quota_retained`、`status`。最多等待 5 秒；没有收到终态时如实返回，调用之后会按超时等证据结算为 `unknown`，并保留名额，**绝不会**记为 `canceled`。
+- 每次请求都会写一条审计事件 `interrupt_requested`（`invocation_id, actor, accepted`），并在会话事件流里作为 `task.interrupt_requested` 推送。
+- 整树停止（`/api/tasks/{id}/stop`）遇到本进程在途的调用时，走同一条中断路径，由后台执行负责结算，不会重复结算；没有收到终态时，按原有规则记为 `unknown` 并保留名额。
+- 中断时还在等待决定的工具卡会被置为 `void`（`not_sent`），之后不会再回答它们。
+- 没有活动回合时（例如进程重启后），通用取消仍返回 `unsupported`。
+
+### 原生子 Agent 观测
+
+依据本机的 schema 记录（`var/codex-schema/ServerNotification.json`）：`ThreadItem` 中的 `collabAgentToolCall` 带有 `tool`（`spawnAgent` 等）、`receiverThreadIds`、`status`；`subAgentActivity` 带有 `agentThreadId`、`kind`。
+
+- 本回合中出现这两类 item 时（`item/started` 或 `item/completed`），会发出 `stream.native_agent_observed`，载荷为 `item_type, tool, item_id, status, child_thread_ids`（最多 16 个 ID），并写入执行记录的 `native_agents`。collab 调用的 `prompt` 不会被复制。
+- **只观测、不控制**：这些子 Agent 不在 Hub 的审批与配额之内，结算规则也没有因此改变。观测到之后是否要改变结算规则（例如保留名额），需要另行决定。
+
+### 验证（本节）
+
+新增 `tests/http/test_interrupt_and_native.py`，共 8 项：
+- 中断被终态确认后结算为 canceled、释放名额，事件顺序正确，发出的 `turn/interrupt` 参数正确；
+- 中断已被接受但没有终态时，不声称任何结果，最终为 unknown 并保留名额，原因文字写明中断未被确认；
+- 鉴权：401 / 403 / 他人会话 404，已结束的调用返回 409；没有活动回合时适配器返回 `no_live_turn`；
+- 整树停止：有终态时确认 1 个且只结算一次；没有终态时确认 0 个、保留名额；
+- 原生 `spawnAgent` 被观测到，事件和 chunk 中都没有 prompt 文本，调用照常为 succeeded；
+- 等待工具卡期间中断：卡片被置为 void、不发送任何回答，部分输出作为回复保存。
+
+另外修复了离线桩的一个问题：等待卡片期间收到中断后，桩不再继续阻塞读取。

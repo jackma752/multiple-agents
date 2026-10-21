@@ -26,7 +26,9 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``framing-lsp``      speaks LSP framing instead of line-delimited JSON
 ``stream``           several deltas, a foreign-turn delta, final item with text
 ``demo``             paced deltas, then a command approval request; the closing
-                     text reports the answer it received (for the chat page)
+                     text reports the answer it received (for the chat page).
+                     An interrupt while it waits ends the turn ``interrupted``
+``native-spawn``     a native ``spawnAgent`` collab call (child thread), then OK
 ===================  ==========================================================
 
 :class:`InMemoryStubFactory` and :class:`StdioStubFactory` are the two trusted
@@ -77,6 +79,7 @@ SCENARIOS = (
     "framing-lsp",
     "stream",
     "demo",
+    "native-spawn",
 )
 
 #: Deltas of the ``stream`` scenario; the final item text is their join.
@@ -122,6 +125,7 @@ class ScriptedAppServer:
         self.turn_status = "inProgress"
         self._interrupt_accepted = False
         self._interrupt_declined = False
+        self._interrupted = threading.Event()  # demo: interrupt seen while waiting
         #: Handshake enforcement (offline stand-in for the real server's protocol
         #: order): a thread/turn request before `initialized` is refused on the wire.
         self.initialize_seen = False
@@ -250,6 +254,10 @@ class ScriptedAppServer:
                 self.reply(request_id, {})
                 self._finish_turn(TURN_STATUS_INTERRUPTED)
                 return
+            if self.scenario == "demo":
+                self.reply(request_id, {})
+                self._interrupted.set()  # _drive_demo ends the turn interrupted
+                return
             self.reply(request_id, {})
             self._interrupt_declined = True
             return
@@ -309,6 +317,19 @@ class ScriptedAppServer:
             return
         if scenario == "demo":
             self._drive_demo()
+            return
+        if scenario == "native-spawn":
+            spawn = {"id": "item-collab-1", "type": "collabAgentToolCall", "tool": "spawnAgent",
+                     "senderThreadId": self.thread_id, "receiverThreadIds": ["child-thread-1"],
+                     "agentsStates": {}, "status": "inProgress",
+                     "prompt": "child prompt text that must not be copied"}
+            self.notify(ITEM_STARTED, {"item": spawn, "threadId": self.thread_id, "turnId": self.turn_id})
+            self.notify(ITEM_COMPLETED, {"item": {**spawn, "status": "completed"},
+                                         "threadId": self.thread_id, "turnId": self.turn_id})
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                              "threadId": self.thread_id, "delta": "OK"})
+            self._emit_item("item-1", "agentMessage")
+            self._finish_turn(TURN_STATUS_COMPLETED)
             return
         if scenario == "stream":
             item = {"id": "item-msg", "type": "agentMessage"}
@@ -399,10 +420,17 @@ class ScriptedAppServer:
         })
         decision = None
         end = time.monotonic() + 600.0  # the client's card expiry decides first
-        while decision is None and time.monotonic() < end and not self._stop.is_set():
+        while (decision is None and time.monotonic() < end and not self._stop.is_set()
+               and not self._interrupted.is_set()):
             answer = self._wait_for_response(request_id, timeout=0.2)
             if answer is not None:
                 decision = (answer.get("result") or {}).get("decision") or "error"
+        if self._interrupted.is_set() and decision is None:
+            # The request is abandoned; the turn ends interrupted with what was said.
+            self.notify(ITEM_COMPLETED, {"item": {**item, "text": text},
+                                         "threadId": self.thread_id, "turnId": self.turn_id})
+            self._finish_turn(TURN_STATUS_INTERRUPTED)
+            return
         self._answered_approvals.append({"id": request_id, "decision": decision})
         if decision == "accept":
             cmd = {"id": "item-cmd-1", "type": "commandExecution"}
@@ -428,6 +456,8 @@ class ScriptedAppServer:
             if message.get("id") == request_id and ("result" in message or "error" in message):
                 return message
             self.handle(message)
+            if self._interrupted.is_set():
+                return None  # don't block on another read once interrupted
         return None
 
     # -- introspection for tests -------------------------------------------

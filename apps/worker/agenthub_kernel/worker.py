@@ -196,6 +196,66 @@ class Worker:
         }
 
     # ------------------------------------------------------------------ #
+    # Interrupt (one call, provider-confirmed)
+    # ------------------------------------------------------------------ #
+
+    #: How long interrupt() waits for the provider's terminal event before
+    #: answering "requested, not yet confirmed". The call keeps running either way.
+    INTERRUPT_WAIT_SECONDS = 5.0
+
+    def interrupt(self, invocation_id: str, *, requested_by: str = "local-user",
+                  wait_seconds: Optional[float] = None) -> dict[str, Any]:
+        """Ask the provider to interrupt one running call; never settle it here.
+
+        Unlike a tree stop this does not block the conversation, and unlike a
+        local stop it does not mark the call unknown: the background execution
+        keeps following the turn and settles it from evidence - ``canceled``
+        only when the provider reports the turn ``interrupted``. The answer
+        separates "requested", "accepted by the server" and "terminal received".
+        """
+        with self.db.session() as session:
+            inv = session.get(InvocationRow, invocation_id)
+            if inv is None:
+                raise QuotaError("no_invocation", "invocation not found")
+            if inv.status not in {"starting", "running"}:
+                raise QuotaError("not_active", "invocation is not running")
+            root_task_id = session.get(TaskRow, inv.task_id).root_task_id
+        fn = getattr(self.adapter, "interrupt_invocation", None)
+        if fn is None:
+            result: dict[str, Any] = {"interrupt_requested": False, "interrupt_accepted": False,
+                                      "reason": "unsupported"}
+        else:
+            try:
+                result = fn(invocation_id)
+            except Exception as exc:  # noqa: BLE001
+                result = {"interrupt_requested": False, "interrupt_accepted": False,
+                          "reason": type(exc).__name__}
+        with self.db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            svc = PolicyService(session)
+            session.add(EventRow(root_task_id=root_task_id, seq=svc._next_seq(root_task_id),
+                                 type="interrupt_requested",
+                                 payload={"invocation_id": invocation_id, "actor": requested_by,
+                                          "accepted": bool(result.get("interrupt_accepted"))}))
+        with self._pool_lock:
+            future = self._inflight.get(invocation_id)
+        if future is not None and result.get("interrupt_accepted"):
+            wait([future], timeout=self.INTERRUPT_WAIT_SECONDS if wait_seconds is None else wait_seconds)
+        with self.db.session() as session:
+            status = session.get(InvocationRow, invocation_id).status
+        settled = status in {"canceled", "succeeded", "failed", "timed_out"}
+        return {
+            "invocation_id": invocation_id,
+            "interrupt_requested": bool(result.get("interrupt_requested")),
+            "interrupt_accepted": bool(result.get("interrupt_accepted")),
+            "terminal_received": settled,
+            "remote_stop_confirmed": settled,
+            "status": status,
+            "quota_retained": not settled,
+            "reason": result.get("reason", ""),
+        }
+
+    # ------------------------------------------------------------------ #
     # Stop / cancel
     # ------------------------------------------------------------------ #
 
@@ -243,6 +303,35 @@ class Worker:
         an unconfirmed stop marks the call ``unknown`` and KEEPS the slot until a
         human resolves it.
         """
+        with self._pool_lock:
+            inflight = self._inflight.get(invocation_id)
+        if inflight is not None and callable(getattr(self.adapter, "interrupt_invocation", None)):
+            # A live turn this process drives: ask the provider to interrupt and
+            # let the background execution settle it from the turn's own
+            # terminal event, so nothing is settled twice.
+            try:
+                asked = self.adapter.interrupt_invocation(invocation_id)
+            except Exception as exc:  # noqa: BLE001
+                asked = {"interrupt_accepted": False, "reason": type(exc).__name__}
+            if asked.get("interrupt_accepted"):
+                wait([inflight], timeout=self.INTERRUPT_WAIT_SECONDS)
+            with self.db.session() as session:
+                inv = session.get(InvocationRow, invocation_id)
+                status = inv.status if inv is not None else ""
+                if status in {"canceled", "succeeded", "failed", "timed_out"}:
+                    return {"ok": True, "reason": "terminal_event", "outcome": status,
+                            "remote_stop_confirmed": True}
+                if inv is not None and status in {"starting", "running"}:
+                    PolicyService(session).mark_unknown(
+                        invocation_id,
+                        reason=("stop requested; interrupt "
+                                f"{'accepted' if asked.get('interrupt_accepted') else 'not accepted'} "
+                                "but no terminal turn event yet: remote work may still be "
+                                "running, so the quota slot is deliberately kept"),
+                    )
+            return {"ok": False, "reason": asked.get("reason") or "interrupt_unconfirmed",
+                    "remote_stop_confirmed": False}
+
         cancel_fn = getattr(self.adapter, "cancel_invocation", None)
         if cancel_fn is None:
             # An adapter that cannot cancel must say so, not pretend.
@@ -790,8 +879,11 @@ class Worker:
                 if getattr(start, "terminal", False):
                     svc.release(invocation_id, InvocationStatus.SUCCEEDED)
             elif getattr(start, "terminal", True):
-                # Definitive failure: settle it and free the slot once.
-                svc.release(invocation_id, InvocationStatus.FAILED)
+                # Definitive end: settle it and free the slot once. A provider-
+                # reported interrupt is a confirmed cancel, not a failure.
+                svc.release(invocation_id, InvocationStatus.CANCELED
+                            if getattr(start, "outcome", None) == "canceled"
+                            else InvocationStatus.FAILED)
             else:
                 # NOT confirmed (timeout, or a cancellation the adapter cannot
                 # perform). The remote work may still be running, so the slot is

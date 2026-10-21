@@ -274,3 +274,27 @@ def register_conversations(app, db) -> None:
         with db.session() as session:
             result["status"] = session.get(InvocationRow, invocation_id).status
         return JSONResponse(status_code=code, content=result)
+
+    @app.post("/api/invocations/{invocation_id}/interrupt")
+    def interrupt_invocation(invocation_id: str, principal: Principal = Depends(authenticate)):
+        """Ask the provider to interrupt this running call (not a tree stop).
+
+        200 always describes what is known: ``interrupt_requested``,
+        ``interrupt_accepted`` (server acknowledged) and ``terminal_received``
+        (the turn's own terminal event settled the call). Without the last one
+        nothing is claimed stopped and the quota slot stays held.
+        """
+        require_approver(principal)
+        with db.session() as session:
+            if session.get(InvocationRow, invocation_id) is None:
+                raise HTTPException(404, detail="invocation not found")
+            link = session.scalar(select(ChatMessageRow).where(
+                ChatMessageRow.invocation_id == invocation_id, ChatMessageRow.role == "user",
+            ))
+            if link:
+                require_conversation(session, link.conversation_id, principal)
+        try:
+            return app.state.worker.interrupt(invocation_id, requested_by=principal.identity)
+        except QuotaError as exc:
+            raise HTTPException(404 if exc.code == "no_invocation" else 409,
+                                detail={"code": exc.code, "message": exc.message})

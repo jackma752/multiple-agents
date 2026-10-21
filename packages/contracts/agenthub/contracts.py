@@ -335,6 +335,10 @@ class AdapterStartResult:
     ok: bool = True
     detail: str = ""
     terminal: bool = True
+    #: Optional precision for a terminal, not-ok result. ``"canceled"`` means
+    #: the provider itself reported the turn interrupted (a confirmed stop);
+    #: anything else settles as ``failed``. Ignored unless ``terminal``.
+    outcome: Optional[str] = None
 
 
 class AdapterContract:
@@ -402,6 +406,11 @@ class AdapterContract:
     #   Only ``approved`` may be answered with ``accept``, once, for that exact
     #   request; every other outcome is answered ``decline`` (or not at all
     #   when the request is gone). Approving a run never approves its tools.
+    # * ``interrupt_invocation(invocation_id) -> dict`` - ask the provider to
+    #   interrupt a turn this process is driving. Returns at least
+    #   ``interrupt_requested`` / ``interrupt_accepted``. It NEVER settles or
+    #   claims a stop: only the turn's own terminal event (seen by the running
+    #   ``start_streaming``) confirms it, reported as ``outcome="canceled"``.
 
 
 #: Provisional, adapter-reported stream events. They are display hints only:
@@ -413,8 +422,12 @@ STREAM_TURN_STARTED = "stream.turn_started"
 STREAM_DELTA = "stream.delta"
 STREAM_REQUEST_DECLINED = "stream.request_declined"
 STREAM_TURN_ENDED = "stream.turn_ended"
+#: A provider-native child agent was seen (collab tool call / sub-agent item).
+#: Observation only: such children run outside Hub approval and quota.
+STREAM_NATIVE_AGENT = "stream.native_agent_observed"
 STREAM_EVENT_TYPES = frozenset({
     STREAM_TURN_STARTED, STREAM_DELTA, STREAM_REQUEST_DECLINED, STREAM_TURN_ENDED,
+    STREAM_NATIVE_AGENT,
 })
 
 #: Lifecycle of one tool approval card (one provider request). ``pending`` is

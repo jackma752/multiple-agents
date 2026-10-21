@@ -190,7 +190,8 @@ function call(id) {
   if (!c) {
     c = { id, status: null, approval_id: null, approval_status: null, agent_id: null,
           context_mode: "independent", resume_thread_id: null, stream: "", gap: false,
-          turn: null, ended: null, declined: [], cards: [], stop: null };
+          turn: null, ended: null, declined: [], cards: [], stop: null,
+          interrupt: null, native: [] };
     S.calls.set(id, c);
   }
   return c;
@@ -272,6 +273,16 @@ function apply(ev) {
     case "stream.request_declined":
       call(p.invocation_id).declined.push(p.method);
       break;
+    case "stream.native_agent_observed":
+      call(p.invocation_id).native.push(p);
+      break;
+    case "task.interrupt_requested": {
+      // The durable record of an interrupt request (from any client).
+      const c = call(p.invocation_id);
+      c.interrupt = { ...(c.interrupt || {}), interrupt_requested: true,
+                      interrupt_accepted: (c.interrupt && c.interrupt.interrupt_accepted) || p.accepted };
+      break;
+    }
     case "tool_approval.requested": {
       const c = call(p.invocation_id);
       if (!c.cards.includes(p.tool_approval_id)) c.cards.push(p.tool_approval_id);
@@ -410,6 +421,16 @@ function stopLocal(c) {
   });
 }
 
+function interruptCall(c) {
+  return guarded("interrupt:" + c.id, async () => {
+    c.interrupt = { interrupt_requested: true, pending: true };
+    render();
+    const res = await api("POST", `/api/invocations/${enc(c.id)}/interrupt`);
+    c.interrupt = res;
+    patch(c, { status: res.status });
+  });
+}
+
 function answerCard(card, decision) {
   return guarded("card:" + card.tool_approval_id, async () => {
     const body = decision === "approve" ? { card_hash: card.card_hash } : undefined;
@@ -469,7 +490,7 @@ async function select(cid) {
 const CALL_LABEL = {
   awaiting_approval: ["待你同意", "warn"], queued: ["已同意，待执行", "info"],
   starting: ["执行中", "info"], running: ["执行中", "info"], succeeded: ["已完成", "ok"],
-  failed: ["失败", "bad"], canceled: ["已取消", "bad"], timed_out: ["超时", "bad"],
+  failed: ["失败", "bad"], canceled: ["已取消（provider 确认已中断）", "warn"], timed_out: ["超时", "bad"],
   unknown: ["状态未知：名额保留，需人工裁决", "bad"], rejected: ["已拒绝", ""],
   invalid: ["已失效", ""], draft: ["草稿", ""],
 };
@@ -531,7 +552,10 @@ function renderCall(c) {
   } else if (c.status === "queued" && c.approval_status === "approved") {
     actions.push(el("button", { class: "primary", disabled: busyRun, onclick: () => runApproved(c) }, "执行"));
   } else if (c.status === "starting" || c.status === "running") {
-    actions.push(el("button", { class: "danger", disabled: S.busy.has("stop:" + c.id),
+    actions.push(el("button", { disabled: S.busy.has("interrupt:" + c.id) || !c.turn,
+                                title: c.turn ? "请求 provider 中断本轮；以 provider 报告的终态为准" : "模型回合尚未开始",
+                                onclick: () => interruptCall(c) }, "中断本轮"),
+                 el("button", { class: "danger", disabled: S.busy.has("stop:" + c.id),
                                 onclick: () => stopLocal(c) }, "停止本地进程"));
   }
   const notes = [];
@@ -543,6 +567,19 @@ function renderCall(c) {
                           (c.ended.terminal ? "" : "（未确认终态，名额保留）"));
   if (c.declined.length) notes.push(`已自动拒绝 ${c.declined.length} 个非本回合或无法登记的请求`);
   if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，名额保留`);
+  if (c.interrupt) {
+    const i = c.interrupt;
+    const settled = ["canceled", "succeeded", "failed", "timed_out"].includes(c.status);
+    notes.push(i.pending ? "已请求中断，等待服务端答复…"
+      : settled ? `已请求中断 → 已收到终态：${(CALL_LABEL[c.status] || [c.status])[0]}`
+      : i.interrupt_accepted ? "已请求中断，服务端已接受；尚未收到终态，远端停止未确认，名额保留"
+      : `已请求中断，服务端未接受（${i.reason || "原因未知"}）；名额保留`);
+  }
+  for (const n of c.native) {
+    notes.push(`检测到原生子 Agent：${n.tool || n.item_type}${n.status ? "（" + n.status + "）" : ""}` +
+               (n.child_thread_ids && n.child_thread_ids.length ? ` → thread ${n.child_thread_ids.map(short).join(", ")}` : "") +
+               "。它不在 Hub 的审批与配额内，Hub 只能观测、不能控制。");
+  }
   return el("div", { class: "call" },
     el("div", { class: "row" },
       chip(label, kind),
@@ -554,6 +591,16 @@ function renderCall(c) {
 }
 
 function short(id) { return id ? String(id).slice(0, 8) : "?"; }
+
+/* Provider token counts as reported (key names differ between transports). */
+function usageText(usage) {
+  if (!usage || typeof usage !== "object") return "";
+  const pick = (...keys) => keys.map((k) => usage[k]).find((v) => typeof v === "number");
+  const input = pick("inputTokens", "input_tokens");
+  const output = pick("outputTokens", "output_tokens");
+  if (input === undefined && output === undefined) return "";
+  return `输入 ${input ?? "?"} / 输出 ${output ?? "?"}`;
+}
 
 function render() {
   // A timer, not requestAnimationFrame: rAF is paused while the page is not
@@ -601,7 +648,8 @@ function renderNow() {
       const meta = m.result || {};
       tl.append(el("div", { class: "msg assistant" },
         el("div", { class: "who" }, (m.invocation && m.invocation.agent_id) || "Agent",
-           meta.native_session ? chip("thread " + short(meta.native_session.thread_id), "") : null),
+           meta.native_session ? chip("thread " + short(meta.native_session.thread_id), "") : null,
+           usageText(meta.usage) ? chip("用量 " + usageText(meta.usage), "") : null),
         el("div", { class: "bubble" }, m.text)));
     }
   }
