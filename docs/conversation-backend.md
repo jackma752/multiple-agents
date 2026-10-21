@@ -209,6 +209,7 @@ Windows `.venv` 实际输出：
 - **鉴权**：只有 user 身份可以读取或回应卡；agent/worker 令牌返回 403，未登录返回 401，他人会话的卡返回 404。
 - **敏感内容**：`details` 可能包含用户或模型的内容，按聊天内容管理，只通过上面的卡接口返回。事件只带 ID 和状态：`tool_approval.requested`（`tool_approval_id, invocation_id, method, thread_id, turn_id, item_id, status, expires_at`）、`tool_approval.status`（`from, to, decided_by`）、`tool_approval.delivery`（`delivery, decision_sent`）。
 - **没有 gate 时**（直接调用适配器）：行为和以前一样，全部回 `decline`。
+- **顺序**（2026-10-22 页面实测后补充）：建卡前，适配器先处理已排队的通知，再由 gate 调用 StreamSink 的 flush，因此卡片之前产生的输出一定排在 `tool_approval.requested` 之前。
 
 ### 限制
 

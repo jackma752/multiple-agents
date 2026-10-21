@@ -140,15 +140,25 @@ class ToolGate:
     request is never left waiting for an approval no one can give.
     """
 
-    def __init__(self, db: Any, invocation_id: str, *, ttl_seconds: float) -> None:
+    def __init__(self, db: Any, invocation_id: str, *, ttl_seconds: float,
+                 before_open: Optional[Any] = None) -> None:
         self.db = db
         self.invocation_id = invocation_id
         self.ttl_seconds = ttl_seconds
+        # Called before a card is recorded. The Worker passes the stream sink's
+        # flush, so output that led up to a request precedes its card in the
+        # event stream instead of sitting in a buffer behind it.
+        self.before_open = before_open
         self.opened: list[str] = []
 
     def open(self, *, method: str, request_key: str, thread_id: str, turn_id: str,
              item_id: str, details: Any, available_decisions: Any,
              deadline: Optional[dt.datetime] = None) -> Optional[str]:
+        if self.before_open is not None:
+            try:
+                self.before_open()
+            except Exception:  # noqa: BLE001 - ordering aid only; never blocks the card
+                pass
         expires = now() + dt.timedelta(seconds=self.ttl_seconds)
         if deadline is not None:
             expires = min(expires, deadline)

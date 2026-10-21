@@ -393,6 +393,13 @@ class AppServerCodexAdapter(AdapterContract):
         deadline = time.monotonic() + self.timeout_seconds
         wall_deadline = _utc_naive() + dt.timedelta(seconds=self.timeout_seconds)
         while time.monotonic() < deadline:
+            if gate is not None and self._has_unrouted(client, turn):
+                # Requests and notifications are queued separately by the
+                # reader; apply what arrived before the request so its output
+                # precedes the card in the event stream.
+                for queued in client.notifications():
+                    if self._observe(queued, turn, emit):
+                        return True
             self._route_requests(client, turn, emit, gate, wall_deadline)
             self._answer_decided(client, turn, gate)
             note = client.wait_for(lambda _n: True, timeout=0.05)
@@ -447,6 +454,10 @@ class AppServerCodexAdapter(AdapterContract):
             if isinstance(last, dict):
                 turn.usage = dict(last)
         return False
+
+    @staticmethod
+    def _has_unrouted(client: AppServerClient, turn: _Turn) -> bool:
+        return any(not r.answered and r.id not in turn.cards for r in client.server_requests())
 
     def _route_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
                         gate: Any, wall_deadline: dt.datetime) -> None:

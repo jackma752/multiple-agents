@@ -44,6 +44,7 @@ from agenthub_rt.auth import Principal, authenticate
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
+CHAT_HTML = os.path.join(STATIC_DIR, "chat.html")
 
 
 def _task_view(db: Database, root_task_id: str) -> dict[str, Any]:
@@ -302,5 +303,19 @@ def register_ui(app: FastAPI, db: Database) -> None:
         try:
             with open(INDEX_HTML, "r", encoding="utf-8") as fh:
                 return HTMLResponse(fh.read())
+        except OSError:
+            raise HTTPException(status_code=500, detail="UI asset missing")
+
+    @app.get("/chat", response_class=HTMLResponse)
+    def chat() -> HTMLResponse:
+        """Serve the conversation page (zero-build, like ``/ui``).
+
+        Static and secret-free: every API call it makes carries the user's
+        bearer token, entered in the page. It follows the conversation event
+        stream with ``fetch`` (EventSource cannot send Authorization).
+        """
+        try:
+            with open(CHAT_HTML, "r", encoding="utf-8") as fh:
+                return HTMLResponse(fh.read(), headers={"Cache-Control": "no-store"})
         except OSError:
             raise HTTPException(status_code=500, detail="UI asset missing")

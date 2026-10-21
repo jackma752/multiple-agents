@@ -713,7 +713,8 @@ class Worker:
         # only a user can answer (approving the run approved no tools).
         start_streaming = getattr(self.adapter, "start_streaming", None)
         sink = StreamSink(self.db, invocation_id) if callable(start_streaming) else None
-        gate = (ToolGate(self.db, invocation_id, ttl_seconds=self.tool_approval_ttl)
+        gate = (ToolGate(self.db, invocation_id, ttl_seconds=self.tool_approval_ttl,
+                         before_open=sink.flush)
                 if sink is not None and self._supports_tool_approval() else None)
         try:
             if sink is not None:

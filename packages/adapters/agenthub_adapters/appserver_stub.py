@@ -25,6 +25,8 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``out-of-order``     notifications before the response to the request that caused them
 ``framing-lsp``      speaks LSP framing instead of line-delimited JSON
 ``stream``           several deltas, a foreign-turn delta, final item with text
+``demo``             paced deltas, then a command approval request; the closing
+                     text reports the answer it received (for the chat page)
 ===================  ==========================================================
 
 :class:`InMemoryStubFactory` and :class:`StdioStubFactory` are the two trusted
@@ -74,10 +76,23 @@ SCENARIOS = (
     "turn-failed",
     "framing-lsp",
     "stream",
+    "demo",
 )
 
 #: Deltas of the ``stream`` scenario; the final item text is their join.
 STREAM_PIECES = ("Hel", "lo, ", "流式", " world")
+
+#: ``demo``: what is streamed before the tool request, the command it asks to
+#: run, and the closing text per answer. Fixed text - the stub has no model and
+#: never looks at the user's input.
+DEMO_INTRO = ("（离线桩，无模型）", "我先看一下", "工作目录里", "有哪些文件。\n")
+DEMO_COMMAND = "dir C:\\stub"
+DEMO_OUTCOME = {
+    "accept": ("命令已获批准，", "桩模拟执行完毕。"),
+    "decline": ("你拒绝了这个命令，", "我不会执行它，", "本轮到此结束。"),
+}
+DEMO_OTHER = ("没有收到批准，", "命令未执行。")
+DEMO_DELAY = 0.25
 
 #: The approval request this stub exercises. The others in APPROVAL_METHODS behave
 #: identically on the wire, so one is enough to pin the client's behaviour.
@@ -292,6 +307,9 @@ class ScriptedAppServer:
         if scenario == "turn-failed":
             self._finish_turn(TURN_STATUS_FAILED)
             return
+        if scenario == "demo":
+            self._drive_demo()
+            return
         if scenario == "stream":
             item = {"id": "item-msg", "type": "agentMessage"}
             self.notify(ITEM_STARTED, {"item": item, "threadId": self.thread_id,
@@ -359,6 +377,44 @@ class ScriptedAppServer:
                 self._finish_turn(TURN_STATUS_INTERRUPTED)
             return
 
+    def _say(self, item_id: str, pieces: tuple[str, ...]) -> str:
+        for piece in pieces:
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": item_id,
+                                              "threadId": self.thread_id, "delta": piece})
+            time.sleep(DEMO_DELAY)
+        return "".join(pieces)
+
+    def _drive_demo(self) -> None:
+        """Paced output, one command request, and a reply that matches the answer."""
+        item = {"id": "item-msg", "type": "agentMessage"}
+        self.notify(ITEM_STARTED, {"item": item, "threadId": self.thread_id,
+                                   "turnId": self.turn_id})
+        text = self._say("item-msg", DEMO_INTRO)
+        request_id = self.request(APPROVAL_REQUEST, {
+            "itemId": "item-cmd-1", "startedAtMs": 1,
+            "threadId": self.thread_id, "turnId": self.turn_id,
+            "command": DEMO_COMMAND, "cwd": "C:\\stub",
+            "reason": "列出工作目录（离线桩演示）",
+            "availableDecisions": ["accept", "decline", "cancel"],
+        })
+        decision = None
+        end = time.monotonic() + 600.0  # the client's card expiry decides first
+        while decision is None and time.monotonic() < end and not self._stop.is_set():
+            answer = self._wait_for_response(request_id, timeout=0.2)
+            if answer is not None:
+                decision = (answer.get("result") or {}).get("decision") or "error"
+        self._answered_approvals.append({"id": request_id, "decision": decision})
+        if decision == "accept":
+            cmd = {"id": "item-cmd-1", "type": "commandExecution"}
+            self.notify(ITEM_STARTED, {"item": cmd, "threadId": self.thread_id,
+                                       "turnId": self.turn_id})
+            self.notify(ITEM_COMPLETED, {"item": cmd, "threadId": self.thread_id,
+                                         "turnId": self.turn_id})
+        text += self._say("item-msg", DEMO_OUTCOME.get(decision or "", DEMO_OTHER))
+        self.notify(ITEM_COMPLETED, {"item": {**item, "text": text},
+                                     "threadId": self.thread_id, "turnId": self.turn_id})
+        self._finish_turn(TURN_STATUS_COMPLETED)
+
     def _wait_for_response(self, request_id: Any, *, timeout: float) -> Optional[dict]:
         """Read client messages for up to ``timeout`` seconds, looking for one answer."""
         end = time.monotonic() + timeout
@@ -366,6 +422,7 @@ class ScriptedAppServer:
             try:
                 message, _framing = read_message(self._in, self.framing)
             except Exception:  # noqa: BLE001 - EOF from the client
+                self._stop.set()  # the client is gone; stop instead of spinning
                 return None
             self.received.append(message)
             if message.get("id") == request_id and ("result" in message or "error" in message):

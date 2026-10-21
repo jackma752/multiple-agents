@@ -1,4 +1,14 @@
-# 当前交接：异步执行与工具审批往返（2026-10-22）
+# 当前交接：会话页面 `/chat` 演示闭环（2026-10-22）
+
+- 分支 `feat/chat-frontend`，目录 `E:\plug\agent-hub\.worktrees\chat-frontend`，基于 `feat/async-tool-approval` 的 `4ba8099`。提交号以 `git log` 为准。
+- 完成：零构建页面 `/chat`，用 fetch 流式读取 SSE，接上会话调用、异步 run 和工具审批卡；新增 `demo` 离线桩场景；`serve.py --appserver-stub demo --data-dir ...`。说明和浏览器实测结果见 [会话页面](chat-frontend.md)。
+- 后端修复：建卡前先处理已排队的通知并 flush StreamSink，保证卡片之前的输出在事件流里排在卡片前面。
+- 验证：浏览器在离线桩上走完 发消息 → 批准 → 逐步输出 → 工具卡 → 拒绝（另有一次过期）→ 终态 → 刷新恢复 → 新一轮；全量测试结果见本轮提交说明。没有真实模型回合，没有动 8080。
+- 未做：监督模式、unknown 裁决和配额设置的页面入口；重绘目前是整体重建；真实 S3–S5 仍需逐项授权；两项 DLL 问题仍 OPEN。
+
+---
+
+# 历史交接：异步执行与工具审批往返（2026-10-22）
 
 - 分支 `feat/async-tool-approval`，目录 `E:\plug\agent-hub\.worktrees\async-tool-approval`，基于 `feat/chat-workbench` 的 `c38d510`。本轮由 Agent 在本会话中直接提交（MinGit 副本可正常写入），提交号以 `git log` 为准。
 - 完成：`/run` 改为同步认领、后台执行（202，`?wait=true` 保留等待模式）；工具审批卡 `tool_approvals`，每个请求一张，绑定 request/thread/turn/item 并带 `card_hash`，只有用户批准的卡回 `accept`，拒绝、过期、void 都不构成授权。说明见 [会话后端契约](conversation-backend.md) 末节。

@@ -6,6 +6,8 @@
 
 ## 当前状态：P3（严格模式 + 可选用户监督模式）
 
+**2026-10-22 会话页面 `/chat`**：新的零构建会话页面，用 fetch 流式读取 SSE，支持待审批调用、后台执行、逐步输出、工具审批卡、刷新恢复和续接 thread。已在离线桩上用浏览器走通完整闭环。启动命令：`tools\demo\serve.py --port 8170 --appserver-stub demo --data-dir var\demo-chat`。[说明与实测](docs/chat-frontend.md)
+
 **2026-10-22 异步执行与工具审批**：`POST /run` 先同步认领，再在后台执行并立即返回 202；进度通过会话 SSE 推送。provider 的每个工具请求生成一张用户审批卡，绑定 request/thread/turn/item；只有用户批准的那张卡回 `accept`，拒绝、过期或请求已结束都不构成授权。只在离线桩上验证，真实工具审批（S3）未验证。[契约与验证](docs/conversation-backend.md)
 
 **2026-10-21 续（app-server 增量与原生续接）**：新增可选传输 `AGENT_HUB_CODEX_TRANSPORT=app-server`，默认仍为 exec。增量文本写入专用表 `stream_chunks`，持久化事件只保存 ID、序号和状态，SSE 在服务端鉴权后组装文本。会话可选 `context_mode=native_resume`，thread id 绑定进待审批快照。目前**只在离线桩上验证**：真实 app-server 在严格和监督模式下都被拒，真实工具审批、中断和恢复（S3–S5）都没有运行。[契约与验证](docs/conversation-backend.md)

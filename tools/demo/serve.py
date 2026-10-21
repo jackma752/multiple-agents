@@ -14,6 +14,8 @@ Usage (from the repo root, using the project venv):
 
     .\.venv\Scripts\python.exe tools\demo\serve.py
     .\.venv\Scripts\python.exe tools\demo\serve.py --host 127.0.0.1 --port 8080 --reload
+    # chat page demo against the offline app-server stub, separate data:
+    .\.venv\Scripts\python.exe tools\demo\serve.py --port 8170 --appserver-stub demo --data-dir var\demo-chat
 
 Then open the interactive API page at http://127.0.0.1:8080/docs
 """
@@ -79,13 +81,33 @@ def main() -> None:
              "records and capabilities; real launches require explicit per-call "
              "supervised consent while strict controls remain unverified",
     )
+    parser.add_argument(
+        "--appserver-stub",
+        metavar="SCENARIO",
+        default=None,
+        help="serve Codex over the app-server transport against the bundled "
+             "OFFLINE stub with this scenario (e.g. 'demo'); no Codex, no model",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="runtime data directory (database, run dirs); default var/",
+    )
     args = parser.parse_args()
+
+    # Environment first: config resolves DATA_DIR when it is imported.
+    if args.data_dir:
+        os.environ["AGENT_HUB_DATA_DIR"] = os.path.abspath(args.data_dir)
+    if args.appserver_stub:
+        os.environ["AGENT_HUB_ADAPTER"] = "codex"
+        os.environ["AGENT_HUB_CODEX_TRANSPORT"] = "app-server"
+        os.environ["AGENT_HUB_APPSERVER_STUB"] = args.appserver_stub
 
     import uvicorn
 
     from agenthub_kernel import config
 
-    if args.adapter:
+    if args.adapter and not args.appserver_stub:
         os.environ["AGENT_HUB_ADAPTER"] = args.adapter
 
     from agenthub_kernel.adapters import adapter_kind
@@ -93,17 +115,22 @@ def main() -> None:
     kind = adapter_kind()
 
     print("=" * 72)
-    if kind == "codex":
+    if args.appserver_stub:
+        print("Agent Hub - app-server transport against the OFFLINE STUB (no Codex, no model)")
+    elif kind == "codex":
         print("Agent Hub - Codex adapter (strict blocked; explicit supervised approval available)")
     else:
         print("Agent Hub - Mock API (no real Agent is contacted)")
     print(f"  adapter  : {kind}")
     print(f"  API page : http://{args.host}:{args.port}/docs")
     print(f"  console  : http://{args.host}:{args.port}/ui")
+    print(f"  chat     : http://{args.host}:{args.port}/chat")
     print(f"  OpenAPI  : http://{args.host}:{args.port}/openapi.json")
     print(f"  Database : {config.default_db_url()}")
     print(f"  Data dir : {config.DATA_DIR}")
-    if kind == "codex":
+    if args.appserver_stub:
+        print(f"  stub     : tools/demo/stub_appserver.py --scenario {args.appserver_stub}")
+    elif kind == "codex":
         s = config.codex_settings()
         print(f"  codex    : {s['codex_path']}")
         print(f"  version  : {s['version']}")
