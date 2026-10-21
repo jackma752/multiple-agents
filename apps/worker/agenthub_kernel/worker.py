@@ -19,6 +19,7 @@ from sqlalchemy import select, text
 from agenthub.contracts import AdapterContract, InvocationStatus, execution_admission
 from agenthub_kernel.db import Database, EventRow, InvocationRow, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
+from agenthub_kernel.conversations import capture_reply, restore_replies
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
 MOCK_RUNNING_STATE = "running"
@@ -335,6 +336,7 @@ class Worker:
             )
 
         with self.db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             result = PolicyService(session).reconcile_unknown(
                 invocation_id,
                 action=action,
@@ -425,13 +427,18 @@ class Worker:
                 continue
 
             with self.db.session() as session:
+                session.execute(text("BEGIN IMMEDIATE"))
                 svc = PolicyService(session)
                 inv = session.get(InvocationRow, invocation_id)
+                if inv is None or inv.status not in {"starting", "running"}:
+                    continue  # A concurrent stop/settlement takes precedence.
                 if inv is not None:
                     inv.adapter_invocation_id = inv.adapter_invocation_id or adapter_id
                 svc.release(invocation_id, term)
+                capture_reply(session, self.adapter, invocation_id)
             summary["settled"].append({"invocation_id": invocation_id, "status": term.value})
 
+        summary["replies_restored"] = restore_replies(self.db, self.adapter)
         return summary
 
     def drain_once(self, max_calls: int = 100) -> list[dict[str, Any]]:
@@ -455,7 +462,21 @@ class Worker:
             seen.add(outcome["invocation_id"])
         return outcomes
 
-    def _process_one(self, exclude: Optional[set[str]] = None) -> Optional[dict[str, Any]]:
+    def run_one(self, invocation_id: str) -> dict[str, Any]:
+        """Execute only this approved call; never fall through to another task."""
+        if self._stopped:
+            return {"invocation_id": invocation_id, "ok": False,
+                    "code": "worker_stopped", "launch_attempted": False}
+        outcome = self._process_one(target_id=invocation_id)
+        if outcome is None:
+            return {"invocation_id": invocation_id, "ok": False,
+                    "code": "not_ready", "launch_attempted": False}
+        outcome.setdefault("adapter_start_attempted", False)
+        return outcome
+
+    def _process_one(
+        self, exclude: Optional[set[str]] = None, *, target_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
         """Find one consumable invocation, commit the gate, then start the adapter.
 
         Ordering is deliberate and load-bearing (AGENT_HUB_PLAN §4.1): the
@@ -471,8 +492,9 @@ class Worker:
 
         # ---- Phase 1: atomic consume + reservation, committed first ----
         with self.db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             svc = PolicyService(session)
-            inv = self._pick_ready(session, exclude=exclude)
+            inv = self._pick_ready(session, exclude=exclude, target_id=target_id)
             if inv is None:
                 return None
             invocation_id = inv.id
@@ -502,6 +524,7 @@ class Worker:
                     "ok": False,
                     "code": exc.code,
                     "error": exc.message,
+                    "launch_attempted": False,
                 }
             snapshot_data = plan["snapshot"]
             gate_token = plan.get("gate_token", "")
@@ -534,6 +557,7 @@ class Worker:
                 "terminal": False,
                 "adapter_invocation_id": "",
                 "error": reason,
+                "adapter_start_attempted": True,
             }
 
         # ---- Phase 3: record the outcome ----
@@ -553,6 +577,7 @@ class Worker:
                 # A concurrent stop/reaper already recorded uncertainty.
                 return {"invocation_id": invocation_id, "ok": False,
                         "terminal": False, "adapter_invocation_id": inv.adapter_invocation_id,
+                        "adapter_start_attempted": True,
                         "error": inv.error}
             if start.ok:
                 # Set started_at first (durable evidence the call reached the
@@ -575,16 +600,19 @@ class Worker:
                     invocation_id,
                     reason=f"adapter outcome unconfirmed: {start.detail}",
                 )
+            capture_reply(session, self.adapter, invocation_id)
 
         return {
             "invocation_id": invocation_id,
             "ok": start.ok,
             "terminal": getattr(start, "terminal", True),
             "adapter_invocation_id": start.adapter_invocation_id,
+            "adapter_start_attempted": True,
         }
 
     def _pick_ready(
-        self, session: Any, exclude: Optional[set[str]] = None
+        self, session: Any, exclude: Optional[set[str]] = None,
+        *, target_id: Optional[str] = None,
     ) -> Optional[InvocationRow]:
         """Pick a QUEUED invocation with an approved approval.
 
@@ -605,9 +633,10 @@ class Worker:
                 # puts it in. Anything terminal, or not yet approved, is skipped.
                 InvocationRow.status == InvocationStatus.QUEUED.value,
             )
-            .order_by(InvocationRow.created_at)
-            .limit(50)
         )
+        if target_id is not None:
+            stmt = stmt.where(InvocationRow.id == target_id)
+        stmt = stmt.order_by(InvocationRow.created_at).limit(50)
         skip = exclude or set()
         for candidate in session.scalars(stmt).all():
             if candidate.id not in skip:

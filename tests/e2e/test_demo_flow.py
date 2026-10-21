@@ -67,7 +67,8 @@ def _propose_delegation(client, parent_task_id, goal) -> dict:
 def test_p2_demo_flow(client):
     """User chat -> dispatch two sub-agents -> approve -> hit the cap -> stop."""
     # ---- 1. user chat -------------------------------------------------
-    r = client.post("/api/conversations/c1/messages", json={"text": "build a login page"})
+    cid = client.post("/api/conversations", headers=USER).json()["conversation_id"]
+    r = client.post(f"/api/conversations/{cid}/messages", json={"text": "build a login page"}, headers=USER)
     assert r.status_code == 200 and r.json()["acked"] is True
 
     # ---- 2. main agent call, approved by the user ---------------------

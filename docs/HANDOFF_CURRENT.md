@@ -1,4 +1,18 @@
-# 当前交接：用户监督边界与手动停止（2026-10-20）
+# 当前交接：会话后端（2026-10-21）
+
+- 当前分支 `feat/chat-workbench`，目录 `E:\plug\agent-hub\.worktrees\chat-workbench`，基于 `812b215`。虽然分支名含 workbench，本轮只改后端；用户明确要求前端最后做。
+- 先读本文件、仓库 `AGENTS.md`、`E:\plug\AGENT_HUB_PLAN.md` 和 [会话后端契约](conversation-backend.md)。确认 `git status` 和 `git log -1` 后再继续，不要回主目录的旧分支开发。
+- 完成：持久化会话/消息、幂等创建待审批调用、同会话共享累计配额、目标调用执行、终态实际回复存储、恢复补回、人工重试的原输入和历史关联。
+- 核心文件：`agenthub/chat.py`（契约）、API 与 kernel 的 `conversations.py`、`db.py`、`service.py`、`worker.py`。验收集中在 `tests/http/test_conversations.py`。
+- 最终验证：`E:\plug\agent-hub\.venv\Scripts\python.exe -m pytest -o addopts='' -q` → **550 passed in 30.00s**，全离线。本轮新增 37 项会话后端测试。
+- 恢复的是本地历史，**不代表 provider 原生 session resume**。没有自动批准、自动重试或历史上下文转发。unknown 保留名额；现有真实控制边界不变。
+- 本轮不修改前端、不追加真实模型调用、不操作凭据、不重启用户 8080 服务、不合并或推送。`appserver-s3-probe` 原有暂存修改未纳入此分支，两项 DLL OPEN。
+- 下一步继续后端：持久化有序事件及读取游标、断线补读/SSE，再将 app-server 事件桥接为可选传输并接入原生续接。S3/S4/S5 真实回合仍逐项另行授权；不要重跑 S1/S2。第二个真实 Agent 待后续。
+- 换模型接手时先核对本地工作目录及提交；不要让两个 Agent 同时写本目录。先执行受影响测试，再根据失败决定是否查 GitHub 参考代码。
+
+---
+
+# 历史交接：用户监督边界与手动停止（2026-10-20）
 
 - 分支 `feat/manual-control-boundaries`，worktree `E:\plug\agent-hub\.worktrees\manual-control-boundaries`，基于 S2 `023d0ab`。
 - 按用户要求保留严格模式，新增逐调用显式同意的监督模式；默认关闭 Hub 子任务协作扩展；手动停止只作用于自有本地入口进程，未知远端状态保留配额。

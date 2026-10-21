@@ -55,7 +55,7 @@ def _pending_approval(client, inv_id) -> str:
 
 
 def test_post_conversations_returns_id(client):
-    r = client.post("/api/conversations")
+    r = client.post("/api/conversations", headers=USER)
     assert r.status_code == 200, r.text
     assert r.json()["conversation_id"].startswith("conv-")
 
@@ -88,7 +88,8 @@ def test_post_invocations_raises_a_pending_approval(client):
 
 
 def test_message_still_works(client):
-    r = client.post("/api/conversations/c1/messages", json={"text": "hi"})
+    cid = client.post("/api/conversations", headers=USER).json()["conversation_id"]
+    r = client.post(f"/api/conversations/{cid}/messages", json={"text": "hi"}, headers=USER)
     assert r.status_code == 200
     assert r.json()["acked"] is True
 

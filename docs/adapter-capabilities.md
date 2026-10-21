@@ -1,5 +1,7 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-21 本地历史补充**：Hub 新增会话/消息持久化与已确认终态回复的恢复投影，适配器仍使用现有 `last_result` 记录。离线覆盖 Codex 捕获解析；没有新增真实调用，不升级 `resume_session`、取消、拦截或派生控制能力。[后端契约](conversation-backend.md)
+
 **2026-10-20 用户监督边界**：exec 适配器新增 `stop_local_process`，只终止当前 API 进程持有句柄的本地入口进程；以本地 Python 子进程验证，不等于 Codex 远端取消。`cancel=false`、原生派生不受控、只读拒写未验证保持不变。严格准入仍关闭；用户可逐调用显式接受监督边界。Hub 协作扩展默认关闭，不是原生 Agent 的隔离插件。[接口与限制](manual-control-boundaries.md)
 
 规范（`AGENT_HUB_PLAN.md` §2）：**每个适配器先提交能力表，未验证的能力显示"未知"，不显示"支持"。**

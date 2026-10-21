@@ -4,7 +4,9 @@ Exposes the endpoints from AGENT_HUB_PLAN §5 (a pragmatic subset):
 
     POST   /api/agents                     register an agent
     GET    /api/agents                     list agents
-    POST   /api/conversations/{id}/messages  save a message, produce a draft
+    POST   /api/conversations/{id}/messages  save a message without a call
+    POST   /api/conversations/{id}/invocations  save a message and pending approval
+    POST   /api/invocations/{id}/run        execute only the named approved call
     POST   /api/tasks/{id}/delegations     propose a subtask (does not execute)
     POST   /api/invocations                create an awaiting-approval invocation
     POST   /api/approvals/{id}/approve     user approves
@@ -72,10 +74,6 @@ class PolicyIn(BaseModel):
     collaboration_enabled: StrictBool = False
 
 
-class MessageIn(BaseModel):
-    text: str
-
-
 class ReconcileIn(BaseModel):
     """User adjudication of an ``unknown`` invocation."""
 
@@ -120,6 +118,9 @@ def create_app(
     from agenthub_rt.ui import register_ui
 
     register_ui(app, db)
+    from agenthub_rt.conversations import register_conversations
+
+    register_conversations(app, db)
 
     @app.get("/api/agents")
     def list_agents() -> list[dict[str, Any]]:
@@ -128,18 +129,6 @@ def create_app(
     @app.post("/api/agents")
     def register_agent(agent: AgentIn) -> dict[str, Any]:
         return agent.model_dump()
-
-    @app.post("/api/conversations")
-    def create_conversation() -> dict[str, Any]:
-        """Create a chat. P2 keeps conversations in-memory/stateless."""
-        import uuid
-
-        return {"conversation_id": f"conv-{uuid.uuid4().hex[:12]}"}
-
-    @app.post("/api/conversations/{cid}/messages")
-    def post_message(cid: str, msg: MessageIn) -> dict[str, Any]:
-        # In P2 this just echoes; real wiring (message -> draft) is P3.
-        return {"conversation_id": cid, "acked": True, "text": msg.text}
 
     @app.post("/api/tasks/{task_id}/delegations")
     def propose_delegation(task_id: str, delegation: DelegationIn) -> dict[str, Any]:

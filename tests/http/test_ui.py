@@ -182,8 +182,8 @@ def test_simulated_ui_session_end_to_end(client):
     assert client.get("/api/dev/mock-activity", headers=token).status_code == 200
 
     # --- new conversation + send a message -----------------------------
-    conv = client.post("/api/conversations", json={}).json()["conversation_id"]
-    client.post(f"/api/conversations/{conv}/messages", json={"text": "build a login page"})
+    conv = client.post("/api/conversations", json={}, headers=token).json()["conversation_id"]
+    client.post(f"/api/conversations/{conv}/messages", json={"text": "build a login page"}, headers=token)
 
     created = client.post(
         "/api/invocations",

@@ -24,6 +24,7 @@ from agenthub.contracts import (
 )
 from agenthub_kernel.db import (
     ApprovalRow,
+    ChatMessageRow,
     EventRow,
     InvocationRow,
     PolicyVersionRow,
@@ -200,7 +201,7 @@ class PolicyService:
             payload_hash=inv.payload_hash,
             user_id=user_id,
             status=ApprovalStatus.PENDING.value,
-            policy_version=self.default_policy.version,
+            policy_version=int(inv.snapshot.get("policy_version") or self.default_policy.version),
             expires_at=now() + dt.timedelta(seconds=ttl_seconds),
         )
         self.session.add(appr)
@@ -1076,16 +1077,11 @@ class PolicyService:
             policy_version = int(
                 (root.policy_version if root is not None else task.policy_version) or 1
             )
-            snapshot = InvocationSnapshot(
-                agent_id=task.agent_id,
-                task_input=task.goal,
-                parent_task_id=str(task.parent_task_id) if task.parent_task_id else None,
-                depth=task.depth,
-                permissions=dict(inv.snapshot.get("permissions") or {}),
-                resources=dict(inv.snapshot.get("resources") or {}),
-                policy_version=policy_version,
-                execution_mode=inv.snapshot.get("execution_mode", "strict"),
-            )
+            # A task can now contain several independent messages/agents.
+            # Retrying task.goal would resend the FIRST message, not this call.
+            snapshot = InvocationSnapshot(**{
+                **inv.snapshot, "policy_version": policy_version,
+            })
             new_inv = InvocationRow(
                 id=new_id("inv"),
                 task_id=task.id,
@@ -1108,6 +1104,16 @@ class PolicyService:
                 ),
             )
             self.session.add(appr)
+            source_message = self.session.scalar(select(ChatMessageRow).where(
+                ChatMessageRow.invocation_id == invocation_id,
+                ChatMessageRow.role == "user",
+            ))
+            if source_message is not None:
+                self.session.add(ChatMessageRow(
+                    conversation_id=source_message.conversation_id, role="user",
+                    text=snapshot.task_input, invocation_id=new_inv.id,
+                ))
+            self.sync_task_status(task.id)
             self.session.add(
                 EventRow(
                     root_task_id=root_task_id,

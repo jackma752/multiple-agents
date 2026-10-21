@@ -5,9 +5,10 @@ kept intentionally small and mirrors AGENT_HUB_PLAN §5's table list:
 ``agents, projects, conversations, tasks, invocations, approvals,
 policy_versions, quota_reservations, events, audit_logs``.
 
-Only the tables needed for the approval & quota kernel are implemented here:
+The approval & quota kernel and persistent local chat use these tables:
 ``tasks`` (the root-task tree), ``invocations``, ``approvals``,
-``policy_versions``, ``events``, ``quota_reservations``.
+``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
+``conversations`` and ``chat_messages``.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
 )
 from sqlalchemy.engine import Engine
@@ -98,6 +100,36 @@ class ApprovalRow(Base):
     approved_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
     consumed_at = Column(DateTime, nullable=True)
+
+
+class ConversationRow(Base):
+    __tablename__ = "conversations"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(String, index=True, nullable=False)
+    title = Column(String, nullable=False, default="")
+    root_task_id = Column(ForeignKey("tasks.id"), nullable=True, unique=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ChatMessageRow(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "client_request_id"),
+        UniqueConstraint("invocation_id", "role"),
+        # Prevent deleted high IDs from ever being reused as pagination cursors.
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    role = Column(String, nullable=False)
+    text = Column(Text, nullable=False)
+    invocation_id = Column(ForeignKey("invocations.id"), index=True, nullable=True)
+    client_request_id = Column(String, nullable=True)
+    request_hash = Column(String, nullable=True)
+    result_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
 class PolicyVersionRow(Base):

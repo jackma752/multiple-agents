@@ -78,7 +78,7 @@ P3 在计划 §6 中的范围是"两个 Agent 的消息、流式结果、审批�
 | 项 | 现状 |
 |---|---|
 | **网页 SSE / 断线恢复** | 事件面板是轮询读取；计划 §6 的"SSE 断线恢复"未实现 |
-| **会话恢复** | 已拿到 `thread_id`，且 CLI **有** `codex exec resume [SESSION_ID]` / `--last`（自描述确认）；**我们的适配器没有接入**，恢复行为未验证 |
+| **会话恢复** | Hub 本地消息与实际回复历史已持久化，重启读取和离线恢复已测，见 [会话后端](conversation-backend.md)。原生 `thread_id` 上下文续接仍未接入，真实恢复行为未验证 |
 | **第二个真实 Agent** | 只有 Codex；CC / WorkBuddy / DSH / Ink Stone 未接入，P3 阶段目标未达成 |
 | 自动协作开关与任务分解 | P4 |
 | worktree 与差异产物 | P5 |
