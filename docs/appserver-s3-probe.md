@@ -151,6 +151,8 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s3.py --mode s
 
 另外，按新规则改写了一项旧测试：审批前就说出 `DECLINED` 现在只记入文本格式，结论由协议链决定。连同 S1/S2/S3、identity、adapters 和卫生测试共 **385 passed**；修订测试连续 3 次通过。
 
+修订后的第一次真实运行（`58e4a7a`）为 FAIL `command_scope_mismatch`：审批请求之前出现了一个 `command` 与固定命令不完全一致的命令 item，拒绝链仍未被触发。见 [第二次实录](appserver-s3-2026-10-22-run2.md)。
+
 ## 官方代码依据与后续
 
 按用户要求先核对 GitHub 上的官方实现，再与本机已有 schema 对照，没有引入第三方源码：
