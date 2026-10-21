@@ -51,7 +51,23 @@ PASS 必须同时有：
 
 真实模式会消耗账号用量，**需要单独批准这一次 S3 主回合及上述命令请求范围**。探针绝不批准该命令执行；但原生工具/子 Agent 事前控制仍未验证，不能保证命令在通知之前没有运行。如控制失效，标记文件可能被写入；其它原生行为也不能靠提示词或禁用参数保证阻止。发现异常只结束本次诊断，不重试、不换模型、不放宽权限。
 
-保持 S1 固定身份与预检：`bin\9614f1d9b40d9c4f\codex.exe`，SHA-256 `e98c516f1c8935789aabe9122ee7e05ec4c3efd1ba6acf179242e031c495b99e`，大小 `334121776`；argv `app-server --stdio --disable multi_agent`。文件不符则启动 0，不自动选择新文件。参数保留但不声称阻断原生派生。
+~~保持 S1 固定身份~~（2026-10-22 更新）：S1/S2 的 `bin\9614f1d9b40d9c4f\codex.exe`（SHA-256 `e98c516f…`，大小 `334121776`）已于 2026-10-19 被 Codex 自动更新删除，按原预检会启动 0 次。S1/S2 的工具和记录保留原身份不变。S3 改为单独固定当前安装的文件（`appserver_s3.py` 中的 `S3_CODEX_IDENTITY`）：
+
+- 路径 `C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\896a0166b774037a\codex.exe`
+- SHA-256 `f6dbf48cb70f62649c645f26c87dc9bf84cc36986202dfad8e12fb5b8ca70312`
+- 大小 `341312816`，修改时间 2026-10-18 14:40:40
+- **被动核验**：Authenticode 签名有效，签名者 `CN="OpenAI OpCo, LLC"`；文件没有版本资源。本项目**尚未执行过**这个文件。
+
+argv 仍为 `app-server --stdio --disable multi_agent`；文件不符则启动 0 次，不会自动选择其他文件。该参数保留，但不声称能阻断原生派生（新版本的功能名可能不同）。
+
+在获批的运行中，先执行**零模型身份检查** `tools/probes/appserver_s3_identity.py --capture --approve-zero-model-identity-check`：
+
+1. 再次核对大小和 SHA-256；
+2. 只执行 `--version`、`app-server generate-json-schema --help` 和 `generate-json-schema [--experimental] --out <dir>`；
+3. `CODEX_HOME` 指向一个新建的空目录，不碰长期 home 和其中的凭据；
+4. 从新 schema 中抽取 S3 判定依赖的 21 项协议事实（审批请求 method 和参数、`decline` 决定、`declined` 命令状态、`serverRequest/resolved` 等通知、thread/turn 参数和响应字段、只读 sandbox 枚举），与 2026-10-14 的旧捕获比对。
+
+缺少任何一项都会停止，不进入 S3 回合。抽取器已用旧捕获自身核验，21/21 项都能找到。
 
 home 固定使用传入的仓库外长期目录，沿用 S1 的进程代理/CA（默认 8090 与 certifi）。工具不读取、复制、修改或删除凭据内容，Codex 自身会复用登录并写运行状态。不修改系统代理、生产配置或旧 8080 服务。
 
@@ -73,11 +89,20 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s3.py --mode s
 
 新增 64 项离线测试。全套 `python -m pytest -o addopts='' -q`：**553 passed in 34.56s**。独立 CLI：`S3 PASSED`，turn_attempts=1、terminal_confirmed=true、process_stopped=true、manual_review_required=false；证据 `var/appserver-s3/stub-rw5briks/result.json`。另有非空工作目录保留的端到端反例、部分响应写入不得重试、错 reviewer/权限、伪造已拒绝和跨 ID/顺序混淆测试。
 
-以下是**待单独批准后**执行一次的固定命令；此文档和 CLI 确认开关本身不构成用户授权：
+以下是**待单独批准后**执行一次的固定命令，工作目录为本 worktree，在 PowerShell 中运行；此文档和 CLI 确认开关本身不构成用户授权：
 
-```bat
-cd /d E:\plug\agent-hub\.worktrees\appserver-s3-probe && E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s3.py --mode real --approve-one-model-turn --acknowledge-unverified-native-control --codex-home "%LOCALAPPDATA%\AgentHub\codex-home"
+```powershell
+# 步骤 A：零模型身份检查（不是 COMPATIBLE 就停止）
+& 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools\probes\appserver_s3_identity.py --capture --approve-zero-model-identity-check
+# 步骤 B：只有步骤 A 为 COMPATIBLE 时，执行一次 S3（最多一个模型回合）
+& 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools\probes\appserver_s3.py --mode real --approve-one-model-turn --acknowledge-unverified-native-control --codex-home 'C:\Users\Administrator\AppData\Local\AgentHub\codex-home'
 ```
+
+2026-10-22 复核（离线）：
+- S3 相关测试与 S1/S2/探针卫生测试 **136 passed**；
+- 13 个 stub 子进程场景的结果全部与上文一致；
+- 不带确认参数的 real 模式会拒绝，退出码 2；
+- 环境：长期 home 存在且有凭据文件（只检查是否存在），8090 代理在监听（mihomo），certifi CA 存在，Python 和 home 都不是低完整性。
 
 若宿主权限限制写 home，只在获批后为这条命令申请执行权限；不会复制凭据或改变模型的 read-only 参数。
 

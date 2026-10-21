@@ -1,4 +1,12 @@
-# 当前交接：S3 离线工具完成，等待单次真实授权（2026-10-18）
+# 当前交接：S3 执行前复核与身份重新固定（2026-10-22）
+
+- 在 `1fee92e`（10-18 暂存工作的 wip 提交）之上复核：离线测试、13 个 stub 场景、拒绝路径全部符合文档。
+- **直接阻塞**：S1/S2 固定的 Codex 文件已被 10-19 的自动更新删除。S3 单独重新固定为当前安装文件（`896a0166b774037a`，SHA-256 `f6dbf48c…`，341312816 字节，OpenAI 签名有效，被动核验）；S1/S2 身份保持不变。新增零模型身份检查脚本 `tools/probes/appserver_s3_identity.py`。详见 [S3 方案](appserver-s3-probe.md)。
+- 真实 S3 **尚未执行**。执行顺序为：先跑步骤 A（零模型），结果为 COMPATIBLE 才跑步骤 B（最多一个模型回合），两步都需要用户明确批准这一次。
+
+---
+
+# 历史交接：S3 离线工具完成，等待单次真实授权（2026-10-18）
 
 - 分支 `feat/appserver-s3-probe`，基于 `023d0ab`；目录 `E:\plug\agent-hub\.worktrees\appserver-s3-probe`。
 - 解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`，worktree 内无 .venv。

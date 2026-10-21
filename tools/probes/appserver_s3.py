@@ -20,6 +20,19 @@ SCENARIOS = ("happy", "selfreport", "executed", "wrong-turn", "wrong-item", "dup
              "auto-review", "writable-sandbox")
 RUN_ROOT = S2.REPO / "var/appserver-s3"
 
+#: The binary S3 runs against. The S1/S2 build (bin\9614f1d9b40d9c4f) was
+#: removed by a Codex self-update on 2026-10-19. This is the installed
+#: replacement, reviewed PASSIVELY on 2026-10-22: Authenticode signature valid
+#: (CN="OpenAI OpCo, LLC"), file modified 2026-10-18 14:40:40, no version
+#: resource. It has not been executed by this project yet; the approved run
+#: first executes ``appserver_s3_identity.py --capture`` (zero model turns) and
+#: stops if the protocol facts S3 relies on are missing.
+S3_CODEX_IDENTITY = (
+    r"C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\896a0166b774037a\codex.exe",
+    "f6dbf48cb70f62649c645f26c87dc9bf84cc36986202dfad8e12fb5b8ca70312",
+    341312816,
+)
+
 
 class S3Client(S2.S2Client):
     CLIENT_NAME = "agent-hub-s3"
@@ -120,7 +133,8 @@ class S3Client(S2.S2Client):
 
 def run_probe(**kwargs):
     return S2.run_probe(**kwargs, _client_class=S3Client, _label="S3", _scenarios=SCENARIOS,
-                        _run_root=RUN_ROOT, _stub_script=S2.REPO / "tools/demo/stub_appserver_s3.py")
+                        _run_root=RUN_ROOT, _stub_script=S2.REPO / "tools/demo/stub_appserver_s3.py",
+                        _identity=S3_CODEX_IDENTITY)
 
 
 def main():

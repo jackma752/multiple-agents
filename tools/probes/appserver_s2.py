@@ -164,7 +164,8 @@ class S2Client(A.AppServerClient):
 
 
 def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home="", scenario="happy",
-              _client_class=S2Client, _label="S2", _scenarios=SCENARIOS, _run_root=None, _stub_script=None):
+              _client_class=S2Client, _label="S2", _scenarios=SCENARIOS, _run_root=None, _stub_script=None,
+              _identity=None):
     if real and not (approved and acknowledge_risk):
         print(f"REFUSED: {_label} needs separate one-turn approval and acknowledgement of unverified native control.")
         return 2  # BEFORE files, credentials, preflight or process creation
@@ -184,7 +185,9 @@ def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home=
     child = client = None
     try:
         if real:
-            argv, env = S1.preflight(codex_home)
+            # S2 itself keeps the S1 identity (None); a later probe passes its own.
+            argv, env = (S1.preflight(codex_home, _identity) if _identity
+                         else S1.preflight(codex_home))
             argv.extend(["--disable", "multi_agent"])
         else:
             argv = [sys.executable, str(_stub_script or REPO / "tools/demo/stub_appserver_s2.py"), "--scenario", scenario]
