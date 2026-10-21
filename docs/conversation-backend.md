@@ -241,7 +241,17 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - 适配器向本进程正在驱动的回合发送 `turn/interrupt`（`threadId` + `turnId`）。服务端接受请求不等于已经停止。
 - 调用继续由后台执行跟随。只有当**该回合自己的** `turn/completed` 报告 `interrupted` 时，`AdapterStartResult.outcome="canceled"` 才会生效，调用结算为 `canceled` 并释放名额。如果回合恰好自己正常结束或失败，则按实际结果结算。
 - 返回值逐项说明当前知道的情况：`interrupt_requested`、`interrupt_accepted`（服务端已应答）、`terminal_received`（已收到终态并结算）、`remote_stop_confirmed`、`quota_retained`、`status`。最多等待 5 秒；没有收到终态时如实返回，调用之后会按超时等证据结算为 `unknown`，并保留名额，**绝不会**记为 `canceled`。
-- 每次请求都会写一条审计事件 `interrupt_requested`（`invocation_id, actor, accepted`），并在会话事件流里作为 `task.interrupt_requested` 推送。
+- **生效点**：Worker 在**向 provider 发送 `turn/interrupt` 之前**，在同一个事务里关闭本调用的工具审批（表 `tool_gate_closures`，每个调用一行），并写审计事件 `interrupt_requested`（`invocation_id, actor, repeat, closed_cards, blocked_decisions, in_flight, already_sent`）。这个事务提交的时刻就是生效点。之后 provider 的应答单独记为 `interrupt_acknowledged`（`accepted, code`）。两条事件都会在会话事件流中以 `task.*` 推送。
+- **生效点之后，不再向 provider 发送任何工具决定**：
+  - 待决卡置为 `void` / `not_sent`；
+  - 已决定但尚未发送的，保留用户原来的决定（例如仍为 `approved`），但 `delivery=blocked`，不会被送出；
+  - 之后新到的请求也会记一张卡，但状态为 `void` / `blocked`，没有人能回答；
+  - API 批准或拒绝返回 409 `tool_decisions_closed`。
+- **发送前认领**：适配器在写出每个决定之前，都要先向 gate 认领（`claim`）。认领在写锁下进行：认领成功则 `delivery=sending`，并返回 `accept`（仅对 `approved`）或 `decline`；如果决定已经关闭，则改为 `blocked`，返回 None，什么都不发。生效点与认领互相串行，谁先发生，记录里就写谁。
+- **已经发出的如实记录**：关闭之前已经 `sending` 的计入 `in_flight`，已经 `sent` 的计入 `already_sent`，这两类都不改写，`decision_sent` 照实保留。被拒绝发送的请求不会再被当作新请求处理（修复了一个缺陷：此前会退回到自动 decline，在生效点之后仍发出了 decline）。
+- **重复中断**：每次都写事件（`repeat=true`）并再次发送 `turn/interrupt`；关闭记录只有一行；调用只结算一次。
+- **完成与中断竞争**：如果回合在中断到达时恰好正常结束，就按实际结果结算为 `succeeded`，而不是 `canceled`。如果适配器不支持中断，请求同样会关闭工具审批，但不声称任何结果，也不把调用标为 unknown，调用之后照常结束。
+- 整树停止和本地停止也是生效点（`reason=tree_stop` / `local_stop`）。
 - 整树停止（`/api/tasks/{id}/stop`）遇到本进程在途的调用时，走同一条中断路径，由后台执行负责结算，不会重复结算；没有收到终态时，按原有规则记为 `unknown` 并保留名额。
 - 中断时还在等待决定的工具卡会被置为 `void`（`not_sent`），之后不会再回答它们。
 - 没有活动回合时（例如进程重启后），通用取消仍返回 `unsupported`。
@@ -250,8 +260,10 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 
 依据本机的 schema 记录（`var/codex-schema/ServerNotification.json`）：`ThreadItem` 中的 `collabAgentToolCall` 带有 `tool`（`spawnAgent` 等）、`receiverThreadIds`、`status`；`subAgentActivity` 带有 `agentThreadId`、`kind`。
 
-- 本回合中出现这两类 item 时（`item/started` 或 `item/completed`），会发出 `stream.native_agent_observed`，载荷为 `item_type, tool, item_id, status, child_thread_ids`（最多 16 个 ID），并写入执行记录的 `native_agents`。collab 调用的 `prompt` 不会被复制。
-- **只观测、不控制**：这些子 Agent 不在 Hub 的审批与配额之内，结算规则也没有因此改变。观测到之后是否要改变结算规则（例如保留名额），需要另行决定。
+- 本回合中出现这两类 item 时（`item/started` 或 `item/completed`），会发出 `stream.native_agent_observed`，载荷为 `item_type, tool, item_id, status, child_thread_ids, ended_child_thread_ids`（最多 16 个 ID），并写入执行记录的 `native_agents`。collab 调用的 `prompt` 和 `agentsStates[*].message` 都不会被复制。
+- **结束证据**（2026-10-22，用户决定）：只有子 Agent **自己**的状态才算可信的结束证据，包括 collab 调用 `agentsStates[child].status` 为 `completed / interrupted / errored / shutdown`，或 `subAgentActivity.kind` 为 `completed / interrupted`（契约常量 `NATIVE_CHILD_END_STATES`）。`spawnAgent` 调用本身 `completed` 只表示派生成功；`notFound` 含义不明。这两种都不算结束证据。
+- **规则**：父回合结束时，只要有任何观测到的子 Agent 没有结束证据，无论父回合报告的是什么，调用都记为 `unknown` 并**保留原有名额**，原因文字中列出这些子 thread，并说明“not counted in Hub quota”。父回合的实际终态单独保存：执行记录中的 `parent_turn`（`turn_status, verdict, terminal`）、`native_children`（每个子 thread 最新的自身状态）、`native_unfinished`，以及 `stream.turn_ended.native_unfinished`。这种情况下不生成助手回复，也不记录可续接的 `native_session`。
+- **不虚构**：不声称子 Agent 已停止，不把子 Agent 计入 Hub 配额，也不去控制它们。这只是一条保守的结算规则，不是子 Agent 控制系统。
 
 ### 验证（本节）
 
@@ -264,3 +276,16 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - 等待工具卡期间中断：卡片被置为 void、不发送任何回答，部分输出作为回复保存。
 
 另外修复了离线桩的一个问题：等待卡片期间收到中断后，桩不再继续阻塞读取。
+
+续（竞态与子 Agent 规则）：新增 `tests/http/test_interrupt_races.py`，共 17 项，连续 3 次通过：
+- 中断未确认期间批准或拒绝卡片，返回 409 `tool_decisions_closed`，provider 什么都没收到；
+- 中断前已批准、尚未发送的决定被拦截（保留 `approved` / `blocked`），桩没有收到 accept；
+- 中断前已送达的决定如实记录（`already_sent`），不被改写；
+- 重复中断：两次请求、两次 `turn/interrupt`、一行关闭记录、只结算一次；
+- 正常完成与中断竞争时，结算为 succeeded；
+- 不支持中断的适配器也会关闭工具审批，但不声称结果，调用照常完成；
+- 整树停止先关闭工具审批；
+- gate 规则：只写关闭记录、未清扫卡片时认领也被拦截；关闭前已认领的计入 in_flight；关闭后新到的请求被记录但无法回答；
+- 子 Agent：没有结束证据时为 unknown 并保留名额，`parent_turn` 记录父回合实际的 completed，不生成回复；子 Agent 有自身 completed 时正常结算；只有子 Agent 自身的状态才算证据（5 种情形，message 和 prompt 都不复制）。
+
+这次按新规则调整了几项已有测试：`stream.turn_ended` 多了 `native_unfinished`；送达状态多了 `sending`；中断事件拆成了 requested 和 acknowledged 两条；本地停止后再批准返回 `tool_decisions_closed`；原生 spawn 没有结束证据时为 unknown。

@@ -268,7 +268,8 @@ function apply(ev) {
       break;
     }
     case "stream.turn_ended":
-      call(p.invocation_id).ended = { turn_status: p.turn_status, verdict: p.verdict, terminal: p.terminal };
+      call(p.invocation_id).ended = { turn_status: p.turn_status, verdict: p.verdict, terminal: p.terminal,
+                                      native_unfinished: p.native_unfinished || [] };
       break;
     case "stream.request_declined":
       call(p.invocation_id).declined.push(p.method);
@@ -277,10 +278,17 @@ function apply(ev) {
       call(p.invocation_id).native.push(p);
       break;
     case "task.interrupt_requested": {
-      // The durable record of an interrupt request (from any client).
+      // The effective point (from any client): tool decisions closed first.
       const c = call(p.invocation_id);
-      c.interrupt = { ...(c.interrupt || {}), interrupt_requested: true,
-                      interrupt_accepted: (c.interrupt && c.interrupt.interrupt_accepted) || p.accepted };
+      c.interrupt = { ...(c.interrupt || {}), interrupt_requested: true, pending: false,
+                      closure: { closed_cards: p.closed_cards || 0, blocked_decisions: p.blocked_decisions || 0,
+                                 in_flight: p.in_flight || 0, already_sent: p.already_sent || 0 } };
+      break;
+    }
+    case "task.interrupt_acknowledged": {
+      const c = call(p.invocation_id);
+      c.interrupt = { ...(c.interrupt || {}), interrupt_requested: true, pending: false,
+                      interrupt_accepted: p.accepted, reason: p.code };
       break;
     }
     case "tool_approval.requested": {
@@ -523,7 +531,9 @@ function renderCard(id) {
     el("dd", { class: k === "command" ? "mono" : "" }, typeof v === "string" ? v : JSON.stringify(v)),
   ]);
   const delivery = card.delivery === "sent" ? `已送达：${card.decision_sent}`
+    : card.delivery === "sending" ? "发送中"
     : card.delivery === "failed" ? `送达失败（${card.decision_sent || "无"}）`
+    : card.delivery === "blocked" ? "未发送（中断或停止后被拦截）"
     : card.delivery === "not_sent" ? "未发送（请求已结束）" : null;
   return el("div", { class: "card" + (pending ? "" : " done") },
     el("h4", {}, METHOD_LABEL[card.method] || card.method || "工具请求"),
@@ -563,13 +573,28 @@ function renderCall(c) {
     notes.push(`同意后将调用 ${c.agent_id || "Agent"} 一次，发送本条消息原文` +
                (c.context_mode === "native_resume" ? `，并续接 thread ${short(c.resume_thread_id)} 的上下文。` : "。"));
   if (c.turn) notes.push(c.turn.resumed ? `模型回合已开始（续接 thread ${short(c.turn.thread_id)}）` : "模型回合已开始");
-  if (c.ended) notes.push(`provider 报告回合结束：${c.ended.turn_status || "无状态"}` +
-                          (c.ended.terminal ? "" : "（未确认终态，名额保留）"));
+  if (c.ended && c.ended.native_unfinished && c.ended.native_unfinished.length) {
+    notes.push(`父回合实际终态：${c.ended.turn_status || "无状态"}；原生子 Agent（thread ` +
+               `${c.ended.native_unfinished.map(short).join(", ")}）没有可信的结束证据：调用保持未知，` +
+               "名额保留；这些子 Agent 不计入 Hub 配额，Hub 也不能确认它们已停止。");
+  } else if (c.ended) {
+    notes.push(`provider 报告回合结束：${c.ended.turn_status || "无状态"}` +
+               (c.ended.terminal ? "" : "（未确认终态，名额保留）"));
+  }
   if (c.declined.length) notes.push(`已自动拒绝 ${c.declined.length} 个非本回合或无法登记的请求`);
   if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，名额保留`);
   if (c.interrupt) {
     const i = c.interrupt;
     const settled = ["canceled", "succeeded", "failed", "timed_out"].includes(c.status);
+    const k = i.closure || {
+      closed_cards: i.closed_cards || 0, blocked_decisions: i.blocked_decisions || 0,
+      in_flight: i.in_flight_decisions || 0, already_sent: i.already_sent_decisions || 0 };
+    if (!i.pending) {
+      const parts = [`作废 ${k.closed_cards} 张待决卡`, `拦截 ${k.blocked_decisions} 个未发送的决定`];
+      if (k.in_flight) parts.push(`${k.in_flight} 个决定在关闭前已开始发送`);
+      if (k.already_sent) parts.push(`${k.already_sent} 个决定此前已送达`);
+      notes.push("中断生效：本调用的工具审批已关闭，之后不再向 provider 发送任何决定（" + parts.join("，") + "）");
+    }
     notes.push(i.pending ? "已请求中断，等待服务端答复…"
       : settled ? `已请求中断 → 已收到终态：${(CALL_LABEL[c.status] || [c.status])[0]}`
       : i.interrupt_accepted ? "已请求中断，服务端已接受；尚未收到终态，远端停止未确认，名额保留"

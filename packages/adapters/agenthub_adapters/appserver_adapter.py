@@ -44,6 +44,7 @@ import time
 from typing import Any, Callable, Optional
 
 from agenthub.contracts import (
+    NATIVE_CHILD_END_STATES,
     NATIVE_RESUME,
     STREAM_DELTA,
     STREAM_NATIVE_AGENT,
@@ -185,10 +186,19 @@ class _Turn:
         self.cards: dict[Any, tuple[Any, str]] = {}
         self.card_ids: list[str] = []
         self.last_card_poll = 0.0
+        # Requests the gate refused to answer (decisions closed): they stay
+        # unanswered on purpose and must never be routed again - re-routing
+        # would fall back to an automatic decline after the effective point.
+        self.closed_requests: set[Any] = set()
         self.interrupt_requested = False
         self.interrupt_accepted = False
         # Provider-native child agents seen in this turn (ids/enums only).
         self.native_agents: list[dict] = []
+        # child thread id -> its latest own state ("unknown" until reported).
+        self.child_state: dict[str, str] = {}
+
+    def unfinished_children(self) -> list[str]:
+        return [t for t, s in self.child_state.items() if s not in NATIVE_CHILD_END_STATES]
 
     def ours(self, params: dict, *, turn_from_payload: bool = False) -> bool:
         """Exact binding: an event without this turn's id is never attributed."""
@@ -498,16 +508,37 @@ class AppServerCodexAdapter(AdapterContract):
         ``prompt`` is deliberately not copied.
         """
         kind = item.get("type")
+        ended: list[str] = []
         if kind == "collabAgentToolCall":
             children = [t for t in (item.get("receiverThreadIds") or []) if isinstance(t, str)]
+            states = item.get("agentsStates") if isinstance(item.get("agentsStates"), dict) else {}
+            for child in children:
+                turn.child_state.setdefault(child, "unknown")
+            # Only a child's OWN state is end evidence; the collab call's own
+            # status (e.g. a completed spawnAgent) is not. ``message`` is not copied.
+            for child, state in states.items():
+                status = state.get("status") if isinstance(state, dict) else None
+                if isinstance(child, str) and isinstance(status, str):
+                    turn.child_state[child] = status
+                    if child not in children:
+                        children.append(child)
+                    if status in NATIVE_CHILD_END_STATES:
+                        ended.append(child)
             entry = {"item_type": kind, "item_id": str(item.get("id") or ""),
                      "tool": str(item.get("tool") or ""), "status": str(item.get("status") or ""),
-                     "child_thread_ids": children}
+                     "child_thread_ids": children, "ended_child_thread_ids": ended}
         else:
             child = item.get("agentThreadId")
+            activity = str(item.get("kind") or "")
+            if isinstance(child, str):
+                # started/interacted say it runs; completed/interrupted end it.
+                turn.child_state[child] = activity or "unknown"
+                if activity in NATIVE_CHILD_END_STATES:
+                    ended.append(child)
             entry = {"item_type": kind, "item_id": str(item.get("id") or ""), "tool": "",
-                     "status": str(item.get("kind") or ""),
-                     "child_thread_ids": [child] if isinstance(child, str) else []}
+                     "status": activity,
+                     "child_thread_ids": [child] if isinstance(child, str) else [],
+                     "ended_child_thread_ids": ended}
         turn.native_agents.append(entry)
         emit(STREAM_NATIVE_AGENT, entry)
 
@@ -540,13 +571,14 @@ class AppServerCodexAdapter(AdapterContract):
 
     @staticmethod
     def _has_unrouted(client: AppServerClient, turn: _Turn) -> bool:
-        return any(not r.answered and r.id not in turn.cards for r in client.server_requests())
+        return any(not r.answered and r.id not in turn.cards and r.id not in turn.closed_requests
+                   for r in client.server_requests())
 
     def _route_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
                         gate: Any, wall_deadline: dt.datetime) -> None:
         """New tool requests of THIS turn become cards; everything else is declined."""
         for request in client.server_requests():
-            if request.answered or request.id in turn.cards:
+            if request.answered or request.id in turn.cards or request.id in turn.closed_requests:
                 continue
             params = request.params or {}
             if (gate is not None and requires_explicit_decision(request.method)
@@ -585,10 +617,24 @@ class AppServerCodexAdapter(AdapterContract):
                 continue
             if status == "pending":
                 continue
-            # Only an approved card becomes accept; declined/expired/void and
-            # anything unexpected are declined.
-            decision = _fit_decision("accept" if status == "approved" else "decline",
-                                     (request.params or {}).get("availableDecisions"))
+            claim = getattr(gate, "claim", None)
+            if callable(claim):
+                # Last check before writing: once the call's tool decisions are
+                # closed (interrupt/stop effective point) this returns None and
+                # the decision is recorded as blocked, never sent.
+                try:
+                    claimed = claim(card_id)
+                except Exception:  # noqa: BLE001
+                    claimed = None
+                if claimed is None:
+                    del turn.cards[request_id]
+                    turn.closed_requests.add(request_id)
+                    continue
+                answer = claimed
+            else:
+                # Only an approved card becomes accept; everything else declines.
+                answer = "accept" if status == "approved" else "decline"
+            decision = _fit_decision(answer, (request.params or {}).get("availableDecisions"))
             ok = True
             try:
                 client.answer_approval(request, decision)
@@ -663,6 +709,17 @@ class AppServerCodexAdapter(AdapterContract):
                 detail += ("; interrupt "
                            f"{'accepted by the server' if turn.interrupt_accepted else 'requested'}"
                            " but no terminal turn status")
+        # The parent turn's own outcome, kept apart from the call's settlement.
+        parent_turn = ({"turn_status": turn.turn_status, "verdict": verdict, "terminal": terminal}
+                       if turn is not None else None)
+        unfinished = turn.unfinished_children() if turn is not None else []
+        if unfinished and terminal:
+            # Native children without end evidence may still run (and spend)
+            # outside Hub quota: the call cannot be confirmed finished.
+            verdict, terminal = RUNNING, False
+            detail = (f"parent turn ended {turn.turn_status or 'without status'}; native child "
+                      f"agents without end evidence: {', '.join(unfinished)}; "
+                      "not counted in Hub quota, quota slot kept")
         if verdict == FINISHED and not local_exit_confirmed:
             detail += "; local app-server exit unconfirmed"
 
@@ -680,6 +737,9 @@ class AppServerCodexAdapter(AdapterContract):
             "interrupt_requested": bool(turn and turn.interrupt_requested),
             "interrupt_accepted": bool(turn and turn.interrupt_accepted),
             "native_agents": list(turn.native_agents) if turn else [],
+            "native_children": dict(turn.child_state) if turn else {},
+            "native_unfinished": unfinished,
+            "parent_turn": parent_turn,
             "foreign_events": turn.foreign_events if turn else 0,
             "local_process_exit_confirmed": local_exit_confirmed,
             "verdict": verdict,
@@ -692,7 +752,7 @@ class AppServerCodexAdapter(AdapterContract):
         self.store.set_status(invocation_id, verdict, detail[:400])
         if turn is not None:
             emit(STREAM_TURN_ENDED, {"turn_status": turn.turn_status, "verdict": verdict,
-                                     "terminal": terminal})
+                                     "terminal": terminal, "native_unfinished": unfinished})
         if verdict == FINISHED:
             return AdapterStartResult(thread_id, ok=True, terminal=True, detail=detail[:200])
         if verdict == CANCELLED:

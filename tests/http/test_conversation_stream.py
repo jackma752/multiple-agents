@@ -138,7 +138,7 @@ def test_deltas_join_the_same_ordered_stream_before_settlement(make_client):
     assert all(page["events"][i]["payload"]["item_id"] == "item-msg" for i in deltas)
     assert page["events"][ended]["payload"] == {
         "invocation_id": turn["invocation_id"], "turn_status": "completed",
-        "verdict": "finished", "terminal": True,
+        "verdict": "finished", "terminal": True, "native_unfinished": [],
     }
     assert names[-1] == "message.created"
     reply = messages(client, cid)[-1]
@@ -357,7 +357,9 @@ def test_unanswered_tool_request_expires_into_decline_never_accept(make_client):
                 if e["type"] == "tool_approval.status"]
     assert statuses == [("pending", "expired")]
     delivery = [e["payload"] for e in events(client, cid)["events"] if e["type"] == "tool_approval.delivery"]
-    assert delivery and delivery[0]["delivery"] == "sent" and delivery[0]["decision_sent"] == "decline"
+    # Claimed (sending) right before the write, then sent.
+    assert [d["delivery"] for d in delivery] == ["sending", "sent"]
+    assert delivery[-1]["decision_sent"] == "decline"
     assert not [e for e in events(client, cid)["events"] if e["type"] == STREAM_DELTA]
     assert result["status"] == "succeeded"
 

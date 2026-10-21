@@ -411,6 +411,23 @@ class AdapterContract:
     #   ``interrupt_requested`` / ``interrupt_accepted``. It NEVER settles or
     #   claims a stop: only the turn's own terminal event (seen by the running
     #   ``start_streaming``) confirms it, reported as ``outcome="canceled"``.
+    #
+    # Interrupt effective point: the Worker durably closes the call's tool
+    # decisions BEFORE it sends ``turn/interrupt`` (also on a tree stop and a
+    # local stop). From that commit on, no tool decision is sent to the
+    # provider: pending cards become ``void``; decided cards not yet sent are
+    # ``blocked``; new requests are recorded ``void``/``blocked``. A decision
+    # already handed to the transport (``sending``) or delivered (``sent``)
+    # is reported as such, never rewritten. The adapter must ``claim`` each
+    # decision from the gate right before writing it.
+    #
+    # Native child agents: an observed child without trustworthy end evidence
+    # (its own state ``completed``/``interrupted``/``errored``/``shutdown``)
+    # when the parent turn ends makes the call unconfirmed - ``terminal=False``
+    # (kernel: ``unknown``, slot kept) whatever the parent turn reported. The
+    # parent turn's actual terminal status is kept separately (execution
+    # record ``parent_turn``, ``stream.turn_ended``). Nothing claims a child
+    # stopped or counts it against Hub quota.
 
 
 #: Provisional, adapter-reported stream events. They are display hints only:
@@ -443,9 +460,18 @@ TOOL_APPROVAL_STATUSES = frozenset({
     TOOL_APPROVAL_PENDING, TOOL_APPROVAL_APPROVED, TOOL_APPROVAL_DECLINED,
     TOOL_APPROVAL_EXPIRED, TOOL_APPROVAL_VOID,
 })
-#: Whether the provider actually received the answer: ``sent``, ``failed``
-#: (the write failed) or ``not_sent`` (nothing left to answer).
+#: Whether the provider actually received the answer: ``sending`` (claimed,
+#: being written), ``sent``, ``failed`` (the write failed), ``not_sent``
+#: (nothing left to answer) or ``blocked`` (decided, but tool decisions were
+#: closed by an interrupt/stop before it was sent - never delivered).
 TOOL_DELIVERY_PENDING = "pending"
+TOOL_DELIVERY_SENDING = "sending"
 TOOL_DELIVERY_SENT = "sent"
 TOOL_DELIVERY_FAILED = "failed"
 TOOL_DELIVERY_NOT_SENT = "not_sent"
+TOOL_DELIVERY_BLOCKED = "blocked"
+
+#: A native child's own state that counts as trustworthy end evidence
+#: (``CollabAgentStatus`` / ``SubAgentActivityKind`` in the local schema).
+#: ``notFound`` and a spawn call's own ``completed`` do not.
+NATIVE_CHILD_END_STATES = frozenset({"completed", "interrupted", "errored", "shutdown"})

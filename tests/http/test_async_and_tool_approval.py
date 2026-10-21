@@ -353,7 +353,8 @@ def test_card_is_void_when_the_transport_ends_first(make_client):
     assert factory.servers[0].answered_approvals() == []
     late = client.post(f"/api/tool-approvals/{card['tool_approval_id']}/approve",
                        headers=USER, json={"card_hash": final["card_hash"]})
-    assert late.status_code == 409 and late.json()["detail"]["code"] == "not_pending"
+    # The local stop is an effective point: tool decisions of the call are closed.
+    assert late.status_code == 409 and late.json()["detail"]["code"] == "tool_decisions_closed"
     assert status_of(client, turn["invocation_id"]) == "unknown" and held_slots(client) == 1
 
 

@@ -28,7 +28,14 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``demo``             paced deltas, then a command approval request; the closing
                      text reports the answer it received (for the chat page).
                      An interrupt while it waits ends the turn ``interrupted``
-``native-spawn``     a native ``spawnAgent`` collab call (child thread), then OK
+``native-spawn``     a native ``spawnAgent`` collab call (child thread), then OK;
+                     the child never reports its own end
+``native-spawn-finished`` the same, plus the child's own ``completed`` activity
+``approval-hold``    a command approval request; records any answer that ever
+                     arrives (a leaked accept is visible) and never ends the
+                     turn; interrupts are acknowledged and ignored
+``complete-on-interrupt`` the turn completes normally the moment an interrupt
+                     arrives (completion wins the race)
 ===================  ==========================================================
 
 :class:`InMemoryStubFactory` and :class:`StdioStubFactory` are the two trusted
@@ -80,6 +87,9 @@ SCENARIOS = (
     "stream",
     "demo",
     "native-spawn",
+    "native-spawn-finished",
+    "approval-hold",
+    "complete-on-interrupt",
 )
 
 #: Deltas of the ``stream`` scenario; the final item text is their join.
@@ -258,6 +268,13 @@ class ScriptedAppServer:
                 self.reply(request_id, {})
                 self._interrupted.set()  # _drive_demo ends the turn interrupted
                 return
+            if self.scenario == "complete-on-interrupt":
+                self.reply(request_id, {})
+                item = {"id": "item-1", "type": "agentMessage", "text": "done"}
+                self.notify(ITEM_COMPLETED, {"item": item, "threadId": self.thread_id,
+                                             "turnId": self.turn_id})
+                self._finish_turn(TURN_STATUS_COMPLETED)  # completion won the race
+                return
             self.reply(request_id, {})
             self._interrupt_declined = True
             return
@@ -318,14 +335,43 @@ class ScriptedAppServer:
         if scenario == "demo":
             self._drive_demo()
             return
-        if scenario == "native-spawn":
+        if scenario == "approval-hold":
+            request_id = self.request(APPROVAL_REQUEST, {
+                "itemId": "item-cmd-1", "startedAtMs": 1,
+                "threadId": self.thread_id, "turnId": self.turn_id,
+                "command": "echo hold", "cwd": "C:\\stub",
+                "availableDecisions": ["accept", "decline", "cancel"],
+            })
+            end = time.monotonic() + 30.0
+            while time.monotonic() < end and not self._stop.is_set():
+                answer = self._wait_for_response(request_id, timeout=0.2)
+                if answer is not None:
+                    decision = (answer.get("result") or {}).get("decision") or "error"
+                    self._answered_approvals.append({"id": request_id, "decision": decision})
+                    self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                                      "threadId": self.thread_id,
+                                                      "delta": f"after-{decision}"})
+                    return  # the turn stays open; only the client's deadline ends it
+            return
+        if scenario == "complete-on-interrupt":
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                              "threadId": self.thread_id, "delta": "working"})
+            return
+        if scenario in ("native-spawn", "native-spawn-finished"):
             spawn = {"id": "item-collab-1", "type": "collabAgentToolCall", "tool": "spawnAgent",
                      "senderThreadId": self.thread_id, "receiverThreadIds": ["child-thread-1"],
                      "agentsStates": {}, "status": "inProgress",
                      "prompt": "child prompt text that must not be copied"}
             self.notify(ITEM_STARTED, {"item": spawn, "threadId": self.thread_id, "turnId": self.turn_id})
+            # The spawn CALL completing says nothing about the child itself.
             self.notify(ITEM_COMPLETED, {"item": {**spawn, "status": "completed"},
                                          "threadId": self.thread_id, "turnId": self.turn_id})
+            if scenario == "native-spawn-finished":
+                activity = {"id": "item-sub-1", "type": "subAgentActivity",
+                            "agentThreadId": "child-thread-1", "agentPath": "/root/child",
+                            "kind": "completed"}
+                self.notify(ITEM_COMPLETED, {"item": activity, "threadId": self.thread_id,
+                                             "turnId": self.turn_id})
             self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
                                               "threadId": self.thread_id, "delta": "OK"})
             self._emit_item("item-1", "agentMessage")

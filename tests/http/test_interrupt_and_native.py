@@ -54,10 +54,16 @@ def test_interrupt_confirmed_by_the_turns_terminal_event_settles_canceled(make_c
     page = events(client, cid)
     requested = [e["payload"] for e in page["events"] if e["type"] == "task.interrupt_requested"]
     assert requested == [{"root_task_id": turn["task_id"], "invocation_id": turn["invocation_id"],
-                          "actor": "local-user", "accepted": True}]
+                          "actor": "local-user", "repeat": False, "closed_cards": 0,
+                          "blocked_decisions": 0, "in_flight": 0, "already_sent": 0}]
+    acked = [e["payload"] for e in page["events"] if e["type"] == "task.interrupt_acknowledged"]
+    assert acked == [{"root_task_id": turn["task_id"], "invocation_id": turn["invocation_id"],
+                      "accepted": True, "code": "awaiting_terminal_event"}]
     ended = [e["payload"] for e in page["events"] if e["type"] == "stream.turn_ended"]
     assert ended[0]["turn_status"] == "interrupted" and ended[0]["verdict"] == "cancelled"
-    assert names_in_order(page, "task.interrupt_requested", "stream.turn_ended")
+    # The effective point is recorded before the provider is asked.
+    assert names_in_order(page, "task.interrupt_requested", "task.interrupt_acknowledged",
+                          "stream.turn_ended")
 
 
 def names_in_order(page, *names):
@@ -145,8 +151,9 @@ def test_native_child_agent_is_observed_without_copying_its_prompt(make_client):
     assert "child prompt text" not in dumped
     record = adapter_of(client).lookup_by_invocation(turn["invocation_id"])
     assert record["payload"]["native_agents"][0]["child_thread_ids"] == ["child-thread-1"]
-    # Observation only: settlement rules are unchanged.
-    assert status_of(client, turn["invocation_id"]) == "succeeded"
+    # The spawn CALL completed, but the child never reported its own end:
+    # the call stays unknown (see test_interrupt_races for the full rule).
+    assert status_of(client, turn["invocation_id"]) == "unknown"
 
 
 def test_interrupt_while_a_tool_card_waits_voids_the_card(make_client, monkeypatch):

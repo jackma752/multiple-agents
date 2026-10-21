@@ -17,6 +17,12 @@ Rules enforced here, not in the adapter or the page:
   current ``card_hash`` (a stale page cannot approve something it never saw).
 * Every transition happens under the writer lock with a fresh read, so an
   approval racing an expiry or a second approval yields exactly one outcome.
+* Interrupt effective point: :func:`close_decisions` (same transaction as the
+  interrupt/stop request, before anything is sent) closes the call's tool
+  decisions for good. Afterwards no decision is sent: the adapter must
+  :meth:`ToolGate.claim` a decision right before writing it, and a claim on
+  a closed call marks it ``blocked``. What was already ``sending``/``sent``
+  is reported, never rewritten.
 
 ``details`` may quote user or model content; it is returned only by the
 authenticated card endpoints. Events carry ids and statuses only.
@@ -33,10 +39,13 @@ from sqlalchemy import select, text
 
 from agenthub.contracts import (
     TOOL_APPROVAL_APPROVED, TOOL_APPROVAL_DECLINED, TOOL_APPROVAL_EXPIRED,
-    TOOL_APPROVAL_PENDING, TOOL_APPROVAL_VOID, TOOL_DELIVERY_FAILED,
-    TOOL_DELIVERY_NOT_SENT, TOOL_DELIVERY_SENT,
+    TOOL_APPROVAL_PENDING, TOOL_APPROVAL_VOID, TOOL_DELIVERY_BLOCKED,
+    TOOL_DELIVERY_FAILED, TOOL_DELIVERY_NOT_SENT, TOOL_DELIVERY_PENDING,
+    TOOL_DELIVERY_SENDING, TOOL_DELIVERY_SENT,
 )
-from agenthub_kernel.db import ChatMessageRow, InvocationRow, ToolApprovalRow
+from agenthub_kernel.db import (
+    ChatMessageRow, InvocationRow, ToolApprovalRow, ToolGateClosureRow,
+)
 from agenthub_kernel.service import QuotaError, new_id, now
 
 ACTIVE_CALL_STATUSES = ("starting", "running")
@@ -110,6 +119,10 @@ def decide(session: Any, card_id: str, *, decision: str, actor: str,
     row = _locked(session, card_id)
     if row is None:
         raise QuotaError("no_tool_approval", "tool approval not found")
+    closure = session.get(ToolGateClosureRow, row.invocation_id)
+    if closure is not None:
+        raise QuotaError("tool_decisions_closed",
+                         f"tool decisions of this call are closed ({closure.reason})")
     if row.status != TOOL_APPROVAL_PENDING:
         raise QuotaError("not_pending", f"tool approval is already {row.status}")
     if now() >= row.expires_at:
@@ -167,12 +180,17 @@ class ToolGate:
         try:
             with self.db.session() as session:
                 session.execute(text("BEGIN IMMEDIATE"))
+                # A request arriving after the effective point is recorded for
+                # the audit trail, but can never be answered.
+                closed = session.get(ToolGateClosureRow, self.invocation_id) is not None
                 row = ToolApprovalRow(
                     id=new_id("tool"), invocation_id=self.invocation_id,
                     method=str(method)[:200], request_key=str(request_key)[:200],
                     thread_id=str(thread_id)[:200], turn_id=str(turn_id)[:200],
                     item_id=str(item_id or "")[:200], details=_clean_details(details),
-                    available_decisions=offered, status=TOOL_APPROVAL_PENDING,
+                    available_decisions=offered,
+                    status=TOOL_APPROVAL_VOID if closed else TOOL_APPROVAL_PENDING,
+                    delivery=TOOL_DELIVERY_BLOCKED if closed else TOOL_DELIVERY_PENDING,
                     expires_at=expires,
                 )
                 session.add(row)
@@ -201,6 +219,32 @@ class ToolGate:
         except Exception:  # noqa: BLE001
             return TOOL_APPROVAL_PENDING  # retry next pass; never guess "approved"
 
+    def claim(self, card_id: str) -> Optional[str]:
+        """The decision to send now, or None if nothing may be sent.
+
+        Called by the adapter right before writing. Under the writer lock: a
+        decided card whose delivery is still pending becomes ``sending`` and
+        its answer is returned (``accept`` only for ``approved``); if the
+        call's tool decisions are closed it becomes ``blocked`` instead. The
+        interrupt's effective point and this claim therefore serialize - one
+        of them is first, and the record says which.
+        """
+        try:
+            with self.db.session() as session:
+                row = _locked(session, card_id)
+                if (row is None or row.status in (TOOL_APPROVAL_PENDING, TOOL_APPROVAL_VOID)
+                        or row.delivery != TOOL_DELIVERY_PENDING):
+                    return None
+                if session.get(ToolGateClosureRow, row.invocation_id) is not None:
+                    row.delivery = TOOL_DELIVERY_BLOCKED
+                    session.flush()
+                    return None
+                row.delivery = TOOL_DELIVERY_SENDING
+                session.flush()
+                return "accept" if row.status == TOOL_APPROVAL_APPROVED else "decline"
+        except Exception:  # noqa: BLE001
+            return None  # unknown state: send nothing rather than guess
+
     def delivered(self, card_id: str, *, decision: Optional[str], ok: bool) -> None:
         try:
             with self.db.session() as session:
@@ -216,6 +260,47 @@ class ToolGate:
     def void_pending(self) -> int:
         """Close this call's unanswered cards; their requests are gone."""
         return void_pending(self.db, invocation_ids=[self.invocation_id])
+
+
+def decisions_closed(session: Any, invocation_id: str) -> Optional[str]:
+    """The closure reason if this call's tool decisions are closed, else None."""
+    row = session.get(ToolGateClosureRow, invocation_id)
+    return row.reason if row is not None else None
+
+
+def close_decisions(session: Any, invocation_id: str, *, reason: str, actor: str) -> dict[str, Any]:
+    """The interrupt effective point. Caller holds the writer lock.
+
+    Records the closure (once; later calls are repeats), voids pending cards
+    and blocks decided-but-unsent ones. Returns what was in which state so the
+    caller can record it truthfully: ``in_flight`` decisions were already
+    handed to the transport and may have reached the provider.
+    """
+    from sqlalchemy import inspect
+
+    summary: dict[str, Any] = {"repeat": False, "closed_cards": [], "blocked_decisions": [],
+                               "in_flight": [], "already_sent": []}
+    if not inspect(session.connection()).has_table("tool_gate_closures"):
+        return summary  # database opened without the additive schema
+    if session.get(ToolGateClosureRow, invocation_id) is not None:
+        summary["repeat"] = True
+    else:
+        session.add(ToolGateClosureRow(invocation_id=invocation_id, reason=reason, closed_by=actor))
+    for row in session.scalars(select(ToolApprovalRow).where(
+            ToolApprovalRow.invocation_id == invocation_id).order_by(ToolApprovalRow.id)).all():
+        if row.status == TOOL_APPROVAL_PENDING:
+            row.status = TOOL_APPROVAL_VOID
+            row.delivery = TOOL_DELIVERY_NOT_SENT
+            summary["closed_cards"].append(row.id)
+        elif row.delivery == TOOL_DELIVERY_PENDING and row.status != TOOL_APPROVAL_VOID:
+            row.delivery = TOOL_DELIVERY_BLOCKED
+            summary["blocked_decisions"].append(row.id)
+        elif row.delivery == TOOL_DELIVERY_SENDING:
+            summary["in_flight"].append(row.id)
+        elif row.delivery == TOOL_DELIVERY_SENT:
+            summary["already_sent"].append(row.id)
+    session.flush()
+    return summary
 
 
 def void_pending(db: Any, *, invocation_ids: Optional[list[str]] = None,

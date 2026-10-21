@@ -83,7 +83,8 @@ JavaScript 本身没有单元测试框架（零构建、没有 Node），页面�
   - “服务端未接受（原因）；名额保留”。
 
   刷新后，中断记录会从 `task.interrupt_requested` 事件恢复。“停止本地进程”仍然保留，它的含义不同：只结束本地进程，远端是否停止不作确认。
-- **原生子 Agent**：收到 `stream.native_agent_observed` 时，在调用卡片上提示“检测到原生子 Agent：spawnAgent → thread …。它不在 Hub 的审批与配额内，Hub 只能观测、不能控制。”
+- **原生子 Agent**：收到 `stream.native_agent_observed` 时，在调用卡片上提示“检测到原生子 Agent：spawnAgent → thread …。它不在 Hub 的审批与配额内，Hub 只能观测、不能控制。”回合结束时如果还有子 Agent 没有结束证据，提示“父回合实际终态：completed；原生子 Agent（thread …）没有可信的结束证据：调用保持未知，名额保留……”。
+- **中断生效点**：中断记录中会写明“中断生效：本调用的工具审批已关闭，之后不再向 provider 发送任何决定（作废 N 张待决卡，拦截 M 个未发送的决定；已开始发送或已送达的另行列出）”。卡片的送达状态新增“发送中”和“未发送（中断或停止后被拦截）”两种。
 - **用量**：回复上显示 provider 报告的 token 用量，例如“用量 输入 11 / 输出 2”。
 
 浏览器实测（端口 8170，demo 桩，新的数据目录）：

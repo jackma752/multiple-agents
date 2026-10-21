@@ -8,7 +8,7 @@
 | 恢复会话 | 只验证了协议调用：发出 `thread/resume`、只发新消息文本；桩不保存历史，**真实续接效果未验证（S5）** |
 | 取消 | 2026-10-22 起：对本进程正在驱动的回合可发送 `turn/interrupt`，只有该回合自己的 `turn/completed`（`interrupted`）才算确认停止，确认后结算为 `canceled`；服务端接受了请求但没有终态时，不声称已停止，名额保留。没有活动回合时（例如进程重启后）仍为 `unsupported`。只在离线桩上验证，真实中断行为**未验证（S4）**。本地停止只关闭自有传输 |
 | 拦截工具 | 2026-10-22 起：有 Worker gate 时，每个工具审批请求生成一张用户审批卡，只有用户批准的那张卡回 `accept`，其余回 `decline`；没有 gate 时全部回 `decline`。只在离线桩上验证；provider 是否每次都先请求审批，以及真实审批往返，**未验证（S3）** |
-| 控制内部子 Agent / 限制目录 | **不能控制**。2026-10-22 起可以**观测**：按本机 schema 的 `collabAgentToolCall`（`spawnAgent` 等，`receiverThreadIds`）和 `subAgentActivity`（`agentThreadId`）记录原生子 Agent，并发出 `stream.native_agent_observed` 事件（不复制 prompt）。只在离线桩上验证；结算规则不变。限制目录未验证；`sandbox` 显示为 `unknown`（`thread/start` 尚未传入 sandbox 参数） |
+| 控制内部子 Agent / 限制目录 | **不能控制**。2026-10-22 起可以**观测**：按本机 schema 的 `collabAgentToolCall`（`spawnAgent` 等，`receiverThreadIds`、`agentsStates`）和 `subAgentActivity`（`agentThreadId`、`kind`）记录原生子 Agent，并发出 `stream.native_agent_observed` 事件（不复制 prompt 和 message）。父回合结束时，只要有子 Agent 没有自身的结束证据，调用就为 unknown 并保留名额，父回合的实际终态单独记录。不计入配额，也不声称子 Agent 已停止。只在离线桩上验证。限制目录未验证；`sandbox` 显示为 `unknown`（`thread/start` 尚未传入 sandbox 参数） |
 | 准入 | 只有两种可信离线桩工厂按 simulation 放行；真实 app-server 在严格和监督模式下都被拒（`appserver_real_unverified`） |
 
 [契约与验证](conversation-backend.md)

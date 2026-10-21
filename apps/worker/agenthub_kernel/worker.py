@@ -34,7 +34,7 @@ from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.conversations import (
     capture_reply, native_resume_blocker, restore_replies,
 )
-from agenthub_kernel.tool_approvals import ToolGate, void_pending
+from agenthub_kernel.tool_approvals import ToolGate, close_decisions, void_pending
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
 MOCK_RUNNING_STATE = "running"
@@ -177,6 +177,8 @@ class Worker:
             task = session.get(TaskRow, inv.task_id)
             svc = PolicyService(session)
             svc.request_stop(task.root_task_id, requested_by=requested_by)
+            # Same effective point as an interrupt: nothing more is answered.
+            close_decisions(session, invocation_id, reason="local_stop", actor=requested_by)
             svc.mark_unknown(invocation_id, reason="local_stop_requested: remote/native child stop unconfirmed; quota retained")
             session.add(EventRow(root_task_id=task.root_task_id,
                 seq=svc._next_seq(task.root_task_id), type="local_stop_requested",
@@ -213,13 +215,26 @@ class Worker:
         only when the provider reports the turn ``interrupted``. The answer
         separates "requested", "accepted by the server" and "terminal received".
         """
+        # ---- Effective point, committed before anything reaches the provider:
+        # tool decisions close for good, then the request is recorded.
         with self.db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
             inv = session.get(InvocationRow, invocation_id)
             if inv is None:
                 raise QuotaError("no_invocation", "invocation not found")
             if inv.status not in {"starting", "running"}:
                 raise QuotaError("not_active", "invocation is not running")
             root_task_id = session.get(TaskRow, inv.task_id).root_task_id
+            closed = close_decisions(session, invocation_id, reason="interrupt", actor=requested_by)
+            svc = PolicyService(session)
+            session.add(EventRow(root_task_id=root_task_id, seq=svc._next_seq(root_task_id),
+                                 type="interrupt_requested",
+                                 payload={"invocation_id": invocation_id, "actor": requested_by,
+                                          "repeat": closed["repeat"],
+                                          "closed_cards": len(closed["closed_cards"]),
+                                          "blocked_decisions": len(closed["blocked_decisions"]),
+                                          "in_flight": len(closed["in_flight"]),
+                                          "already_sent": len(closed["already_sent"])}))
         fn = getattr(self.adapter, "interrupt_invocation", None)
         if fn is None:
             result: dict[str, Any] = {"interrupt_requested": False, "interrupt_accepted": False,
@@ -234,9 +249,10 @@ class Worker:
             session.execute(text("BEGIN IMMEDIATE"))
             svc = PolicyService(session)
             session.add(EventRow(root_task_id=root_task_id, seq=svc._next_seq(root_task_id),
-                                 type="interrupt_requested",
-                                 payload={"invocation_id": invocation_id, "actor": requested_by,
-                                          "accepted": bool(result.get("interrupt_accepted"))}))
+                                 type="interrupt_acknowledged",
+                                 payload={"invocation_id": invocation_id,
+                                          "accepted": bool(result.get("interrupt_accepted")),
+                                          "code": str(result.get("reason") or "")[:80]}))
         with self._pool_lock:
             future = self._inflight.get(invocation_id)
         if future is not None and result.get("interrupt_accepted"):
@@ -253,7 +269,18 @@ class Worker:
             "status": status,
             "quota_retained": not settled,
             "reason": result.get("reason", ""),
+            "repeat": closed["repeat"],
+            "tool_decisions_closed": True,
+            "closed_cards": len(closed["closed_cards"]),
+            "blocked_decisions": len(closed["blocked_decisions"]),
+            "in_flight_decisions": len(closed["in_flight"]),
+            "already_sent_decisions": len(closed["already_sent"]),
         }
+
+    def _close_tool_decisions(self, invocation_id: str, *, reason: str, actor: str) -> dict[str, Any]:
+        with self.db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            return close_decisions(session, invocation_id, reason=reason, actor=actor)
 
     # ------------------------------------------------------------------ #
     # Stop / cancel
@@ -303,6 +330,12 @@ class Worker:
         an unconfirmed stop marks the call ``unknown`` and KEEPS the slot until a
         human resolves it.
         """
+        # The tree stop is persisted; close this call's tool decisions before
+        # anything else reaches the provider.
+        try:
+            self._close_tool_decisions(invocation_id, reason="tree_stop", actor="tree_stop")
+        except Exception:  # noqa: BLE001 - the stop itself must still proceed
+            pass
         with self._pool_lock:
             inflight = self._inflight.get(invocation_id)
         if inflight is not None and callable(getattr(self.adapter, "interrupt_invocation", None)):

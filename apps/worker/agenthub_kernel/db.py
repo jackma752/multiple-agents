@@ -9,7 +9,8 @@ The approval & quota kernel and persistent local chat use these tables:
 ``tasks`` (the root-task tree), ``invocations``, ``approvals``,
 ``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
 ``conversations``, ``chat_messages``, ``conversation_events``,
-``conversation_event_cursors``, ``stream_chunks`` and ``tool_approvals``.
+``conversation_event_cursors``, ``stream_chunks``, ``tool_approvals`` and
+``tool_gate_closures``.
 """
 
 from __future__ import annotations
@@ -277,6 +278,23 @@ class ToolApprovalRow(Base):
     delivery = Column(String, nullable=False, default="pending")
     decision_sent = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ToolGateClosureRow(Base):
+    """No tool decision of this call may be sent to the provider any more.
+
+    Written in the same transaction as an interrupt / tree stop / local stop
+    request, before anything is sent to the provider: that commit is the
+    effective point. ``reason`` is ``interrupt``, ``tree_stop`` or
+    ``local_stop``. One row per call; later requests are repeats.
+    """
+
+    __tablename__ = "tool_gate_closures"
+
+    invocation_id = Column(ForeignKey("invocations.id"), primary_key=True)
+    reason = Column(String, nullable=False)
+    closed_by = Column(String, nullable=False)
+    closed_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
 class ConversationEventCursorRow(Base):

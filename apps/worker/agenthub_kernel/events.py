@@ -49,13 +49,16 @@ EVENT_TABLES = ("conversation_events", "conversation_event_cursors")
 TREE_EVENT_TYPES = {
     "tree_stop", "tree_pause", "tree_resume", "local_stop_requested",
     "unknown_settled", "retry_requested", "policy_updated", "interrupt_requested",
+    "interrupt_acknowledged",
 }
 # Only these payload keys are copied; free-text fields (stop evidence, policy
-# blobs, errors) never enter the event stream.
+# blobs, errors) never enter the event stream. ``code`` is a short machine
+# code (e.g. ``no_live_turn``), not a message.
 TREE_PAYLOAD_KEYS = (
     "invocation_id", "superseded_invocation_id", "retry_invocation_id",
     "retry_approval_id", "outcome", "version", "revoked_approvals", "repeat",
-    "requested_by", "actor", "accepted",
+    "requested_by", "actor", "accepted", "closed_cards", "blocked_decisions",
+    "in_flight", "already_sent", "code",
 )
 
 
@@ -279,10 +282,12 @@ STREAM_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
     STREAM_TURN_STARTED: {"thread_id": (str,), "turn_id": (str,), "resumed": (bool,)},
     STREAM_DELTA: {"item_id": (str,)},
     STREAM_REQUEST_DECLINED: {"method": (str,), "item_id": (str,), "decision": (str,)},
-    STREAM_TURN_ENDED: {"turn_status": (str,), "verdict": (str,), "terminal": (bool,)},
+    STREAM_TURN_ENDED: {"turn_status": (str,), "verdict": (str,), "terminal": (bool,),
+                        "native_unfinished": (list,)},
     # Ids and enum values only; a collab call's prompt never enters the stream.
     STREAM_NATIVE_AGENT: {"item_type": (str,), "tool": (str,), "item_id": (str,),
-                          "status": (str,), "child_thread_ids": (list,)},
+                          "status": (str,), "child_thread_ids": (list,),
+                          "ended_child_thread_ids": (list,)},
 }
 MAX_ID_CHARS = 200
 MAX_LIST_ITEMS = 16
