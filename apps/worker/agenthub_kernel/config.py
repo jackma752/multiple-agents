@@ -84,6 +84,13 @@ DEFAULT_CODEX_SANDBOX = "read-only"
 #: DEV/TEST ONLY: JSON array prepended to the codex argv, so an offline
 #: integration can drive the whole stack with a STUB process instead of Codex.
 ENV_CODEX_PREFIX = "AGENT_HUB_CODEX_PREFIX"
+#: Optional Codex transport: "exec" (default) or "app-server". Choosing a
+#: transport grants nothing; admission is decided by reviewed adapter code.
+ENV_CODEX_TRANSPORT = "AGENT_HUB_CODEX_TRANSPORT"
+CODEX_TRANSPORTS = ("exec", "app-server")
+#: DEV/TEST ONLY: run the app-server transport against the bundled stdio stub
+#: with this scenario instead of Codex (tools/demo/stub_appserver.py).
+ENV_APPSERVER_STUB = "AGENT_HUB_APPSERVER_STUB"
 
 #: The executable that passed the verified probe, with its recorded identity.
 #: Pinning both means a silently-updated binary is detected before it runs.
@@ -221,9 +228,22 @@ def codex_sandbox() -> str:
     return value if value in CODEX_SANDBOX_MODES else DEFAULT_CODEX_SANDBOX
 
 
+def codex_transport() -> str:
+    """Selected Codex transport; anything unrecognised falls back to exec."""
+    value = (os.environ.get(ENV_CODEX_TRANSPORT) or "").strip().lower()
+    return value if value in CODEX_TRANSPORTS else "exec"
+
+
+def appserver_execution_store_path() -> str:
+    return os.path.join(DATA_DIR, "appserver-executions.db")
+
+
 def codex_settings() -> dict:
     """Resolved Codex adapter settings (env override wins)."""
     return {
+        "transport": codex_transport(),
+        "appserver_stub": (os.environ.get(ENV_APPSERVER_STUB) or "").strip(),
+        "appserver_store_path": appserver_execution_store_path(),
         "codex_path": os.environ.get(ENV_CODEX_PATH) or PINNED_CODEX_PATH,
         "expected_identity": {
             "sha256": os.environ.get(ENV_CODEX_SHA256) or PINNED_CODEX_SHA256,

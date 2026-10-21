@@ -1,5 +1,18 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-21 app-server 可选传输**：新增 `AppServerCodexAdapter`（`AGENT_HUB_CODEX_TRANSPORT=app-server`），作为 exec 之外的另一种传输。下表 Codex 行描述的仍是 exec。app-server 传输各项能力如下：
+
+| 能力 | 状态 |
+|---|---|
+| 发消息 / 流式增量 | 离线桩已验证（内存桩与 stdio 子进程桩）；对真实 Codex，S2 只验证过一次单回合，**本适配器未对真实 Codex 运行** |
+| 恢复会话 | 只验证了协议调用：发出 `thread/resume`、只发新消息文本；桩不保存历史，**真实续接效果未验证（S5）** |
+| 取消 | `unsupported`（`turn/interrupt` 未验证，S4）；本地停止只关闭自有传输 |
+| 拦截工具 | 服务端审批请求一律回 `decline`；真实审批往返**未验证（S3）** |
+| 控制内部子 Agent / 限制目录 | 未验证；`sandbox` 显示为 `unknown`（`thread/start` 尚未传入 sandbox 参数） |
+| 准入 | 只有两种可信离线桩工厂按 simulation 放行；真实 app-server 在严格和监督模式下都被拒（`appserver_real_unverified`） |
+
+[契约与验证](conversation-backend.md)
+
 **2026-10-21 本地历史补充**：Hub 新增会话/消息持久化与已确认终态回复的恢复投影，适配器仍使用现有 `last_result` 记录。离线覆盖 Codex 捕获解析；没有新增真实调用，不升级 `resume_session`、取消、拦截或派生控制能力。[后端契约](conversation-backend.md)
 
 **2026-10-20 用户监督边界**：exec 适配器新增 `stop_local_process`，只终止当前 API 进程持有句柄的本地入口进程；以本地 Python 子进程验证，不等于 Codex 远端取消。`cancel=false`、原生派生不受控、只读拒写未验证保持不变。严格准入仍关闭；用户可逐调用显式接受监督边界。Hub 协作扩展默认关闭，不是原生 Agent 的隔离插件。[接口与限制](manual-control-boundaries.md)

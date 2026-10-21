@@ -6,6 +6,8 @@ CLI all agree:
 * ``mock``  - the inert default. No process is launched. Safe everywhere.
 * ``codex`` - strict admission remains blocked. Explicit per-call supervised
   mode allows bounded operation without attesting native-child control.
+  ``AGENT_HUB_CODEX_TRANSPORT=app-server`` selects the optional app-server
+  transport, which today admits only the bundled offline stub.
 """
 
 from __future__ import annotations
@@ -39,6 +41,8 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
         from agenthub_adapters.store import ExecutionStore, ensure_parent
 
         s = config.codex_settings()
+        if s.get("transport", "exec") == "app-server":
+            return _build_appserver(s)
         store = ExecutionStore(
             path=ensure_parent(s["store_path"]), table="codex_executions"
         )
@@ -68,6 +72,29 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
     return MockAdapter()
 
 
+def _build_appserver(s: dict) -> Any:
+    from agenthub_adapters.appserver_adapter import AppServerCodexAdapter, CodexAppServerFactory
+    from agenthub_adapters.appserver_stub import SCENARIOS, StdioStubFactory
+    from agenthub_adapters.store import ExecutionStore, ensure_parent
+
+    if s.get("appserver_stub") in SCENARIOS:
+        factory: Any = StdioStubFactory(s["appserver_stub"])
+    else:
+        factory = CodexAppServerFactory(
+            codex_path=s["codex_path"], codex_home=s["codex_home"],
+            expected_identity=s["expected_identity"],
+            proxy=s["proxy"] or None, ca_bundle=s["ca_bundle"] or None,
+        )
+    store = ExecutionStore(
+        path=ensure_parent(s.get("appserver_store_path") or config.appserver_execution_store_path()),
+        table="appserver_executions",
+    )
+    return AppServerCodexAdapter(
+        transport_factory=factory, workdir_root=s["workdir_root"], store=store,
+        timeout_seconds=s["timeout_seconds"], version=s["version"],
+    )
+
+
 def describe(adapter: Any) -> dict:
     """Small, safe summary for the console header."""
     # Which agent_id values this adapter will serve. The console uses this to
@@ -95,4 +122,7 @@ def describe(adapter: Any) -> dict:
         info["subagents_disabled"] = False
         info["proxy"] = getattr(adapter, "proxy", None)
         info["timeout_seconds"] = getattr(adapter, "timeout_seconds", None)
+        info["transport"] = getattr(adapter, "transport", "exec")
+    supports = getattr(adapter, "supports_native_resume", None)
+    info["native_resume"] = bool(supports()) if callable(supports) else False
     return info

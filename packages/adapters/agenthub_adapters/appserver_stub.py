@@ -24,7 +24,11 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``duplicate-ids``    a duplicate/late response with an id nobody waits for
 ``out-of-order``     notifications before the response to the request that caused them
 ``framing-lsp``      speaks LSP framing instead of line-delimited JSON
+``stream``           several deltas, a foreign-turn delta, final item with text
 ===================  ==========================================================
+
+:class:`InMemoryStubFactory` and :class:`StdioStubFactory` are the two trusted
+transport factories the app-server adapter admits as offline simulation.
 """
 
 from __future__ import annotations
@@ -69,7 +73,11 @@ SCENARIOS = (
     "out-of-order",
     "turn-failed",
     "framing-lsp",
+    "stream",
 )
+
+#: Deltas of the ``stream`` scenario; the final item text is their join.
+STREAM_PIECES = ("Hel", "lo, ", "流式", " world")
 
 #: The approval request this stub exercises. The others in APPROVAL_METHODS behave
 #: identically on the wire, so one is enough to pin the client's behaviour.
@@ -284,6 +292,23 @@ class ScriptedAppServer:
         if scenario == "turn-failed":
             self._finish_turn(TURN_STATUS_FAILED)
             return
+        if scenario == "stream":
+            item = {"id": "item-msg", "type": "agentMessage"}
+            self.notify(ITEM_STARTED, {"item": item, "threadId": self.thread_id,
+                                       "turnId": self.turn_id})
+            for piece in STREAM_PIECES[:2]:
+                self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-msg",
+                                                  "threadId": self.thread_id, "delta": piece})
+            # Another turn's output must never be attributed to this call.
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": "foreign-turn", "itemId": "item-x",
+                                              "threadId": self.thread_id, "delta": "FOREIGN"})
+            for piece in STREAM_PIECES[2:]:
+                self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-msg",
+                                                  "threadId": self.thread_id, "delta": piece})
+            self.notify(ITEM_COMPLETED, {"item": {**item, "text": "".join(STREAM_PIECES)},
+                                         "threadId": self.thread_id, "turnId": self.turn_id})
+            self._finish_turn(TURN_STATUS_COMPLETED)
+            return
         self.notify(DELTA_AGENT_MESSAGE,
                     {"turnId": self.turn_id, "itemId": "item-1",
                      "threadId": self.thread_id, "delta": "OK"})
@@ -370,6 +395,91 @@ def make_pair(scenario: str, **kwargs: Any) -> tuple[ScriptedAppServer, dict]:
     server = ScriptedAppServer(scenario, **kwargs).attach(client_out, client_in)
     streams = {"reader": client_out, "writer": client_in}
     return server, streams
+
+
+class InMemoryStubTransport:
+    """Client-side transport wired to a :class:`ScriptedAppServer` thread."""
+
+    def __init__(self, server: ScriptedAppServer, reader: QueueStream,
+                 writer: QueueStream) -> None:
+        self.server = server
+        self.reader = reader
+        self._writer = writer
+        self._thread = threading.Thread(target=server.serve_forever,
+                                        name="stub-appserver", daemon=True)
+        self._thread.start()
+
+    def write(self, data: bytes) -> None:
+        if self._writer.closed:
+            raise OSError("stub transport closed")
+        self._writer.write(data)
+
+    def close(self) -> None:
+        self.server.stop()
+        self._writer.close()
+        self.reader.close()
+        self._thread.join(timeout=2)
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+
+class InMemoryStubFactory:
+    """Trusted offline factory: one scripted server per call, no process.
+
+    ``scenario`` may be a string or a list consumed one per call. Every call
+    reuses ``thread_id`` so a later ``thread/resume`` targets the same id;
+    the stub keeps no real thread history.
+    """
+
+    def __init__(self, scenario: Any = "happy", *, thread_id: str = "stub-thread-0001") -> None:
+        self._scenarios = list(scenario) if isinstance(scenario, (list, tuple)) else None
+        self.scenario = scenario
+        self.thread_id = thread_id
+        self.servers: list[ScriptedAppServer] = []
+
+    def __call__(self, invocation_id: str, workdir: str) -> InMemoryStubTransport:
+        scenario = self._scenarios.pop(0) if self._scenarios is not None else self.scenario
+        server, streams = make_pair(scenario, thread_id=self.thread_id,
+                                    turn_id=f"stub-turn-{len(self.servers) + 1:04d}")
+        self.servers.append(server)
+        return InMemoryStubTransport(server, streams["reader"], streams["writer"])
+
+    def identity_matches(self) -> tuple[bool, str]:
+        return True, "in-memory offline stub"
+
+
+def bundled_stdio_stub_path() -> str:
+    import os
+
+    return os.path.realpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "tools", "demo", "stub_appserver.py"
+    ))
+
+
+class StdioStubFactory:
+    """Trusted offline factory: the bundled stub as a real child process."""
+
+    def __init__(self, scenario: str = "happy", *, stderr_dir: Optional[str] = None) -> None:
+        if scenario not in SCENARIOS:
+            raise ValueError(f"unknown scenario {scenario!r}")
+        self.scenario = scenario
+        self.stderr_dir = stderr_dir
+        self.argv = [sys.executable, bundled_stdio_stub_path(), "--scenario", scenario]
+
+    def __call__(self, invocation_id: str, workdir: str) -> Any:
+        import os
+
+        from agenthub_adapters.appserver import StdioTransport
+
+        env = dict(os.environ)
+        env["CODEX_HOME"] = workdir  # the stub has no auth path; isolate state
+        stderr = os.path.join(self.stderr_dir or workdir, f"stub-{invocation_id}.log")
+        return StdioTransport(list(self.argv), env=env, cwd=workdir, stderr_path=stderr)
+
+    def identity_matches(self) -> tuple[bool, str]:
+        return True, "bundled stdio stub"
 
 
 def run_stdio(scenario: str) -> int:

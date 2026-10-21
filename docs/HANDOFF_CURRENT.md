@@ -1,3 +1,27 @@
+# 当前交接：app-server 增量输出与原生续接（2026-10-21 续二）
+
+- 分支 `feat/chat-workbench`，目录 `E:\plug\agent-hub\.worktrees\chat-workbench`。git 使用 `C:\Users\Administrator\AppData\Local\Programs\MinGit`（已加入用户 PATH）；`E:\ds_agent` 下的原件带 Low 完整性标签，无法写入任何正常目录。本轮和上一轮的改动由用户在自己的终端运行 `E:\plug\git-integration-2026-10-21\integrate.ps1` 提交。规则见 [Git 工作流](git-workflow.md)，证据见 [证据清单](evidence-manifest.md)。
+- 完成：可选传输 `AGENT_HUB_CODEX_TRANSPORT=app-server`（`AppServerCodexAdapter`）；增量输出进入同一会话事件流；`context_mode=native_resume`，thread id 绑定进待审批快照。说明见 [会话后端契约](conversation-backend.md) 末节。
+- 用户决定：增量文本存入专用表 `stream_chunks`，事件只保存 ID、序号和状态；SSE 和 `/events` 在服务端鉴权后组装文本；内容与事件同事务。
+- 变更文件：`agenthub/contracts.py`、`agenthub/chat.py`、`agenthub_kernel/{db,events,worker,conversations,adapters,config}.py`、`agenthub_rt/conversations.py`、`agenthub_adapters/appserver_adapter.py`（新）、`appserver_stub.py`；测试 `tests/http/test_conversation_stream.py`（新，28 项）；文档为本文件、`conversation-backend.md`、`adapter-capabilities.md`、`README.md`。git 流程相关（另一个提交）：`AGENTS.md` 规则 6、`docs/git-workflow.md`、`docs/evidence-manifest.md`。
+- 门禁：新增检查都在消费审批之前。真实 app-server 在严格和监督模式下都被拒；准入只放行离线桩。审批请求只回 decline，取消返回 unsupported，unknown 保留名额。
+- 验证（Windows `.venv`）：开工前基线 567 passed；新文件 28 passed，连续 4 次；全量 **595 passed in 44.52s**。没有真实模型回合，没有读取凭据，没有动 8080。
+- 未验证：真实工具审批（S3）、中断（S4）、续接效果（S5）；每一项都需要单独授权，不要重跑 S1/S2。两项 DLL 问题仍 OPEN。
+- 下一步：前端用 fetch 流式消费 SSE（`payload.text` 已由服务端组装）；`stream_chunks` 的保留期和清理；需要时再申请 S3–S5。
+
+---
+
+# 历史交接：会话事件、游标补读与 SSE（2026-10-21 续）
+
+- 分支 `feat/chat-workbench`，目录 `E:\plug\agent-hub\.worktrees\chat-workbench`，基于 `e947f07`。**本轮改动尚未提交**（本次连接只能读写文件、不能在你的电脑上执行 git），请先复核测试再自行提交。
+- 完成：`conversation_events` + `conversation_event_cursors` 增量表；ORM `after_flush` 单点捕获消息/审批/调用状态/根任务停止·暂停·重试·unknown 结算，与状态变更同事务；每会话连续 seq；`GET /api/conversations/{id}/events?after_seq=` 游标补读；`GET /api/conversations/{id}/events/stream` SSE（`Last-Event-ID` 续读、心跳、超时关闭、409 `cursor_ahead`）。说明见 [会话后端契约](conversation-backend.md) 末节。
+- 变更文件：`apps/worker/agenthub_kernel/events.py`（新）、`db.py`、`apps/api/agenthub_rt/conversations.py`、`api.py`（文档串）、`tests/http/test_conversation_events.py`（新，17 项）、本文件与 `docs/conversation-backend.md`。
+- 审批、配额、unknown、停止门禁一行未改；事件载荷不含聊天原文；没有自动批准/重试/启动。
+- 验证在云端 Linux 副本：受影响 54 passed（3 次）；全量 567 passed（设置 `USERPROFILE` 后；不设时仅 1 项 Windows 专属用例因缺该变量失败）。**Windows `.venv` 未复跑**。
+- 下一步：app-server 事件桥接为可选传输（增量 delta 进入同一事件流），再接原生续接；前端最后用 fetch 流式消费 SSE。S3/S4/S5 真实回合仍须逐项授权，不要重跑 S1/S2；两项 DLL OPEN。
+
+---
+
 # 当前交接：会话后端（2026-10-21）
 
 - 当前分支 `feat/chat-workbench`，目录 `E:\plug\agent-hub\.worktrees\chat-workbench`，基于 `812b215`。虽然分支名含 workbench，本轮只改后端；用户明确要求前端最后做。

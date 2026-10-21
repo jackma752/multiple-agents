@@ -1,12 +1,15 @@
 """Durable local chat history. No provider calls or implicit approvals here."""
 
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
 from agenthub.chat import CONTEXT_MODE, ConversationTurn
-from agenthub.contracts import InvocationSnapshot
+from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
+
+#: Statuses in which a provider thread may still be executing a turn.
+THREAD_BUSY_STATUSES = ("starting", "running", "unknown")
 from agenthub_kernel.db import (
     ApprovalRow, ChatMessageRow, ConversationRow, InvocationRow, TaskRow,
 )
@@ -41,8 +44,59 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "approval_status": approval.status if approval else None,
         "payload_hash": inv.payload_hash, "status": inv.status,
         "execution_mode": inv.snapshot.get("execution_mode", "strict"),
-        "agent_id": inv.snapshot["agent_id"], "context_mode": CONTEXT_MODE,
+        "agent_id": inv.snapshot["agent_id"],
+        "context_mode": inv.snapshot.get("context_mode", CONTEXT_MODE),
+        "resume_thread_id": inv.snapshot.get("resume_thread_id"),
     }
+
+
+def native_thread_for(session: Session, cid: str, agent_id: str) -> Optional[str]:
+    """Provider thread recorded by this agent's latest reply in the conversation.
+
+    Only the newest reply counts: resuming an older thread would silently skip
+    the exchange after it. ``None`` when that reply carries no native session.
+    """
+    reply = aliased(ChatMessageRow)
+    rows = session.execute(
+        select(reply.result_metadata, InvocationRow.snapshot)
+        .join(InvocationRow, InvocationRow.id == reply.invocation_id)
+        .where(reply.conversation_id == cid, reply.role == "assistant")
+        .order_by(reply.id.desc())
+    ).all()
+    for metadata, snapshot in rows:
+        if (snapshot or {}).get("agent_id") != agent_id:
+            continue
+        native = (metadata or {}).get("native_session")
+        if isinstance(native, dict) and isinstance(native.get("thread_id"), str) and native["thread_id"]:
+            return native["thread_id"]
+        return None
+    return None
+
+
+def native_resume_blocker(session: Session, inv: InvocationRow) -> Optional[tuple[str, str]]:
+    """Why a native_resume call must not start now, or None.
+
+    Another call of the same tree that is starting, running or unknown may
+    still be using the provider thread; a second turn on top of it is refused
+    rather than queued blindly. Checked before any approval is consumed.
+    """
+    if inv.snapshot.get("context_mode") != NATIVE_RESUME:
+        return None
+    root = session.get(TaskRow, inv.task_id)
+    busy = session.scalar(
+        select(InvocationRow.id)
+        .join(TaskRow, TaskRow.id == InvocationRow.task_id)
+        .where(
+            TaskRow.root_task_id == root.root_task_id,
+            InvocationRow.id != inv.id,
+            InvocationRow.status.in_(THREAD_BUSY_STATUSES),
+        ).limit(1)
+    )
+    if busy is not None:
+        return ("native_session_busy",
+                "another call in this conversation is active or unknown; "
+                "the provider thread may still be in use")
+    return None
 
 
 def submit_turn(
@@ -68,9 +122,24 @@ def submit_turn(
         if svc._tree_stopped(root.id):
             raise QuotaError("tree_stopped", "conversation task tree is stopped")
 
+    resume_thread_id = None
+    if request.context_mode == NATIVE_RESUME:
+        resume_thread_id = native_thread_for(session, cid, request.agent_id)
+        if resume_thread_id is None:
+            raise QuotaError("no_native_session",
+                             "no provider thread recorded by this agent's latest reply")
+        busy = session.scalar(select(InvocationRow.id).where(
+            InvocationRow.task_id == root.id,
+            InvocationRow.status.in_(THREAD_BUSY_STATUSES),
+        ).limit(1))
+        if busy is not None:
+            raise QuotaError("native_session_busy",
+                             "another call in this conversation is active or unknown")
+
     snapshot = InvocationSnapshot(
         agent_id=request.agent_id, task_input=request.text, parent_task_id=None,
         depth=0, policy_version=root.policy_version, execution_mode=request.execution_mode,
+        context_mode=request.context_mode, resume_thread_id=resume_thread_id,
     )
     inv = svc.create_invocation(task_id=root.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)
@@ -117,6 +186,12 @@ def capture_reply(session: Session, adapter: Any, invocation_id: str) -> bool:
         return False  # A result from another execution is not this call's reply.
     usage = result.get("usage")
     metadata = {"thread_id": thread_id, "usage": usage if isinstance(usage, dict) else None}
+    native = result.get("native_session")
+    if (isinstance(native, dict) and native.get("thread_id") == thread_id and thread_id
+            and isinstance(native.get("transport"), str)):
+        # Only an adapter that can actually resume reports this; it is what a
+        # later native_resume turn binds into its snapshot.
+        metadata["native_session"] = {"transport": native["transport"], "thread_id": thread_id}
     session.add(ChatMessageRow(
         conversation_id=source.conversation_id, role="assistant", text=reply,
         invocation_id=invocation_id, result_metadata=metadata,

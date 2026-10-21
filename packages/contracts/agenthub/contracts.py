@@ -128,6 +128,10 @@ class DelegationKind(str, enum.Enum):
 # Invocation snapshot & payload hash
 # --------------------------------------------------------------------------- #
 
+INDEPENDENT = "independent"
+NATIVE_RESUME = "native_resume"
+CONTEXT_MODES = frozenset({INDEPENDENT, NATIVE_RESUME})
+
 
 @dataclass(frozen=True)
 class InvocationSnapshot:
@@ -146,10 +150,23 @@ class InvocationSnapshot:
     adapter_version: str = "unknown"
     policy_version: int = 0
     execution_mode: str = "strict"
+    #: ``independent`` sends only ``task_input``. ``native_resume`` asks the
+    #: adapter to continue the provider thread ``resume_thread_id``, which
+    #: exposes that thread's earlier context to the call - so the thread id is
+    #: part of what the user approves.
+    context_mode: str = "independent"
+    resume_thread_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.execution_mode not in {"strict", "supervised"}:
             raise ValueError("execution_mode must be strict or supervised")
+        if self.context_mode not in CONTEXT_MODES:
+            raise ValueError("context_mode must be independent or native_resume")
+        if self.context_mode == NATIVE_RESUME:
+            if not isinstance(self.resume_thread_id, str) or not self.resume_thread_id.strip():
+                raise ValueError("native_resume requires resume_thread_id")
+        elif self.resume_thread_id is not None:
+            raise ValueError("resume_thread_id is only valid with native_resume")
 
     def payload_hash(self) -> str:
         digest = hashlib.sha256()
@@ -167,9 +184,12 @@ class InvocationSnapshot:
             "adapter_version": self.adapter_version,
             "policy_version": self.policy_version,
         }
-        # Preserve hashes of existing strict-mode snapshots.
+        # Preserve hashes of existing strict-mode / independent snapshots.
         if self.execution_mode != "strict":
             result["execution_mode"] = self.execution_mode
+        if self.context_mode != INDEPENDENT:
+            result["context_mode"] = self.context_mode
+            result["resume_thread_id"] = self.resume_thread_id
         return result
 
 
@@ -360,3 +380,28 @@ class AdapterContract:
 
     def get_status(self, adapter_invocation_id: str) -> Any:
         raise NotImplementedError
+
+    # Optional extensions (looked up with getattr; absent means unsupported):
+    #
+    # * ``start_streaming(invocation_id, snapshot, *, gate_token, emit)`` - same
+    #   contract as ``start``, plus ``emit(type, payload)`` for provisional
+    #   output while the call runs. ``type`` must be one of
+    #   :data:`STREAM_EVENT_TYPES`. Emitting never settles anything: the kernel
+    #   still decides from the returned :class:`AdapterStartResult`.
+    # * ``supports_native_resume() -> bool`` - True only for code that sends
+    #   ``snapshot.resume_thread_id`` to the provider. The Worker refuses a
+    #   ``native_resume`` call before consuming its approval otherwise.
+
+
+#: Provisional, adapter-reported stream events. They are display hints only:
+#: the authoritative reply is the assistant ``message.created`` written at
+#: settlement, and a delta never proves that a turn finished. A delta's text is
+#: stored as chat content (``stream_chunks``), never in the event payload; the
+#: authenticated event readers attach it server-side.
+STREAM_TURN_STARTED = "stream.turn_started"
+STREAM_DELTA = "stream.delta"
+STREAM_REQUEST_DECLINED = "stream.request_declined"
+STREAM_TURN_ENDED = "stream.turn_ended"
+STREAM_EVENT_TYPES = frozenset({
+    STREAM_TURN_STARTED, STREAM_DELTA, STREAM_REQUEST_DECLINED, STREAM_TURN_ENDED,
+})

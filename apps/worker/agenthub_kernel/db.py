@@ -8,7 +8,8 @@ policy_versions, quota_reservations, events, audit_logs``.
 The approval & quota kernel and persistent local chat use these tables:
 ``tasks`` (the root-task tree), ``invocations``, ``approvals``,
 ``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
-``conversations`` and ``chat_messages``.
+``conversations``, ``chat_messages``, ``conversation_events``,
+``conversation_event_cursors`` and ``stream_chunks``.
 """
 
 from __future__ import annotations
@@ -203,6 +204,63 @@ class EventRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class ConversationEventRow(Base):
+    """Ordered conversation event; ``seq`` is dense per conversation.
+
+    Written only by :mod:`agenthub_kernel.events` in the same transaction as
+    the state change it describes, so replay never shows an uncommitted or
+    rolled-back change. Payloads hold IDs and statuses, never chat text.
+    """
+
+    __tablename__ = "conversation_events"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq"),
+        {"sqlite_autoincrement": True},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    seq = Column(Integer, nullable=False)
+    type = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class StreamChunkRow(Base):
+    """Provisional model output of a running call, managed like chat content.
+
+    The ``stream.delta`` event that announces a chunk stores only its id; the
+    authenticated event readers attach ``text`` server-side. A chunk and its
+    event are written in one transaction. Not a reply: the assistant
+    ``chat_messages`` row written at settlement is.
+    """
+
+    __tablename__ = "stream_chunks"
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    invocation_id = Column(ForeignKey("invocations.id"), index=True, nullable=False)
+    item_id = Column(String, nullable=True)
+    text = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ConversationEventCursorRow(Base):
+    """Per-conversation sequence counter.
+
+    Allocating with ``UPDATE ... SET last_seq = last_seq + n`` takes the write
+    lock (SQLite) or the row lock (PostgreSQL) before the number is chosen, so
+    writers of one conversation commit in seq order and a reader that sees
+    seq N has already been able to see every seq below N.
+    """
+
+    __tablename__ = "conversation_event_cursors"
+
+    conversation_id = Column(ForeignKey("conversations.id"), primary_key=True)
+    last_seq = Column(Integer, nullable=False, default=0)
+
+
 class Database:
     """Thin wrapper around an engine + sessionmaker."""
 
@@ -229,8 +287,14 @@ class Database:
         if self._is_file_sqlite:
             self._enable_wal()
         self._sessionmaker = sessionmaker(
-            self.engine, expire_on_commit=False, class_=Session
+            self.engine, expire_on_commit=False, class_=Session,
+            info={"agenthub_db": self},
         )
+        # Conversation events are recorded from the flush itself; see events.py.
+        self.events_ready = False
+        from agenthub_kernel.events import install_event_capture
+
+        install_event_capture(self._sessionmaker)
 
     def _enable_wal(self) -> None:
         """Enable WAL + a busy timeout so concurrent workers can interleave.
@@ -247,6 +311,7 @@ class Database:
 
     def create_all(self) -> None:
         Base.metadata.create_all(self.engine)
+        self.events_ready = True
 
     @contextmanager
     def session(self) -> Iterator[Session]:

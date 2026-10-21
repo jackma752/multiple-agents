@@ -6,6 +6,8 @@ Exposes the endpoints from AGENT_HUB_PLAN §5 (a pragmatic subset):
     GET    /api/agents                     list agents
     POST   /api/conversations/{id}/messages  save a message without a call
     POST   /api/conversations/{id}/invocations  save a message and pending approval
+    GET    /api/conversations/{id}/events   ordered events after a seq cursor
+    GET    /api/conversations/{id}/events/stream  SSE replay + follow (Last-Event-ID)
     POST   /api/invocations/{id}/run        execute only the named approved call
     POST   /api/tasks/{id}/delegations     propose a subtask (does not execute)
     POST   /api/invocations                create an awaiting-approval invocation

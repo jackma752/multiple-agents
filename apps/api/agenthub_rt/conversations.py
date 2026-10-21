@@ -1,15 +1,30 @@
 """Authenticated persistent chat routes, separate from the legacy console."""
 
-from typing import Literal
+import asyncio
+import json
+import time
+from typing import Literal, Optional
 
-from fastapi import Depends, HTTPException, Query
+from fastapi import Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, text
+from starlette.concurrency import run_in_threadpool
 
 from agenthub.chat import MAX_MESSAGE_CHARS, ConversationTurn
 from agenthub_kernel.conversations import (
     conversation_view, owned_conversation, submit_turn, turn_view,
 )
+from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
+
+SSE_RETRY_MS = 3000
+SSE_HEARTBEAT_SECONDS = 15.0
+SSE_BATCH = 200
+
+
+def sse_frame(event: dict) -> str:
+    data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+    return f"id: {event['seq']}\nevent: {event['type']}\ndata: {data}\n\n"
 from agenthub_kernel.db import ChatMessageRow, ConversationRow, InvocationRow
 from agenthub_kernel.service import QuotaError, new_id
 from agenthub_rt.auth import Principal, authenticate, require_approver
@@ -36,6 +51,9 @@ class TurnIn(MessageIn):
     agent_id: str = Field(min_length=1, max_length=200)
     client_request_id: str = Field(min_length=1, max_length=128)
     execution_mode: Literal["strict", "supervised"] = "strict"
+    # native_resume continues the provider thread of this agent's latest reply;
+    # the thread id is bound into the approved snapshot.
+    context_mode: Literal["independent", "native_resume"] = "independent"
 
     @field_validator("agent_id", "client_request_id")
     @classmethod
@@ -114,6 +132,99 @@ def register_conversations(app, db) -> None:
                 "has_more": len(rows) > limit,
                 "next_after_id": messages[-1]["message_id"] if messages else after_id,
             }
+
+    def read_page(session, cid, after: int, limit: int):
+        """Stored events (IDs/statuses only) plus server-attached chunk text.
+
+        Callers must have checked ownership of ``cid`` already.
+        """
+        page = read_events(session, cid, after, limit)
+        page["events"] = attach_stream_text(session, cid, page["events"])
+        return page
+
+    def cursor_ahead(exc: CursorAhead):
+        return HTTPException(409, detail={
+            "code": "cursor_ahead", "last_seq": exc.last_seq,
+            "message": "cursor is beyond this conversation's stored events",
+        })
+
+    @app.get("/api/conversations/{cid}/events")
+    def list_conversation_events(
+        cid: str, after_seq: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500),
+        principal: Principal = Depends(authenticate),
+    ):
+        with db.session() as session:
+            require_conversation(session, cid, principal)
+            try:
+                return {"conversation_id": cid, **read_page(session, cid, after_seq, limit)}
+            except CursorAhead as exc:
+                raise cursor_ahead(exc)
+
+    @app.get("/api/conversations/{cid}/events/stream")
+    async def stream_conversation_events(
+        cid: str, request: Request,
+        after_seq: int = Query(0, ge=0),
+        timeout: float = Query(30.0, ge=0, le=300),
+        last_event_id: Optional[str] = Header(None),
+        principal: Principal = Depends(authenticate),
+    ):
+        """SSE replay-then-follow. Reconnect with ``Last-Event-ID`` to resume.
+
+        The stream closes after ``timeout`` seconds; clients reconnect from the
+        last ``id`` they received. Polling the database (not an in-process
+        signal) keeps events written by a separate Worker process visible.
+        """
+        cursor = after_seq
+        if last_event_id is not None:
+            if not last_event_id.isdigit():
+                raise HTTPException(400, detail="Last-Event-ID must be a non-negative integer")
+            cursor = int(last_event_id)  # The browser's resume point wins.
+
+        def first_page():
+            with db.session() as session:
+                require_conversation(session, cid, principal)
+                return read_page(session, cid, cursor, SSE_BATCH)
+
+        try:
+            page = await run_in_threadpool(first_page)
+        except CursorAhead as exc:
+            raise cursor_ahead(exc)
+
+        def next_page(after: int):
+            # Ownership was checked by first_page for this same principal/cid.
+            with db.session() as session:
+                return read_page(session, cid, after, SSE_BATCH)
+
+        poll = float(getattr(app.state, "sse_poll_seconds", 0.5))
+
+        async def frames():
+            nonlocal page
+            deadline = time.monotonic() + timeout
+            beat = time.monotonic() + SSE_HEARTBEAT_SECONDS
+            after = cursor
+            yield f"retry: {SSE_RETRY_MS}\n\n"
+            while True:
+                for event in page["events"]:
+                    yield sse_frame(event)
+                after = page["next_after_seq"]
+                if page["has_more"]:
+                    page = await run_in_threadpool(next_page, after)
+                    continue
+                now = time.monotonic()
+                if now >= deadline or await request.is_disconnected():
+                    return
+                if now >= beat:
+                    beat = now + SSE_HEARTBEAT_SECONDS
+                    yield ": keep-alive\n\n"
+                await asyncio.sleep(min(poll, max(deadline - now, 0)))
+                try:
+                    page = await run_in_threadpool(next_page, after)
+                except CursorAhead:
+                    return  # Stream was replaced underneath us; client re-syncs.
+
+        return StreamingResponse(frames(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
 
     @app.post("/api/conversations/{cid}/invocations")
     def create_turn(cid: str, body: TurnIn, principal: Principal = Depends(authenticate)):

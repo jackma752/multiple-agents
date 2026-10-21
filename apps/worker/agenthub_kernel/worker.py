@@ -16,10 +16,15 @@ from typing import Any, Optional
 
 from sqlalchemy import select, text
 
-from agenthub.contracts import AdapterContract, InvocationStatus, execution_admission
+from agenthub.contracts import (
+    NATIVE_RESUME, AdapterContract, InvocationStatus, execution_admission,
+)
 from agenthub_kernel.db import Database, EventRow, InvocationRow, TaskRow
+from agenthub_kernel.events import StreamSink
 from agenthub_kernel.service import PolicyService, QuotaError
-from agenthub_kernel.conversations import capture_reply, restore_replies
+from agenthub_kernel.conversations import (
+    capture_reply, native_resume_blocker, restore_replies,
+)
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
 MOCK_RUNNING_STATE = "running"
@@ -512,6 +517,29 @@ class Worker:
                     "error": admission.reason,
                     "launch_attempted": False,
                 }
+            # Native resume is likewise decided before consumption: an adapter
+            # that would ignore resume_thread_id must not run the call as if
+            # it were independent, and a thread that may be busy is not reused.
+            refusal = None
+            if inv.snapshot.get("context_mode") == NATIVE_RESUME:
+                supports = getattr(self.adapter, "supports_native_resume", None)
+                try:
+                    resumable = bool(supports()) if callable(supports) else False
+                except Exception:  # noqa: BLE001
+                    resumable = False
+                if not resumable:
+                    refusal = ("native_resume_unsupported",
+                               "this adapter/transport cannot resume a provider thread")
+                else:
+                    refusal = native_resume_blocker(session, inv)
+            if refusal is not None:
+                return {
+                    "invocation_id": invocation_id,
+                    "ok": False,
+                    "code": refusal[0],
+                    "error": refusal[1],
+                    "launch_attempted": False,
+                }
 
             try:
                 plan = svc.consume(invocation_id)
@@ -533,14 +561,28 @@ class Worker:
 
         # ---- Phase 2: only now start the adapter, outside that transaction ----
         # The gate token proves an approval was consumed and a slot reserved; an
-        # adapter that launches a real process requires it.
+        # adapter that launches a real process requires it. A streaming adapter
+        # additionally reports provisional output, appended to the same
+        # conversation event stream while it runs; it settles nothing.
+        start_streaming = getattr(self.adapter, "start_streaming", None)
+        sink = StreamSink(self.db, invocation_id) if callable(start_streaming) else None
         try:
-            start = self.adapter.start(
-                invocation_id,
-                _snapshot_from_dict(snapshot_data),
-                gate_token=gate_token,
-            )
+            if sink is not None:
+                start = start_streaming(
+                    invocation_id,
+                    _snapshot_from_dict(snapshot_data),
+                    gate_token=gate_token,
+                    emit=sink.emit,
+                )
+            else:
+                start = self.adapter.start(
+                    invocation_id,
+                    _snapshot_from_dict(snapshot_data),
+                    gate_token=gate_token,
+                )
         except Exception as exc:  # noqa: BLE001
+            if sink is not None:
+                sink.close()
             # Last-resort guard. By now the approval is consumed and the slot
             # reserved, so letting the exception escape would leave a call stuck
             # in `starting` holding that slot forever, with no explanation. An
@@ -559,6 +601,8 @@ class Worker:
                 "error": reason,
                 "adapter_start_attempted": True,
             }
+        # Flush before settlement so every delta precedes the terminal status.
+        stream_stats = sink.close() if sink is not None else None
 
         # ---- Phase 3: record the outcome ----
         with self.db.session() as session:
@@ -602,13 +646,16 @@ class Worker:
                 )
             capture_reply(session, self.adapter, invocation_id)
 
-        return {
+        outcome = {
             "invocation_id": invocation_id,
             "ok": start.ok,
             "terminal": getattr(start, "terminal", True),
             "adapter_invocation_id": start.adapter_invocation_id,
             "adapter_start_attempted": True,
         }
+        if stream_stats is not None:
+            outcome["stream_events"] = stream_stats
+        return outcome
 
     def _pick_ready(
         self, session: Any, exclude: Optional[set[str]] = None,
