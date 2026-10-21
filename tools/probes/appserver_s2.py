@@ -29,6 +29,9 @@ SCENARIOS = ("happy", "turn-failed", "no-usage", "wrong-turn", "approval", "tool
 
 
 class S2Client(A.AppServerClient):
+    CLIENT_NAME = "agent-hub-s2"
+    PROMPT = PROMPT
+    EVIDENCE_CLASS = S2Evidence
     def __init__(self, transport, *, workdir: str, timeout: float):
         super().__init__(transport, request_timeout=min(timeout, 20))
         self.workdir = workdir
@@ -46,7 +49,7 @@ class S2Client(A.AppServerClient):
 
     def turn_params(self):
         return {"threadId": self.evidence.thread_id,
-                "input": [{"type": "text", "text": PROMPT}],
+                "input": [{"type": "text", "text": self.PROMPT}],
                 "approvalPolicy": "untrusted",
                 "sandboxPolicy": {"type": "readOnly", "networkAccess": False}}
 
@@ -57,7 +60,7 @@ class S2Client(A.AppServerClient):
             request = "id" in message and "result" not in message and "error" not in message
             valid = (
                 index == 0 and request and method == "initialize" and params == {
-                    "clientInfo": {"name": "agent-hub-s2", "version": "0.1.0"}}
+                    "clientInfo": {"name": self.CLIENT_NAME, "version": "0.1.0"}}
             ) or (
                 index == 1 and "id" not in message and method == "initialized" and params == {}
                 and self.sent[0]["id"] in self.acked
@@ -113,13 +116,14 @@ class S2Client(A.AppServerClient):
 
     def exercise(self):
         self.start()
-        A.AppServerSession(self).initialize(client_name="agent-hub-s2", version="0.1.0")
+        A.AppServerSession(self).initialize(client_name=self.CLIENT_NAME, version="0.1.0")
         result = self.request("thread/start", self.thread_params())
+        self.validate_thread_settings(result)
         thread_id = result.get("thread", {}).get("id")
         if not isinstance(thread_id, str) or not thread_id:
             raise A.AppServerProtocolError("missing thread id")
         with self.guard:
-            self.evidence = S2Evidence(thread_id)
+            self.evidence = self.EVIDENCE_CLASS(thread_id)
             if any(t != thread_id for t in self.observed_threads):
                 self.violation = True
                 raise A.AppServerProtocolError("unexpected thread before turn")
@@ -129,6 +133,7 @@ class S2Client(A.AppServerClient):
         terminal_tail = None
         while time.monotonic() < self.deadline:
             with self.guard:
+                self.tick()
                 summary = self.evidence.summary()
             if summary["violation"] or self.disconnected:
                 break
@@ -144,6 +149,12 @@ class S2Client(A.AppServerClient):
             if not self.evidence.summary()["terminal_confirmed"]:
                 raise A.AppServerTimeout("S2 terminal event deadline")
 
+    def tick(self):
+        """S2 sends no further messages; specialized probes may restrict responses."""
+
+    def validate_thread_settings(self, result):
+        """Specialized probes may require effective settings before starting a turn."""
+
     def close(self):
         super().close()
         if self._reader:
@@ -152,17 +163,19 @@ class S2Client(A.AppServerClient):
                 raise A.AppServerTimeout("S2 reader did not stop")
 
 
-def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home="", scenario="happy"):
+def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home="", scenario="happy",
+              _client_class=S2Client, _label="S2", _scenarios=SCENARIOS, _run_root=None, _stub_script=None):
     if real and not (approved and acknowledge_risk):
-        print("REFUSED: S2 needs separate one-turn approval and acknowledgement of unverified native control.")
+        print(f"REFUSED: {_label} needs separate one-turn approval and acknowledgement of unverified native control.")
         return 2  # BEFORE files, credentials, preflight or process creation
-    if scenario not in SCENARIOS or (real and scenario != "happy"):
-        raise ValueError("invalid S2 scenario")
-    RUN_ROOT.mkdir(parents=True, exist_ok=True)
-    run_dir = Path(tempfile.mkdtemp(prefix="real-" if real else "stub-", dir=RUN_ROOT))
+    if scenario not in _scenarios or (real and scenario != "happy"):
+        raise ValueError(f"invalid {_label} scenario")
+    run_root = _run_root or RUN_ROOT
+    run_root.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(tempfile.mkdtemp(prefix="real-" if real else "stub-", dir=run_root))
     # Keep model cwd outside the repository so it does not inherit repository
     # instructions merely because the diagnostic evidence lives under var/.
-    workdir = Path(tempfile.mkdtemp(prefix="agenthub-s2-work-", dir=WORK_ROOT))
+    workdir = Path(tempfile.mkdtemp(prefix=f"agenthub-{_label.lower()}-work-", dir=WORK_ROOT))
     result = {"mode": "real" if real else "stub", "passed": False,
               "process_started": False, "process_stopped": None,
               "terminal_confirmed": False, "verdict": "unconfirmed", "turn_attempts": 0,
@@ -174,12 +187,12 @@ def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home=
             argv, env = S1.preflight(codex_home)
             argv.extend(["--disable", "multi_agent"])
         else:
-            argv = [sys.executable, str(REPO / "tools/demo/stub_appserver_s2.py"), "--scenario", scenario]
+            argv = [sys.executable, str(_stub_script or REPO / "tools/demo/stub_appserver_s2.py"), "--scenario", scenario]
             env = dict(os.environ)
             env["CODEX_HOME"] = str(workdir)
         child = A.StdioTransport(argv, env=env, cwd=str(workdir), stderr_path=str(run_dir / "stderr.log"))
         result.update(process_started=True, pid=child.pid)
-        client = S2Client(child, workdir=str(workdir), timeout=60 if real else 2)
+        client = _client_class(child, workdir=str(workdir), timeout=60 if real else 2)
         client.exercise()
     except (A.AppServerError, S1.CheckFailed, OSError, ValueError, TypeError, AttributeError) as exc:
         result["error_type"] = type(exc).__name__  # never echo remote text
@@ -224,8 +237,10 @@ def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home=
                                                   or not result["process_stopped"]))
         if result.get("workdir_check_error_type") or result.get("cleanup_error_type"):
             result["manual_review_required"] = True
+        if hasattr(_client_class, "finalize_result"):
+            _client_class.finalize_result(result)
         (run_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        print("S2 PASSED" if result["passed"] else "S2 FAILED")
+        print(f"{_label} PASSED" if result["passed"] else f"{_label} {result.get('probe_verdict', 'FAILED')}")
         print(json.dumps({k: result[k] for k in ("mode", "turn_attempts", "process_stopped",
                                                 "terminal_confirmed", "verdict", "manual_review_required")}))
         print(f"Evidence: {run_dir / 'result.json'}")

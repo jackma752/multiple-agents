@@ -1,4 +1,19 @@
-# 当前交接：S2 工具与一次真实验证完成（2026-10-17）
+# 当前交接：S3 离线工具完成，等待单次真实授权（2026-10-18）
+
+- 分支 `feat/appserver-s3-probe`，基于 `023d0ab`；目录 `E:\plug\agent-hub\.worktrees\appserver-s3-probe`。
+- 解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`，worktree 内无 .venv。
+- S1/S2 已完成，**不得重跑**。S2 一次性授权已使用；本轮仅完成 S3 编码、桩进程与离线测试，未启动真实 Codex 或读取凭据。
+- 新工具 `tools/probes/appserver_s3.py`：新 thread、固定 read-only/on-request/user reviewer，回读有效设置后才允许一次固定主回合；唯一命令审批响应为匹配请求的 decline，所有 accept/会话策略修订均不可发送。
+- 判定要求实际审批链、完整发送的 decline、resolved、匹配 declined item、拒绝后的最终 DECLINED/增量/用量/终态及空目录；自述/缺证据不可 PASS。详细固定提示词、命令、风险与清理见 [S3 方案](appserver-s3-probe.md)。
+- 修复复核发现的三处缺口：未回读 effective reviewer/sandbox；最终回复可能早于拒绝；未区分初始命令与 writeStdin/子命令回调。非空 exitCode 可能是合成拒绝码，单独记录，不伪称命令已执行。
+- 新增 64 测试，全套 **553 passed in 34.56s**。独立 stub CLI → S3 PASSED；13 场景含权限回读反例，另验证非空工作目录保留。用量均为合成 fixture。
+- 下一步：取得一次真实 S3 的单独批准后，执行方案中的固定命令；失败即停，无重试。上轮 S2/笼统“继续”不扩大此前逐次批准的限制。
+- 本工具独立于生产内核/数据库，无生产配额行；缺匹配终态时 unconfirmed、人工核对，不能宣称保留生产配额或已停远端。
+- 严格真实准入仍关闭。旧 8080、共享 daemon、历史子 Agent、长期 home 均不处理；两项 DLL 记录保持 OPEN。未合并、未推送，无 remote。
+
+---
+
+# 历史交接：S2 工具与一次真实验证完成（2026-10-17）
 
 - 分支：`feat/appserver-s2-probe`；基于 `bdc6b40`，工具提交 `f65bca8`，本提交归档真实结果。
 - 目录：`E:\plug\agent-hub\.worktrees\appserver-s2-probe`；解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`。
