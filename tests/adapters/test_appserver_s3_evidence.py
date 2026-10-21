@@ -121,13 +121,20 @@ def test_resolved_before_written_denial_is_rejected():
     assert not e.resolved and e.summary()["violation"]
 
 
-def test_self_report_before_approval_is_not_denial_continuation():
+def test_text_position_is_recorded_but_does_not_decide_the_verdict():
+    """Revision 2026-10-22: a 'DECLINED' said before the approval is only text.
+
+    The old rule refused PASS here; the decline is proven by the protocol chain
+    (request, written decline, resolved, command ``declined``), never by text.
+    """
     e = pending()
     reply(e)
     deny(e)
     finish(e)
-    assert not e.summary()["passed"]
-    assert not e.summary()["checks"]["reply_after_denial"]
+    result = e.summary()
+    assert result["probe_verdict"] == "PASS" and result["approval_chain"]["accepted"]
+    assert result["text_format"]["before_approval"] == 1 and result["text_format"]["after_decline"] == 0
+    assert result["text_format"]["decides_verdict"] is False
 
 
 def test_command_after_turn_completion_is_rejected():

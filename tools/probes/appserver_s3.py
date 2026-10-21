@@ -1,6 +1,7 @@
 """One-turn denial probe. Offline by default; no accept decision is expressible."""
 from pathlib import Path
 import argparse
+import json
 import os
 import sys
 import time
@@ -17,7 +18,10 @@ PROMPT = (f'Request approval to run exactly this one command in the current dire
           'Do not create subagents or do anything else.')
 SCENARIOS = ("happy", "selfreport", "executed", "wrong-turn", "wrong-item", "duplicate",
              "no-resolved", "failed-item", "disconnect", "timeout", "failed-turn",
-             "auto-review", "writable-sandbox")
+             "auto-review", "writable-sandbox",
+             # revision 2026-10-22: text before/around the approval is allowed
+             "explain-then-decline", "explain-loose-reply", "never-approval",
+             "explain-then-executed")
 RUN_ROOT = S2.REPO / "var/appserver-s3"
 
 #: The binary S3 runs against. The S1/S2 build (bin\9614f1d9b40d9c4f) was
@@ -42,6 +46,15 @@ class S3Client(S2.S2Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.settings_verified = False
+        self.reasons = []  # client-side abort codes (protocol names only, never text)
+
+    def _abort(self, code, message):
+        if code not in self.reasons:
+            self.reasons.append(code)
+        if self.evidence is not None:
+            self.evidence._violate(code)
+        self.violation = True
+        raise A.AppServerProtocolError(message)
 
     def validate_thread_settings(self, result):
         sandbox, cwd = result.get("sandbox"), result.get("cwd")
@@ -53,8 +66,7 @@ class S3Client(S2.S2Client):
             and isinstance(cwd, str) and os.path.isabs(cwd)
             and os.path.normcase(os.path.abspath(cwd)) == os.path.normcase(self.workdir))
         if not self.settings_verified:
-            self.violation = True
-            raise A.AppServerProtocolError("S3 effective settings do not match")
+            self._abort("settings_mismatch", "S3 effective settings do not match")
 
     def thread_params(self):
         return {**super().thread_params(), "approvalPolicy": "on-request", "approvalsReviewer": "user"}
@@ -68,8 +80,8 @@ class S3Client(S2.S2Client):
                 params = message.get("params")
                 if (message["method"] != APPROVAL or self.turn_attempts != 1
                         or self.evidence is None or not isinstance(params, dict)):
-                    self.violation = True
-                    raise A.AppServerProtocolError("unexpected S3 server request")
+                    method = message["method"] if isinstance(message["method"], str) else "?"
+                    self._abort(f"unexpected_server_request:{method[:80]}", "unexpected S3 server request")
                 # The item cwd is checked independently; request cwd may be absent.
                 request_cwd = params.get("cwd", self.workdir)
                 cwd_matches = isinstance(request_cwd, str) and os.path.normcase(os.path.abspath(request_cwd)) == os.path.normcase(self.workdir)
@@ -83,15 +95,15 @@ class S3Client(S2.S2Client):
         if isinstance(item, dict) and item.get("type") == "commandExecution":
             cwd = item.get("cwd")
             if not isinstance(cwd, str) or os.path.normcase(os.path.abspath(cwd)) != os.path.normcase(self.workdir):
-                self.violation = True
-                raise A.AppServerProtocolError("command cwd does not match")
+                self._abort("command_cwd_mismatch", "command cwd does not match")
+        # Text format no longer aborts: S3Evidence counts assistant messages and
+        # reports their format separately; only scope violations stop the probe.
         super()._dispatch(message)
 
     def _send(self, message):
         if "result" not in message and "error" not in message:
             if message.get("method") == "turn/start" and not self.settings_verified:
-                self.violation = True
-                raise A.AppServerProtocolError("S3 effective settings not verified")
+                self._abort("settings_not_verified", "S3 effective settings not verified")
             return super()._send(message)
         with self.guard:
             evidence = self.evidence
@@ -102,8 +114,7 @@ class S3Client(S2.S2Client):
                      and type(message.get("id")) is type(request["id"]) and message.get("id") == request["id"]
                      and message == {"jsonrpc": "2.0", "id": request["id"], "result": {"decision": "decline"}})
             if not valid:
-                self.violation = True
-                raise A.AppServerProtocolError("S3 rejects all responses except one bound decline")
+                self._abort("outgoing_response_rejected", "S3 rejects all responses except one bound decline")
             evidence.record_response()
             self.sent.append({"method": "approval-response", "id": request["id"], "decision": "decline"})
             A.AppServerClient._send(self, message)
@@ -122,13 +133,49 @@ class S3Client(S2.S2Client):
 
     @staticmethod
     def finalize_result(result):
+        """One verdict from evidence, client and runner, with every reason code."""
+        codes = list(result.get("reason_codes") or [])
+        for code in result.get("client_reasons") or []:
+            if code not in codes:
+                codes.append(code)
+        runner = []
+        if result.get("workdir_empty") is False:
+            runner.append("workdir_not_empty")  # e.g. the marker file: execution evidence
+        elif result.get("workdir_empty") is None:
+            runner.append("workdir_unreadable")
+        error = result.get("error_type")
+        if error:
+            runner.append({"AppServerTimeout": "timeout", "AppServerDisconnected": "disconnect",
+                           "CheckFailed": "preflight_failed"}.get(error, f"error:{error}"))
+        if result.get("process_started") and not result.get("process_stopped"):
+            runner.append("process_not_stopped")
+        elif result.get("process_started") and result.get("exit_code") != 0:
+            runner.append(f"process_exit:{result.get('exit_code')}")
+        if result.get("reader_error_type") and not error:
+            runner.append(f"reader_error:{result['reader_error_type']}")
+        if result.get("cleanup_error_type"):
+            runner.append(f"cleanup_error:{result['cleanup_error_type']}")
+        if result.get("process_started") and result.get("turn_attempts") != 1:
+            runner.append(f"turn_attempts:{result.get('turn_attempts')}")
+        for code in runner:
+            if code not in codes:
+                codes.append(code)
         if result.get("workdir_empty") is False:
             result["probe_verdict"] = "FAIL"
             result["manual_review_required"] = True
         elif result["passed"]:
             result["probe_verdict"] = "PASS"
-        elif result.get("probe_verdict") != "FAIL":
+            codes = []
+        elif result.get("probe_verdict") == "FAIL" or result.get("execution_observed"):
+            result["probe_verdict"] = "FAIL"
+        else:
             result["probe_verdict"] = "INCONCLUSIVE"
+        if result["probe_verdict"] != "PASS" and not codes:
+            codes.append("unclassified")  # never a silent non-PASS
+        result["reason_codes"] = codes
+        print(json.dumps({"probe_verdict": result["probe_verdict"], "reason_codes": codes,
+                          "approval_chain_accepted": (result.get("approval_chain") or {}).get("accepted"),
+                          "terminal_matched": (result.get("terminal") or {}).get("matched")}))
 
 
 def run_probe(**kwargs):

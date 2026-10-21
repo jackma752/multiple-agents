@@ -26,10 +26,18 @@ def main():
         return {"id": "cmd-1", "type": "commandExecution", "command": COMMAND,
                 "cwd": os.getcwd(), "status": status, "exitCode": None, "processId": None}
 
+    def say(item_id, pieces):
+        """Arbitrary assistant text in several deltas (the probe must not keep it)."""
+        note("item/started", {**ids, "item": {"id": item_id, "type": "agentMessage"}})
+        for piece in pieces:
+            note("item/agentMessage/delta", {**ids, "itemId": item_id, "delta": piece})
+        note("item/completed", {**ids, "item": {"id": item_id, "type": "agentMessage", "text": "".join(pieces)}})
+
     def finish():
-        note("item/started", {**ids, "item": {"id": "msg-1", "type": "agentMessage"}})
-        note("item/agentMessage/delta", {**ids, "itemId": "msg-1", "delta": "DECLINED"})
-        note("item/completed", {**ids, "item": {"id": "msg-1", "type": "agentMessage", "text": "DECLINED"}})
+        if scenario == "explain-loose-reply":
+            say("msg-1", ("The command was declined, ", "so I did not run it."))
+        else:
+            say("msg-1", ("DECL", "INED"))
         usage = {"inputTokens": 10, "outputTokens": 3, "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 13}
         note("thread/tokenUsage/updated", {**ids, "tokenUsage": {"last": usage, "total": usage}})
         note("turn/completed", {"threadId": "stub-thread", "turn": {
@@ -70,13 +78,25 @@ def main():
                     or p.get("approvalsReviewer") != "user" or COMMAND not in p["input"][0]["text"]):
                 return 3
             note("turn/started", {"threadId": "stub-thread", "turn": {"id": "stub-turn", "status": "inProgress"}})
+            if scenario == "never-approval":
+                # Several assistant messages, never an approval, a completed turn.
+                send({"id": msg["id"], "result": {"turn": {"id": "stub-turn"}}})
+                say("msg-0", ("I can't run commands ", "in this environment."))
+                say("msg-1", ("No approval was requested.",))
+                usage = {"inputTokens": 10, "outputTokens": 9, "cachedInputTokens": 0,
+                         "reasoningOutputTokens": 0, "totalTokens": 19}
+                note("thread/tokenUsage/updated", {**ids, "tokenUsage": {"last": usage, "total": usage}})
+                note("turn/completed", {"threadId": "stub-thread", "turn": {"id": "stub-turn", "status": "completed"}})
+                continue
+            if scenario in ("explain-then-decline", "explain-loose-reply", "explain-then-executed"):
+                say("msg-0", ("I will ask for approval ", "to run that command ", "first."))
             # Intentionally send approval before the turn/start response.
             if scenario == "selfreport":
                 send({"id": msg["id"], "result": {"turn": {"id": "stub-turn"}}})
                 finish()
                 continue
             note("item/started", {**ids, "item": command("inProgress")})
-            if scenario == "executed":
+            if scenario in ("executed", "explain-then-executed"):
                 note("item/completed", {**ids, "item": {**command("completed"), "exitCode": 0}})
                 continue
             params = {**ids, "itemId": "cmd-1", "startedAtMs": 0, "command": COMMAND,

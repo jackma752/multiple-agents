@@ -106,6 +106,51 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s3.py --mode s
 
 若宿主权限限制写 home，只在获批后为这条命令申请执行权限；不会复制凭据或改变模型的 read-only 参数。
 
+## 判定修订（2026-10-22，用于下一次申请；不重新判定已完成的那一次）
+
+起因：第一次真实运行中，模型在任何审批请求之前就开始文字回复；旧规则要求每段增量只含 `DECLINED` 的字母，于是立即中止，拒绝链没有被触发（见 [S3 实录](appserver-s3-2026-10-22.md)）。
+
+修订只作用于 S3 的 `S3Evidence` 和探针。S2 的 `S2Evidence`、S1 工具和 S2 桩都没有改动；共享运行器只多了一个条件判断：client 有 `reasons` 时才复制到结果中。
+
+- **文字不再中止、也不决定结论**：允许审批前的说明文字，允许多个助手消息。结果中的 `text_format` 只记录元数据：
+  - 消息数，以及每条消息位于“审批前 / 审批待决时 / 拒绝后”中的哪一段；
+  - 增量的数量和字符数、推理增量的数量；
+  - 最后一条消息是否恰好为 `DECLINED`；
+  - 流式文本与完成文本是否一致。
+
+  文字只在内存中用于比对，比对完即丢弃，任何原文都**不保存**。增量只计数、不逐条记录，因此不再受原来 512 条事件的上限影响。
+- **三部分分别记录**：
+  - `text_format`：`decides_verdict: false`；
+  - `approval_chain`：thread 设置已核验、一个限定范围内的命令请求、decline 只写出一次、请求已 resolved、该命令状态为 `declined`、没有执行证据、没有含义不明的退出码、ID 一致，全部满足才为 `accepted`；
+  - `terminal`：本 turn 的 `turn/completed` 按 ID 匹配、状态、`one_turn_started`、`usage_received`。
+- **结论**：
+  - **FAIL**：有执行证据（processId、命令 completed、输出或通知、工作目录中出现文件），或越出固定范围（命令、目录或 ID 不符，重复审批，其他工具或 item 类型，意外的服务端请求，事件来自其他 thread/turn）；
+  - **PASS**：`approval_chain.accepted`，并且匹配到的回合以 `completed` 结束、收到了 usage；
+  - 其余为 **INCONCLUSIVE**。
+- **失败原因代码**（`reason_codes`，只有协议名或固定代码，不含任何文本）：
+
+| 类别 | 代码 |
+|---|---|
+| 执行证据 | `execution_observed`、`execution_output_observed`、`workdir_not_empty` |
+| 越界 / 协议 | `approval_scope_mismatch`、`duplicate_approval`、`command_scope_mismatch`、`command_ids_mismatch`、`command_cwd_mismatch`、`foreign_thread`、`foreign_turn`、`unbound_event`、`unexpected_item_type:<类型>`、`unexpected_notification:<方法>`、`unexpected_server_request:<方法>`、`resolved_mismatch`、`event_after_terminal`、`provider_error`、`settings_mismatch`、`outgoing_response_rejected` |
+| 证据不足 | `no_approval_request`、`decline_not_written`、`request_not_resolved`、`command_not_declined:<状态>`、`ambiguous_exit_code`、`terminal_not_matched`、`turn_status:<状态>`、`usage_missing`、`settings_not_verified` |
+| 运行器 | `timeout`、`disconnect`、`preflight_failed`、`process_not_stopped`、`process_exit:<码>`、`turn_attempts:<n>`、`cleanup_error:<类型>`、`workdir_unreadable` |
+
+  非 PASS 的结果至少带一个代码（兜底为 `unclassified`）。
+- **不变的部分**：固定命令和目录、thread/turn/item 绑定、只发送一次 decline、单回合、60 秒总时限，每个 RPC 最多 20 秒。
+
+离线验证：新增 `tests/test_appserver_s3_revision.py`，共 21 项：
+- “先说明，再审批、拒绝”为 PASS；
+- 回复措辞不同仍为 PASS，但单独记录 `final_message_exact_DECLINED=false`；
+- 始终没有审批时为 INCONCLUSIVE `no_approval_request`，并且没有中止，回合被跟随到匹配的终态；
+- 先说明，随后有执行迹象，为 FAIL `execution_observed`；
+- 原有 13 个场景各自带出对应的原因代码；
+- 30 条消息、1200 个增量时只计数，不保存任何文本；
+- 流式文本不一致只记录、不影响判定；
+- 其他工具、外来 ID、命令输出通知仍判为 FAIL。
+
+另外，按新规则改写了一项旧测试：审批前就说出 `DECLINED` 现在只记入文本格式，结论由协议链决定。连同 S1/S2/S3、identity、adapters 和卫生测试共 **385 passed**；修订测试连续 3 次通过。
+
 ## 官方代码依据与后续
 
 按用户要求先核对 GitHub 上的官方实现，再与本机已有 schema 对照，没有引入第三方源码：

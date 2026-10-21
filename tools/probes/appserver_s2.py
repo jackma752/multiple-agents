@@ -211,6 +211,8 @@ def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home=
         if client:
             result["sent"] = client.sent
             result["turn_attempts"] = client.turn_attempts
+            if hasattr(client, "reasons"):  # later probes only; S2's output is unchanged
+                result["client_reasons"] = list(client.reasons)
             result["client_violation"] = client.violation
             result["reader_error_type"] = type(client._error).__name__ if client._error else None
             if client.evidence:
