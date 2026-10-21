@@ -530,8 +530,8 @@ function renderCard(id) {
     el("dt", {}, DETAIL_LABEL[k] || k),
     el("dd", { class: k === "command" ? "mono" : "" }, typeof v === "string" ? v : JSON.stringify(v)),
   ]);
-  const delivery = card.delivery === "sent" ? `已送达：${card.decision_sent}`
-    : card.delivery === "sending" ? "发送中"
+  const delivery = card.delivery === "sent" ? `已发出：${card.decision_sent}`
+    : card.delivery === "sending" ? "已认领，可能正在发出（无法撤回）"
     : card.delivery === "failed" ? `送达失败（${card.decision_sent || "无"}）`
     : card.delivery === "blocked" ? "未发送（中断或停止后被拦截）"
     : card.delivery === "not_sent" ? "未发送（请求已结束）" : null;
@@ -591,9 +591,9 @@ function renderCall(c) {
       in_flight: i.in_flight_decisions || 0, already_sent: i.already_sent_decisions || 0 };
     if (!i.pending) {
       const parts = [`作废 ${k.closed_cards} 张待决卡`, `拦截 ${k.blocked_decisions} 个未发送的决定`];
-      if (k.in_flight) parts.push(`${k.in_flight} 个决定在关闭前已开始发送`);
-      if (k.already_sent) parts.push(`${k.already_sent} 个决定此前已送达`);
-      notes.push("中断生效：本调用的工具审批已关闭，之后不再向 provider 发送任何决定（" + parts.join("，") + "）");
+      if (k.in_flight) parts.push(`${k.in_flight} 个决定在关闭前已被认领，可能仍会发出、无法撤回，是否发出以卡片送达状态为准`);
+      if (k.already_sent) parts.push(`${k.already_sent} 个决定此前已发出`);
+      notes.push("中断生效：本调用的工具审批已关闭，不再认领新的决定（" + parts.join("，") + "）");
     }
     notes.push(i.pending ? "已请求中断，等待服务端答复…"
       : settled ? `已请求中断 → 已收到终态：${(CALL_LABEL[c.status] || [c.status])[0]}`

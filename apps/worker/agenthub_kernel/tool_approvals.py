@@ -19,10 +19,12 @@ Rules enforced here, not in the adapter or the page:
   approval racing an expiry or a second approval yields exactly one outcome.
 * Interrupt effective point: :func:`close_decisions` (same transaction as the
   interrupt/stop request, before anything is sent) closes the call's tool
-  decisions for good. Afterwards no decision is sent: the adapter must
-  :meth:`ToolGate.claim` a decision right before writing it, and a claim on
-  a closed call marks it ``blocked``. What was already ``sending``/``sent``
-  is reported, never rewritten.
+  decisions for good. Afterwards no new claim is granted: the adapter must
+  :meth:`ToolGate.claim` a decision right before writing it (a claim on a
+  closed call marks it ``blocked``), and may only fall back to an automatic
+  decline after :meth:`ToolGate.may_answer` confirms the call is open. A
+  decision claimed before the closure (``sending``) may still be written; it
+  is reported as in flight - not as written, and not as recallable.
 
 ``details`` may quote user or model content; it is returned only by the
 authenticated card endpoints. Events carry ids and statuses only.
@@ -226,8 +228,9 @@ class ToolGate:
         decided card whose delivery is still pending becomes ``sending`` and
         its answer is returned (``accept`` only for ``approved``); if the
         call's tool decisions are closed it becomes ``blocked`` instead. The
-        interrupt's effective point and this claim therefore serialize - one
-        of them is first, and the record says which.
+        effective point and a claim serialize - one of them is first, and the
+        record says which. A claim granted first may still be written after
+        the closure; nothing here can recall it.
         """
         try:
             with self.db.session() as session:
@@ -244,6 +247,20 @@ class ToolGate:
                 return "accept" if row.status == TOOL_APPROVAL_APPROVED else "decline"
         except Exception:  # noqa: BLE001
             return None  # unknown state: send nothing rather than guess
+
+    def may_answer(self) -> bool:
+        """May the adapter send an answer that has no card (fallback decline)?
+
+        True only when the call's tool decisions are verifiably still open.
+        Read under the writer lock so it serializes with the effective point
+        like a claim does; a closure, or a state that cannot be read, is False.
+        """
+        try:
+            with self.db.session() as session:
+                session.execute(text("BEGIN IMMEDIATE"))
+                return session.get(ToolGateClosureRow, self.invocation_id) is None
+        except Exception:  # noqa: BLE001
+            return False
 
     def delivered(self, card_id: str, *, decision: Optional[str], ok: bool) -> None:
         try:
@@ -272,9 +289,10 @@ def close_decisions(session: Any, invocation_id: str, *, reason: str, actor: str
     """The interrupt effective point. Caller holds the writer lock.
 
     Records the closure (once; later calls are repeats), voids pending cards
-    and blocks decided-but-unsent ones. Returns what was in which state so the
-    caller can record it truthfully: ``in_flight`` decisions were already
-    handed to the transport and may have reached the provider.
+    and blocks decided-but-unclaimed ones; no new claim is granted after this.
+    Returns what was in which state so the caller can record it truthfully:
+    ``in_flight`` decisions were claimed before the closure and may still be
+    written (or already have been) - they are neither confirmed nor recallable.
     """
     from sqlalchemy import inspect
 

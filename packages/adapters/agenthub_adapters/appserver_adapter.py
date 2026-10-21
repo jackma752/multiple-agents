@@ -19,7 +19,10 @@ Safety rules carried over from :mod:`agenthub_adapters.appserver`:
 
 * a tool approval request of this turn becomes a kernel card when the Worker
   supplies a ``tool_gate``; only a user-approved card is answered ``accept``,
-  once. Without a gate, or for any other request, the answer is ``decline``;
+  once, after the gate grants a claim. With a gate, any answer without a card
+  (card creation failed, foreign request) is sent only if ``may_answer()``
+  confirms the call's tool decisions are still open; otherwise nothing is
+  sent. Without a gate, every request is answered ``decline``;
 * real tool interception is still unverified (S3): the provider deciding to ask
   is its behaviour, not something this adapter can force;
 * only this turn's ``turn/completed`` with a terminal status settles a call;
@@ -190,6 +193,8 @@ class _Turn:
         # unanswered on purpose and must never be routed again - re-routing
         # would fall back to an automatic decline after the effective point.
         self.closed_requests: set[Any] = set()
+        # Methods of requests deliberately left unanswered by the gate.
+        self.unanswered: list[str] = []
         self.interrupt_requested = False
         self.interrupt_accepted = False
         # Provider-native child agents seen in this turn (ids/enums only).
@@ -570,6 +575,16 @@ class AppServerCodexAdapter(AdapterContract):
                 "remote_stop_confirmed": False, "reason": "awaiting_terminal_event"}
 
     @staticmethod
+    def _gate_allows_fallback(gate: Any) -> bool:
+        may_answer = getattr(gate, "may_answer", None)
+        if not callable(may_answer):
+            return False  # a gate that cannot say "open" allows nothing
+        try:
+            return bool(may_answer())
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
     def _has_unrouted(client: AppServerClient, turn: _Turn) -> bool:
         return any(not r.answered and r.id not in turn.cards and r.id not in turn.closed_requests
                    for r in client.server_requests())
@@ -600,6 +615,13 @@ class AppServerCodexAdapter(AdapterContract):
                     turn.cards[request.id] = (request, card_id)
                     turn.card_ids.append(card_id)
                     continue
+            if gate is not None and not self._gate_allows_fallback(gate):
+                # Card creation failed or the request is not ours, and the
+                # gate does not confirm the call is open (closed, or state
+                # unreadable): send nothing - not even an automatic decline.
+                turn.closed_requests.add(request.id)
+                turn.unanswered.append(request.method)
+                continue
             self._decline_one(client, turn, emit, request)
 
     def _answer_decided(self, client: AppServerClient, turn: _Turn, gate: Any) -> None:
@@ -733,6 +755,7 @@ class AppServerCodexAdapter(AdapterContract):
             "final_message": turn.final_message if turn else "",
             "usage": turn.usage if turn else {},
             "declined_requests": list(turn.declined) if turn else [],
+            "unanswered_requests": list(turn.unanswered) if turn else [],
             "tool_approvals": list(turn.card_ids) if turn else [],
             "interrupt_requested": bool(turn and turn.interrupt_requested),
             "interrupt_accepted": bool(turn and turn.interrupt_accepted),

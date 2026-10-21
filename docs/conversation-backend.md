@@ -247,8 +247,9 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
   - 已决定但尚未发送的，保留用户原来的决定（例如仍为 `approved`），但 `delivery=blocked`，不会被送出；
   - 之后新到的请求也会记一张卡，但状态为 `void` / `blocked`，没有人能回答；
   - API 批准或拒绝返回 409 `tool_decisions_closed`。
-- **发送前认领**：适配器在写出每个决定之前，都要先向 gate 认领（`claim`）。认领在写锁下进行：认领成功则 `delivery=sending`，并返回 `accept`（仅对 `approved`）或 `decline`；如果决定已经关闭，则改为 `blocked`，返回 None，什么都不发。生效点与认领互相串行，谁先发生，记录里就写谁。
-- **已经发出的如实记录**：关闭之前已经 `sending` 的计入 `in_flight`，已经 `sent` 的计入 `already_sent`，这两类都不改写，`decision_sent` 照实保留。被拒绝发送的请求不会再被当作新请求处理（修复了一个缺陷：此前会退回到自动 decline，在生效点之后仍发出了 decline）。
+- **发送前认领；关闭后不再授予新的认领**：适配器在写出每个决定之前，都要先向 gate 认领（`claim`）。认领在写锁下进行：认领成功则 `delivery=sending`，并返回 `accept`（仅对 `approved`）或 `decline`；如果决定已经关闭，则改为 `blocked`，返回 None，什么都不发。生效点与认领互相串行，谁先发生，记录里就写谁。
+- **关闭前已认领的，可能仍会发出**：关闭前已经认领（`sending`）的决定，在关闭之后仍可能被写出，也无法撤回。它们计入 `in_flight`，记录里**不声称**已经写出，也**不声称**可以撤回；最终是否发出，以该卡的 `delivery` 为准。`sent` 只表示适配器的写操作已经返回，不代表 provider 已经收到或执行；已经 `sent` 的计入 `already_sent`，不改写。
+- **没有卡片的回答也要经过关闭门禁**：建卡失败、请求不属于本回合、或请求方法不受支持时，适配器只有在 `may_answer()`（同样在写锁下读取关闭记录）确认本调用仍然开放时，才发送自动 decline 或 -32601。关闭之后，或关闭状态无法读取时，**什么都不发送**，请求记入执行记录的 `unanswered_requests`，之后也不会再被当作新请求处理。这修复了两个缺陷：一是被拒绝发送的请求会被重新处理，退回到自动 decline；二是建卡失败时直接自动 decline。两者都会导致生效点之后仍发出 decline。
 - **重复中断**：每次都写事件（`repeat=true`）并再次发送 `turn/interrupt`；关闭记录只有一行；调用只结算一次。
 - **完成与中断竞争**：如果回合在中断到达时恰好正常结束，就按实际结果结算为 `succeeded`，而不是 `canceled`。如果适配器不支持中断，请求同样会关闭工具审批，但不声称任何结果，也不把调用标为 unknown，调用之后照常结束。
 - 整树停止和本地停止也是生效点（`reason=tree_stop` / `local_stop`）。
@@ -289,3 +290,8 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - 子 Agent：没有结束证据时为 unknown 并保留名额，`parent_turn` 记录父回合实际的 completed，不生成回复；子 Agent 有自身 completed 时正常结算；只有子 Agent 自身的状态才算证据（5 种情形，message 和 prompt 都不复制）。
 
 这次按新规则调整了几项已有测试：`stream.turn_ended` 多了 `native_unfinished`；送达状态多了 `sending`；中断事件拆成了 requested 和 acknowledged 两条；本地停止后再批准返回 `tool_decisions_closed`；原生 spawn 没有结束证据时为 unknown。
+
+收尾（同一文件，增至 24 项，连续 3 次通过）：
+- “认领 → 暂停 → 关闭 → 恢复发送”的确定性测试：认领后让适配器停在写出之前，此时关闭；关闭结果计入 `in_flight`，卡片保持 `sending`（不改写成 sent，桩也还没有收到）。恢复后决定照常写出（桩收到 accept），卡片才变为 `sent`。
+- “关闭后的新请求 + 建卡失败”：没有发出任何响应（桩没有收到 srv-1 的回答），请求记入 `unanswered_requests`；对照组是调用仍开放时建卡失败，照常自动 decline。
+- 适配器单元测试：gate 没有 `may_answer`、`may_answer` 抛异常、或已关闭这三种情况下，对本回合请求和未知请求都不发送任何内容，也不会再处理同一请求；`may_answer` 能反映关闭状态，数据库不可用时返回 False。

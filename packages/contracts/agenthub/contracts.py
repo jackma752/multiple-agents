@@ -415,11 +415,14 @@ class AdapterContract:
     # Interrupt effective point: the Worker durably closes the call's tool
     # decisions BEFORE it sends ``turn/interrupt`` (also on a tree stop and a
     # local stop). From that commit on, no tool decision is sent to the
-    # provider: pending cards become ``void``; decided cards not yet sent are
-    # ``blocked``; new requests are recorded ``void``/``blocked``. A decision
-    # already handed to the transport (``sending``) or delivered (``sent``)
-    # is reported as such, never rewritten. The adapter must ``claim`` each
-    # decision from the gate right before writing it.
+    # provider: pending cards become ``void``; decided cards not yet claimed
+    # are ``blocked``; new requests are recorded ``void``/``blocked``; no new
+    # claim is granted. The adapter must ``claim`` each decision from the gate
+    # right before writing it, and may send nothing - not even an automatic
+    # decline - that the gate has not allowed. A decision claimed before the
+    # closure (``sending``) may still be written afterwards: it is reported as
+    # in flight, never claimed as written, and cannot be recalled; ``sent``
+    # only means the adapter's write returned.
     #
     # Native child agents: an observed child without trustworthy end evidence
     # (its own state ``completed``/``interrupted``/``errored``/``shutdown``)
@@ -460,10 +463,11 @@ TOOL_APPROVAL_STATUSES = frozenset({
     TOOL_APPROVAL_PENDING, TOOL_APPROVAL_APPROVED, TOOL_APPROVAL_DECLINED,
     TOOL_APPROVAL_EXPIRED, TOOL_APPROVAL_VOID,
 })
-#: Whether the provider actually received the answer: ``sending`` (claimed,
-#: being written), ``sent``, ``failed`` (the write failed), ``not_sent``
-#: (nothing left to answer) or ``blocked`` (decided, but tool decisions were
-#: closed by an interrupt/stop before it was sent - never delivered).
+#: What happened to the answer: ``sending`` (claimed; the adapter may be
+#: writing it - not proof it was written, and not recallable), ``sent`` (the
+#: write returned), ``failed`` (the write failed), ``not_sent`` (nothing left
+#: to answer) or ``blocked`` (decided, but tool decisions were closed by an
+#: interrupt/stop before it was claimed - never sent).
 TOOL_DELIVERY_PENDING = "pending"
 TOOL_DELIVERY_SENDING = "sending"
 TOOL_DELIVERY_SENT = "sent"
