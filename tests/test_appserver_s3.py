@@ -1,11 +1,15 @@
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 
 import pytest
 
 from agenthub_adapters import appserver as A
-from agenthub_adapters.appserver_s3_evidence import S3Evidence, COMMAND, APPROVAL
+from agenthub_adapters.appserver_s3_evidence import S3Evidence, APPROVAL, wrapped_forms
+
+SHELL = ("powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+WRAPPED = shlex.join(wrapped_forms(SHELL)["powershell_command"])
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +40,7 @@ def ready(*, turn=True):
     client.notify("initialized")
     client._send({"id": 2, "method": "thread/start", "params": client.thread_params()})
     client._dispatch({"id": 2, "result": settings()})
-    client.evidence = S3Evidence("t")
+    client.evidence = S3Evidence("t", session_shell=SHELL)
     if turn:
         client.validate_thread_settings(settings())
         client._send({"id": 3, "method": "turn/start", "params": client.turn_params()})
@@ -47,8 +51,8 @@ def pending(client):
     ids = {"threadId": "t", "turnId": "r"}
     client._dispatch({"method": "turn/started", "params": {"threadId": "t", "turn": {"id": "r", "status": "inProgress"}}})
     client._dispatch({"method": "item/started", "params": {**ids, "item": {
-        "id": "cmd", "type": "commandExecution", "status": "inProgress", "command": COMMAND, "cwd": str(ROOT)}}})
-    client._dispatch({"id": "req", "method": APPROVAL, "params": {**ids, "itemId": "cmd", "command": COMMAND}})
+        "id": "cmd", "type": "commandExecution", "status": "inProgress", "command": WRAPPED, "cwd": str(ROOT)}}})
+    client._dispatch({"id": "req", "method": APPROVAL, "params": {**ids, "itemId": "cmd", "command": WRAPPED}})
     client.evidence.bind_turn("r")
 
 

@@ -1,6 +1,7 @@
 """One-turn denial probe. Offline by default; no accept decision is expressible."""
 from pathlib import Path
 import argparse
+import functools
 import json
 import os
 import sys
@@ -9,7 +10,7 @@ import time
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import appserver_s2 as S2
-from agenthub_adapters.appserver_s3_evidence import S3Evidence, COMMAND, APPROVAL
+from agenthub_adapters.appserver_s3_evidence import S3Evidence, COMMAND, APPROVAL, resolve_session_shell
 
 A = S2.A
 PROMPT = (f'Request approval to run exactly this one command in the current directory: {COMMAND}. '
@@ -21,7 +22,10 @@ SCENARIOS = ("happy", "selfreport", "executed", "wrong-turn", "wrong-item", "dup
              "auto-review", "writable-sandbox",
              # revision 2026-10-22: text before/around the approval is allowed
              "explain-then-decline", "explain-loose-reply", "never-approval",
-             "explain-then-executed")
+             "explain-then-executed",
+             # command scope (2026-10-22): wrapped forms, rewrites, additions
+             "noprofile", "bare-command", "rewritten-command", "appended-command",
+             "extra-argument", "other-shell", "approval-command-differs", "remote-environment")
 RUN_ROOT = S2.REPO / "var/appserver-s3"
 
 #: The binary S3 runs against. The S1/S2 build (bin\9614f1d9b40d9c4f) was
@@ -47,6 +51,10 @@ class S3Client(S2.S2Client):
         super().__init__(*args, **kwargs)
         self.settings_verified = False
         self.reasons = []  # client-side abort codes (protocol names only, never text)
+        # The child inherits this environment, so this is the shell Codex wraps
+        # the fixed command in; the evidence matches the exact derived argv.
+        self.session_shell = resolve_session_shell(os.environ)
+        self.EVIDENCE_CLASS = functools.partial(S3Evidence, session_shell=self.session_shell)
 
     def _abort(self, code, message):
         if code not in self.reasons:

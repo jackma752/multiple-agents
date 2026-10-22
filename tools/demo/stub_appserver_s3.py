@@ -1,17 +1,48 @@
-"""Synthetic approval peer: no shell, network, model or credential access."""
+"""Synthetic approval peer: no shell, network, model or credential access.
+
+Commands are reported the way the tested Codex build reports them: the fixed
+command wrapped in the session shell's argv and shlex-joined (see
+appserver_s3_evidence). Naming that shell only checks whether files exist.
+"""
 import argparse
 import json
 import os
+from pathlib import Path
+import shlex
 import sys
 
-COMMAND = 'cmd.exe /d /c "echo S3_EXECUTED>S3_EXECUTED.txt"'
-APPROVAL = "item/commandExecution/requestApproval"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages/adapters"))
+from agenthub_adapters.appserver_s3_evidence import (  # noqa: E402
+    APPROVAL, COMMAND, resolve_session_shell, wrapped_forms)
+
+ITEM_ID = "exec-00000000-0000-4000-8000-000000000001"  # code-mode nested call id shape
+REASON = "SYNTHETIC-REASON please approve this"  # stands in for model-written justification
+
+
+def reported_commands(scenario):
+    """(item command, approval command) strings, as Codex would report them."""
+    shell = resolve_session_shell()
+    forms = wrapped_forms(shell)
+    default_argv = next(iter(forms.values()))
+    path, flags = default_argv[0], default_argv[1:-1]
+    default = shlex.join(default_argv)
+    noprofile = shlex.join(forms.get("powershell_noprofile_command", default_argv))
+    item = {
+        "noprofile": noprofile,
+        "bare-command": COMMAND,
+        "rewritten-command": shlex.join([path, *flags, COMMAND.replace(">S3_EXECUTED.txt", ">S3_OTHER.txt")]),
+        "appended-command": shlex.join([path, *flags, COMMAND + " & del S3_EXECUTED.txt"]),
+        "extra-argument": shlex.join([*default_argv, "-NoExit"]),
+        "other-shell": shlex.join([r"C:\Windows\System32\cmd.exe", "/c", COMMAND]),
+    }.get(scenario, default)
+    return item, (noprofile if scenario == "approval-command-differs" else item)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", required=True)
     scenario = parser.parse_args().scenario
+    item_command, approval_command = reported_commands(scenario)
     state = 0
     ids = {"threadId": "stub-thread", "turnId": "stub-turn"}
 
@@ -23,8 +54,8 @@ def main():
         send({"method": method, "params": params})
 
     def command(status):
-        return {"id": "cmd-1", "type": "commandExecution", "command": COMMAND,
-                "cwd": os.getcwd(), "status": status, "exitCode": None, "processId": None}
+        return {"id": ITEM_ID, "type": "commandExecution", "command": item_command, "commandActions": [],
+                "cwd": os.getcwd(), "source": "agent", "status": status, "exitCode": None, "processId": None}
 
     def say(item_id, pieces):
         """Arbitrary assistant text in several deltas (the probe must not keep it)."""
@@ -95,12 +126,17 @@ def main():
                 send({"id": msg["id"], "result": {"turn": {"id": "stub-turn"}}})
                 finish()
                 continue
+            # The app-server's pending item, emitted just before the approval.
             note("item/started", {**ids, "item": command("inProgress")})
             if scenario in ("executed", "explain-then-executed"):
                 note("item/completed", {**ids, "item": {**command("completed"), "exitCode": 0}})
                 continue
-            params = {**ids, "itemId": "cmd-1", "startedAtMs": 0, "command": COMMAND,
-                      "cwd": os.getcwd(), "availableDecisions": ["accept", "decline", "cancel"]}
+            # As the tested build sends it: local environment, default decision
+            # list without "decline", and a model-written reason.
+            params = {**ids, "itemId": ITEM_ID, "startedAtMs": 0, "command": approval_command,
+                      "cwd": os.getcwd(), "kind": "command", "reason": REASON,
+                      "environmentId": "remote" if scenario == "remote-environment" else "local",
+                      "availableDecisions": ["accept", "cancel"]}
             if scenario == "wrong-turn":
                 params["turnId"] = "foreign"
             if scenario == "wrong-item":

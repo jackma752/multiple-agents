@@ -1,20 +1,24 @@
 import json
+import shlex
 
 import pytest
 
-from agenthub_adapters.appserver_s3_evidence import S3Evidence, COMMAND
+from agenthub_adapters.appserver_s3_evidence import S3Evidence, wrapped_forms
 
 
 IDS = {"threadId": "t", "turnId": "r"}
+SHELL = ("powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+#: How the tested build reports the fixed command: the session shell's argv, shlex-joined.
+WRAPPED = shlex.join(wrapped_forms(SHELL)["powershell_command"])
 
 
 def command(status):
-    return {**IDS, "item": {"id": "cmd", "type": "commandExecution", "command": COMMAND,
-                           "status": status, "processId": None, "exitCode": None}}
+    return {**IDS, "item": {"id": "cmd", "type": "commandExecution", "command": WRAPPED,
+                           "source": "agent", "status": status, "processId": None, "exitCode": None}}
 
 
 def pending():
-    e = S3Evidence("t")
+    e = S3Evidence("t", session_shell=SHELL)
     e.settings_verified = True
     e.bind_turn("r")
     e.observe("turn/started", {"threadId": "t", "turn": {"id": "r", "status": "inProgress"}})
@@ -23,7 +27,7 @@ def pending():
 
 
 def approval(**changes):
-    return {**IDS, "itemId": "cmd", "command": COMMAND, "startedAtMs": 0, **changes}
+    return {**IDS, "itemId": "cmd", "command": WRAPPED, "startedAtMs": 0, **changes}
 
 
 def deny(e):
@@ -70,15 +74,30 @@ def test_missing_verification_or_response_evidence_cannot_pass(field):
 
 @pytest.mark.parametrize("change", [
     {"threadId": "foreign"}, {"turnId": "foreign"}, {"itemId": "foreign"},
-    {"command": "another command"}, {"kind": "writeStdin"}, {"kind": "unknown"},
-    {"approvalId": "subcallback"}, {"environmentId": "remote"},
-    {"networkApprovalContext": {"host": "example.test"}}, {"availableDecisions": ["accept"]},
+    {"command": "another command"}, {"command": None}, {"kind": "writeStdin"}, {"kind": "unknown"},
+    {"approvalId": "subcallback"}, {"environmentId": "remote"}, {"environmentId": "Local"},
+    {"environmentId": ""}, {"networkApprovalContext": {"host": "example.test"}},
     {"availableDecisions": "decline"},
 ])
 def test_wrong_scope_other_action_or_remote_approval_never_accepted(change):
     e = pending()
     e.receive_approval("req", approval(**change), cwd_matches=True)
     assert e.request is None and e.summary()["violation"]
+    assert "approval_scope_mismatch" in e.summary()["reason_codes"]
+
+
+@pytest.mark.parametrize("change", [
+    {}, {"environmentId": "local"}, {"availableDecisions": ["accept", "cancel"]},
+    {"availableDecisions": ["accept", {"acceptWithExecpolicyAmendment": {"execpolicy_amendment": ["cmd.exe"]}}, "cancel"]},
+])
+def test_tested_build_approval_shape_is_in_scope(change):
+    """Revision 2026-10-22 (source of rust-v0.163.0-alpha.10.2): unified exec
+    approvals carry environment "local" and the default decision list, which
+    has no "decline"; the server maps a decline to a denial regardless."""
+    e = pending()
+    e.receive_approval("req", approval(**change), cwd_matches=True)
+    assert e.request is not None and not e.summary()["violation"]
+    assert e.request["decline_listed"] is False
 
 
 @pytest.mark.parametrize("request_id", [True, None, {}, []])

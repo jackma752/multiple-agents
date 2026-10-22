@@ -6,10 +6,11 @@ evidence calls. No Codex, no model, no credentials.
 import importlib.util
 import json
 from pathlib import Path
+import shlex
 
 import pytest
 
-from agenthub_adapters.appserver_s3_evidence import COMMAND, S3Evidence
+from agenthub_adapters.appserver_s3_evidence import S3Evidence, wrapped_forms
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("s3_probe_revision_test", ROOT / "tools/probes/appserver_s3.py")
@@ -18,7 +19,8 @@ SPEC.loader.exec_module(S3)
 
 #: Text the stub speaks; none of it may appear in the saved evidence.
 STUB_TEXTS = ("I will ask for approval", "to run that command", "I can't run commands",
-              "No approval was requested", "The command was declined", "so I did not run it")
+              "No approval was requested", "The command was declined", "so I did not run it",
+              "SYNTHETIC-REASON")  # the approval's model-written reason
 
 
 def run(monkeypatch, tmp_path, scenario):
@@ -102,10 +104,12 @@ def test_every_scenario_names_its_reason(monkeypatch, tmp_path, scenario, verdic
 # --------------------------------------------------------------------------- #
 
 IDS = {"threadId": "t", "turnId": "r"}
+SHELL = ("powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+WRAPPED = shlex.join(wrapped_forms(SHELL)["powershell_command"])
 
 
 def started():
-    e = S3Evidence("t")
+    e = S3Evidence("t", session_shell=SHELL)
     e.settings_verified = True
     e.bind_turn("r")
     e.observe("turn/started", {"threadId": "t", "turn": {"id": "r", "status": "inProgress"}})
@@ -151,7 +155,7 @@ def test_other_tool_items_and_foreign_ids_stay_scope_violations():
 
 def test_command_output_notification_is_execution_evidence():
     e = started()
-    e.observe("item/started", {**IDS, "item": {"id": "cmd", "type": "commandExecution", "command": COMMAND,
+    e.observe("item/started", {**IDS, "item": {"id": "cmd", "type": "commandExecution", "command": WRAPPED,
                                                 "status": "inProgress", "processId": None, "exitCode": None}})
     e.observe("item/commandExecution/outputDelta", {**IDS, "itemId": "cmd", "delta": "x"})
     summary = e.summary()

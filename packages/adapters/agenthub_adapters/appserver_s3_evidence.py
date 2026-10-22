@@ -19,9 +19,22 @@ command, directory and ids; one request; no other tools or server requests);
 **PASS** only when the chain is accepted and the matched turn completed with
 usage; otherwise **INCONCLUSIVE**. Every non-PASS outcome lists reason codes.
 
+Command scope (revised again 2026-10-22, from the tested build's source,
+tag ``rust-v0.163.0-alpha.10.2``): Codex never reports the fixed command bare.
+``exec_command`` wraps it in the session shell (``derive_exec_args``) and the
+item/approval ``command`` is ``shlex_join`` of that argv. The string is split
+back into argv and must equal one exact derived argv - outer program, flags and
+the inner fixed command - never a substring match. Approvals carry the local
+turn environment (``"local"``) and a default decision list without
+``decline``; the server still maps ``decline`` to a denial.
+
 The S2 rules (``S2Evidence``) are not changed: only turn binding is reused.
 """
 from collections import Counter
+import hashlib
+import ntpath
+import os
+import shlex
 
 from .appserver_s2_evidence import S2Evidence
 
@@ -29,6 +42,14 @@ MARKER = "S3_EXECUTED.txt"
 COMMAND = 'cmd.exe /d /c "echo S3_EXECUTED>S3_EXECUTED.txt"'
 APPROVAL = "item/commandExecution/requestApproval"
 EXPECTED_REPLY = "DECLINED"
+
+#: shell-command/src/shell_detect.rs (Windows) at rust-v0.163.0-alpha.10.2.
+PWSH_FALLBACK_PATHS = (r"C:\Program Files\PowerShell\7\pwsh.exe",)
+POWERSHELL_FALLBACK_PATHS = (r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",)
+COMMAND_SOURCES = ("agent", "userShell", "unifiedExecStartup", "unifiedExecInteraction")
+#: Unified exec approvals name the turn environment; locally that is
+#: exec-server's LOCAL_ENVIRONMENT_ID. Any other environment is out of scope.
+LOCAL_ENVIRONMENT_IDS = (None, "local")
 
 REASONING_DELTAS = ("item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded",
                     "item/reasoning/textDelta")
@@ -38,12 +59,94 @@ TERMINAL_STATUSES = ("completed", "failed", "interrupted")
 MAX_TEXT_CHARS = 200_000  # in-memory comparison bound only; nothing is stored
 
 
+def _which(name, env, isfile):
+    """``which::which`` on Windows: PATH entries in order, then PATHEXT order."""
+    extensions = [e for e in (env.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(";") if e]
+    for folder in (env.get("PATH") or "").split(";"):
+        folder = folder.strip().strip('"')
+        if not folder or not ntpath.isabs(folder):
+            continue
+        for extension in extensions:
+            candidate = ntpath.join(folder, name + extension)
+            if isfile(candidate):
+                return candidate
+    return None
+
+
+def resolve_session_shell(env=None, isfile=os.path.isfile):
+    """(kind, path) of the shell Codex wraps ``exec_command`` in on Windows.
+
+    Same order as shell_detect.rs: pwsh (PATH, then its fallback path), then
+    powershell (PATH, then fallback), else ``cmd.exe``. Only file existence is
+    checked; nothing is executed.
+    """
+    env = os.environ if env is None else env
+    for name, fallbacks in (("pwsh", PWSH_FALLBACK_PATHS), ("powershell", POWERSHELL_FALLBACK_PATHS)):
+        path = _which(name, env, isfile) or next((p for p in fallbacks if isfile(p)), None)
+        if path:
+            return ("powershell", path)
+    return ("cmd", "cmd.exe")
+
+
+def wrapped_forms(shell):
+    """Every argv ``derive_exec_args`` can produce for COMMAND under ``shell``.
+
+    PowerShell adds ``-NoProfile`` only for a non-login shell, which depends on
+    config and the model's ``login`` argument, so both shapes are in scope.
+    """
+    kind, path = shell
+    if kind == "powershell":
+        return {"powershell_command": (path, "-Command", COMMAND),
+                "powershell_noprofile_command": (path, "-NoProfile", "-Command", COMMAND)}
+    return {"cmd_c": (path, "/c", COMMAND)}
+
+
+def _same_program(a, b):
+    return ntpath.normcase(ntpath.normpath(a)) == ntpath.normcase(ntpath.normpath(b))
+
+
+def classify_command(text, shell):
+    """(form or None, fixed check label) for a reported ``command`` string.
+
+    The string is ``shlex_join(argv)``; it is split back and compared element
+    by element with the derived argv. The text itself is never returned.
+    """
+    if not isinstance(text, str) or not text or "\0" in text:
+        return None, "not_a_command_string"
+    if text == COMMAND:
+        return None, "unwrapped_fixed_command"
+    try:
+        argv = shlex.split(text, posix=True)
+    except ValueError:
+        return None, "unparseable"
+    for form, expected in wrapped_forms(shell).items():
+        if (len(argv) == len(expected) and _same_program(argv[0], expected[0])
+                and tuple(argv[1:]) == expected[1:]):
+            return form, "match"
+    if not argv or not _same_program(argv[0], shell[1]):
+        return None, "program_mismatch"
+    if COMMAND not in argv[1:]:  # whole-element equality: the inner script was changed
+        return None, "inner_command_mismatch"
+    return None, "arguments_mismatch"
+
+
+def _digest(text):
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest() if isinstance(text, str) else None
+
+
+def _source_label(source):
+    if source is None:
+        return "absent"
+    return source if source in COMMAND_SOURCES else "other"
+
+
 class S3Evidence(S2Evidence):
     #: Structural events only; deltas are counted, not recorded one by one.
     MAX_EVENTS = 2048
 
-    def __init__(self, thread_id):
+    def __init__(self, thread_id, session_shell=None):
         super().__init__(thread_id, expected_reply=EXPECTED_REPLY)
+        self.session_shell = tuple(session_shell) if session_shell else resolve_session_shell()
         self.commands = []
         self.request = None
         self.response_attempted = False
@@ -217,13 +320,28 @@ class S3Evidence(S2Evidence):
                 message["stream_matches_text"] = None  # not streamed at all
 
     def _command(self, method, params, item):
-        valid = (self.scoped(params) and isinstance(item.get("id"), str) and bool(item["id"])
-                 and item.get("command") == COMMAND and item.get("environmentId") is None)
-        valid = valid and any(e["method"] == "turn/started" for e in self.turn_events)
+        text = item.get("command")
+        form, check = classify_command(text, self.session_shell)
+        failed = []
+        if not (self.scoped(params) and isinstance(item.get("id"), str) and item["id"]):
+            failed.append("ids")
+        if form is None:
+            failed.append(f"command:{check}")
+        if item.get("environmentId") is not None:
+            failed.append("environment")
+        # The pending item (before approval) and the declined completion are
+        # both emitted by the app-server with source Agent; a real run's Begin
+        # is unifiedExecStartup and carries a processId.
+        if item.get("source") not in (None, "agent"):
+            failed.append("source")
+        if not any(e["method"] == "turn/started" for e in self.turn_events):
+            failed.append("before_turn_started")
         if self.request and item.get("id") != self.request["item_id"]:
-            valid = False
+            failed.append("item_id")
         entry = {"method": method, "item_id": item.get("id"), "turn_id": params.get("turnId"),
-                 "status": item.get("status"), "command_matches": item.get("command") == COMMAND}
+                 "status": item.get("status"), "source": _source_label(item.get("source")),
+                 "command_matches": form is not None, "command_form": form,
+                 "command_check": check, "command_sha256": _digest(text)}
         self.commands.append(entry)
         self.audit[-1].update(entry)
         if item.get("processId") is not None or item.get("status") == "completed" or item.get("aggregatedOutput"):
@@ -234,11 +352,23 @@ class S3Evidence(S2Evidence):
             # A rejected execution can carry a synthetic -1: ambiguous, not proof.
             self.ambiguous_exit_code = True
         if method == "item/started":
-            valid = valid and len(self.commands) == 1 and item.get("status") == "inProgress"
+            if len(self.commands) != 1:
+                failed.append("not_first_command")
+            if item.get("status") != "inProgress":
+                failed.append("status")
         else:
-            valid = valid and self.response_written and len(self.commands) == 2
-            valid = valid and self.commands[0]["item_id"] == item.get("id")
-        if not valid:
+            if not self.response_written:
+                failed.append("before_decline")
+            if len(self.commands) != 2:
+                failed.append("not_second_entry")
+            elif self.commands[0]["item_id"] != item.get("id"):
+                failed.append("item_id")
+            elif self.commands[0]["command_sha256"] != entry["command_sha256"]:
+                failed.append("command_changed")
+        if failed:
+            failed = list(dict.fromkeys(failed))
+            entry["failed_checks"] = failed
+            self.audit[-1]["failed_checks"] = failed
             self._violate("command_scope_mismatch")
 
     # -- the approval request and our single answer ------------------------------
@@ -247,23 +377,57 @@ class S3Evidence(S2Evidence):
         if not isinstance(params, dict) or len(self.audit) >= self.MAX_EVENTS:
             self._violate("malformed_approval")
             return
-        self.audit.append({"kind": "approval", "id": request_id})
+        entry = {"kind": "approval", "id": request_id}
+        self.audit.append(entry)
         if self.request is not None:
             self._violate("duplicate_approval")
             return
-        valid = (type(request_id) in (str, int) and self.scoped(params)
-                 and not self.terminal_seen
-                 and len(self.commands) == 1 and params.get("itemId") == self.commands[0]["item_id"]
-                 and self.commands[0]["command_matches"] and cwd_matches
-                 and params.get("command", COMMAND) == COMMAND
-                 and params.get("kind", "command") == "command" and params.get("approvalId") is None
-                 and params.get("environmentId") is None and params.get("networkApprovalContext") is None
-                 and (params.get("availableDecisions") is None or (
-                     isinstance(params["availableDecisions"], list) and "decline" in params["availableDecisions"])))
-        if not valid:
+        first = self.commands[0] if len(self.commands) == 1 else None
+        text = params.get("command")
+        form, check = classify_command(text, self.session_shell)
+        decisions = params.get("availableDecisions")
+        environment = params.get("environmentId")
+        failed = []
+        if type(request_id) not in (str, int):
+            failed.append("request_id")
+        if not self.scoped(params):
+            failed.append("ids")
+        if self.terminal_seen:
+            failed.append("after_terminal")
+        if first is None or params.get("itemId") != first["item_id"]:
+            failed.append("item_id")
+        elif not first["command_matches"]:
+            failed.append("command_item_out_of_scope")
+        if not cwd_matches:
+            failed.append("cwd")
+        # The approval repeats the exact argv (unredacted shlex_join); it must
+        # be the same in-scope command as the pending item, not merely similar.
+        if form is None:
+            failed.append(f"command:{check}")
+        elif first is not None and (form != first["command_form"] or _digest(text) != first["command_sha256"]):
+            failed.append("command_differs_from_item")
+        if params.get("kind", "command") != "command":
+            failed.append("kind")
+        if params.get("approvalId") is not None:
+            failed.append("approval_id")
+        if environment not in LOCAL_ENVIRONMENT_IDS:
+            failed.append("environment")
+        if params.get("networkApprovalContext") is not None:
+            failed.append("network")
+        # The tested build sends its default list (accept, optional amendment,
+        # cancel) and does not check the answer against it; ``decline`` is
+        # mapped to a denial either way, so it need not be listed.
+        if decisions is not None and not isinstance(decisions, list):
+            failed.append("available_decisions")
+        entry.update(command_form=form, command_check=check,
+                     environment="absent" if environment is None else ("local" if environment == "local" else "other"),
+                     decline_listed=isinstance(decisions, list) and "decline" in decisions)
+        if failed:
+            entry["failed_checks"] = failed
             self._violate("approval_scope_mismatch")
             return
-        self.request = {"id": request_id, "item_id": params["itemId"], "turn_id": params["turnId"]}
+        self.request = {"id": request_id, "item_id": params["itemId"], "turn_id": params["turnId"],
+                        "environment": entry["environment"], "decline_listed": entry["decline_listed"]}
 
     def record_response(self, *, written=False):
         if written:
@@ -359,8 +523,12 @@ class S3Evidence(S2Evidence):
                   "usage_received": terminal["usage_received"], "no_violation": not violation}
         legacy = {"completed": "finished", "failed": "failed",
                   "interrupted": "cancelled"}.get(status, "unconfirmed") if terminal_confirmed else "unconfirmed"
+        command_scope = {"session_shell_kind": self.session_shell[0], "session_shell_path": self.session_shell[1],
+                         "allowed_forms": list(wrapped_forms(self.session_shell)),
+                         "match_rule": "shlex_split_exact_argv"}
         return {"passed": verdict == "PASS", "probe_verdict": verdict, "reason_codes": reasons,
                 "text_format": text_format, "approval_chain": approval_chain, "terminal": terminal,
+                "command_scope": command_scope,
                 "checks": checks, "terminal_confirmed": terminal_confirmed, "verdict": legacy,
                 "thread_id": self.thread_id, "turn_id": self.turn_id, "usage": self.usage,
                 # Only ever the fixed expected string, never model text.
