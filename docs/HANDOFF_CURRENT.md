@@ -1,4 +1,20 @@
-# 当前交接：S3 第三次真实运行 PASS（只认定本次拒绝链通过，2026-10-22）
+# 当前交接：S4 中断探针离线准备完成，等待单次真实授权（2026-10-22）
+
+- 分支 `feat/appserver-s4-probe`，基于 S3 的 `85bfae9`；目录 `E:\plug\agent-hub\.worktrees\appserver-s4-probe`。
+- 新增内容：
+  - `tools/probes/appserver_s4.py`；
+  - `packages/adapters/agenthub_adapters/appserver_s4_evidence.py`；
+  - `tools/demo/stub_appserver_s4.py`；
+  - `tests/test_appserver_s4.py`（65 项）；
+  - [S4 方案](appserver-s4-probe.md)。
+- 判定只看本回合自己的 `turn/completed(interrupted)`。中断应答、模型文字和本地进程停止，都不能证明已停止。主回合终态、工具活动和本地清理（含后代进程）分开记录。
+- 已与 interrupt-stop 的既有契约逐条对照；被测版本 alpha.11 的中断语义已按源码离线核对；S4 协议事实在现有捕获上为 13/13。
+- 测试：S4 65 passed，全量 725 passed。没有执行 Codex。S1–S3 的证据保持不变，S5 不会自动执行。
+- 下一步：用户单独批准一次真实 S4 之后，才执行方案中的固定命令。
+
+---
+
+# 历史交接：S3 第三次真实运行 PASS（只认定本次拒绝链通过，2026-10-22）
 
 当前状态：
 
