@@ -6,6 +6,15 @@
 
 ## 当前状态：P3（严格模式 + 可选用户监督模式）
 
+**2026-10-22–23 app-server 真实探针与 S6 整合**：
+- 独立探针各通过一次真实运行，都只认定当次：
+  - S3：一条命令审批的拒绝链；
+  - S4：在首个输出之前中断；
+  - S5：冷恢复后历史可用。
+  - 证据标签为 `evidence/s3-real-run-3-pass`、`evidence/s4-real-run-1-pass`、`evidence/s5-real-run-2-pass`。
+- 产品适配器还没有接入这些结论，真实 app-server 仍被准入阻止。
+- 本分支 `feat/appserver-s6` 合并了产品线和探针线，正在做离线加固。[S6 规划](docs/appserver-s6-plan.md)
+
 **2026-10-22 中断与原生子 Agent 观测**：可以对活动回合发送 `turn/interrupt`，只有 provider 报告的终态才算确认停止，否则保留名额；能观测到原生子 Agent，但不能控制；页面加入“中断本轮”。只在离线桩上验证，真实中断（S4）未验证。[说明](docs/conversation-backend.md)
 
 **2026-10-22 会话页面 `/chat`**：新的零构建会话页面，用 fetch 流式读取 SSE，支持待审批调用、后台执行、逐步输出、工具审批卡、刷新恢复和续接 thread。已在离线桩上用浏览器走通完整闭环。启动命令：`tools\demo\serve.py --port 8170 --appserver-stub demo --data-dir var\demo-chat`。[说明与实测](docs/chat-frontend.md)
@@ -20,7 +29,7 @@
 
 **2026-10-17 历史基线**：app-server 真实 S1（零模型握手）与另行批准的一次 S2（回复 OK、消息增量、终态、真实用量）均已通过。[S1 记录](docs/appserver-s1-2026-10-17.md)、[S2 记录](docs/appserver-s2-2026-10-17.md)。S3+ 的真实行为未验证。
 
-S2 单回合探针与离线正反对照已就绪，全套 489 项测试通过。[范围与判定](docs/appserver-s2-probe.md)。真实探测授权不等于开放控制台任意调用。
+**2026-10-18**：S3 命令审批拒绝探针与离线正反对照已就绪，全套 553 项测试通过。[S3 范围与判定](docs/appserver-s3-probe.md)。真实 S3 尚未执行；真实探测授权不等于开放控制台任意调用。
 
 **2026-10-15 更新**：真实记录确认，当前配置在传入 `--disable multi_agent` 后仍派生原生子 Agent，
 且未登记到 Hub 审批/配额。已实现后端执行准入：当前真实 Codex 在消费审批、预留配额、启动进程前被拒绝。

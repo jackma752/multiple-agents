@@ -5,8 +5,9 @@ from collections import Counter
 class S2Evidence:
     MAX_EVENTS = 512
 
-    def __init__(self, thread_id: str):
+    def __init__(self, thread_id: str, *, expected_reply: str = "OK"):
         self.thread_id = thread_id
+        self.expected_reply = expected_reply
         self.turn_id = ""
         self.events = []
         self.violation = False
@@ -49,12 +50,12 @@ class S2Evidence:
             if event["item_type"] not in ("userMessage", "reasoning", "agentMessage"):
                 self.violation = True
             if event["item_type"] == "agentMessage" and method == "item/completed":
-                event["is_ok"] = item.get("text") == "OK"
+                event["is_ok"] = item.get("text") == self.expected_reply
         if method == "item/agentMessage/delta":
             delta = params.get("delta")
             event["item_id"] = params.get("itemId")
-            # S2 expects only OK; other text is not saved.
-            if isinstance(delta, str) and len(delta) <= 2 and set(delta) <= set("OK"):
+            # Retain only characters from the fixed reply; never arbitrary text.
+            if isinstance(delta, str) and len(delta) <= len(self.expected_reply) and set(delta) <= set(self.expected_reply):
                 event["delta"] = delta
             else:
                 self.violation = True
@@ -104,7 +105,7 @@ class S2Evidence:
                       if e["method"] == "item/agentMessage/delta" and e.get("item_id") == item_id]
             stream_ok = bool(item_id and len(begins) == 1 and deltas
                              and all(begins[0] < i < finish for i, _ in deltas)
-                             and "".join(v for _, v in deltas) == "OK")
+                             and "".join(v for _, v in deltas) == self.expected_reply)
             # Every agent-message event must belong to this one stream, not just
             # the subset which happens to match the final message's item id.
             if any(e.get("item_id") != item_id for e in matched if
@@ -131,7 +132,7 @@ class S2Evidence:
         return {"passed": all(checks.values()), "checks": checks,
                 "terminal_confirmed": terminal, "verdict": verdict,
                 "thread_id": self.thread_id, "turn_id": self.turn_id,
-                "usage": usage, "final_reply": "OK" if reply_ok else None,
+                "usage": usage, "final_reply": self.expected_reply if reply_ok else None,
                 "violation": violation,
                 "event_sequence": [e["method"] for e in self.events],
                 "event_counts": dict(Counter(e["method"] for e in self.events))}

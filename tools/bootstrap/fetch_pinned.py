@@ -38,7 +38,7 @@ PINNED = [
     ("h11", "0.14.0"),
     ("sniffio", "1.3.1"),
     ("idna", "3.10"),
-    ("certifi", "2024.8.30"),
+    ("certifi", "2026.10.19"),  # upgraded 2026-10-22 (docs/codex-proxy-setup.md section 7)
     ("iniconfig", "2.0.0"),
     ("click", "8.1.7"),
     ("colorama", "0.4.6"),

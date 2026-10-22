@@ -1,4 +1,177 @@
-# 当前交接：中断与原生子 Agent 观测（2026-10-22 续）
+# 当前交接：S6-0 整合分支（2026-10-23）
+
+- 分支 `feat/appserver-s6`，目录 `E:\plug\agent-hub\.worktrees\appserver-s6`：以 `feat/interrupt-stop`（98fbc44）为基础，合并 `plan/appserver-s6`（7a0c0a9，其中包含 `feat/appserver-s5-probe` 的 425281e）。没有 rebase，没有改动 main，没有推送。
+- 冲突只有本文件：两条线的交接按“探针线、产品线”的顺序并列保留，原文不改。`README.md` 自动合并。
+- 验证（Windows `.venv`，离线）：合并后全量 **977 passed in 190.06s**，其中包含两条线各自的测试和 S1–S5 探针的测试。没有执行 Codex。
+- 方案见 [S6 规划](appserver-s6-plan.md)（修订 1）。下一步是 S6-1 离线加固（D1–D11）；真实运行仍需逐项批准。
+
+---
+
+# 历史交接：S6 方案修订 1（2026-10-23）
+
+- 按用户指示修订 [S6 规划](appserver-s6-plan.md)：
+  - 新增 D11：快照绑定 app-server 身份，消费前、启动前分别复核；
+  - 完成有边界的 multi_agent / v2 源码核查（第 2.1 节，alpha.11）：`--disable multi_agent` 只关闭 Collab，模型声明了版本时不起作用；`[agents] enabled = false` 是候选关闭路径，尚未验证（S6-V，需另行批准）；会话的模式字段不是派生证据；
+  - 写明监督模式中已有的停止边界和 CLI 绕过边界（第 4.11 节）；
+  - 修正“作废卡一律 decline”：作废卡永远不发送任何决定，唯一的发送路径是认领（第 4.4 节）；
+  - 更正 D6 的工作目录方案。
+- 四项决定：用户指示继续推进 S6-0 和 S6-1，按推荐项执行，理由见第 8 节。
+- 没有改代码，没有真实运行。S4 收口和 S1–S5 的历史证据不变。
+
+---
+
+# 历史交接：S6 离线规划完成，等待用户的四项决定（2026-10-23）
+
+- 方案见 [S6 规划](appserver-s6-plan.md)，在 `plan/appserver-s6` 分支上，只有文档，没有改代码，也没有真实运行。
+- 建议：真实 app-server 只在 supervised 下放行，strict 继续阻止；第一阶段工具只允许拒绝；固定身份写在代码常量中，不能被环境变量覆盖。
+- 发现：产品适配器与 S3–S5 的实测结论有 10 处差距，其中 D1（拒绝会被改成 cancel）、D2（不设置、也不核验沙箱和审批设置）、D7（固定身份过期，并且可被覆盖）必须先修。
+- 待用户决定：工具 accept、续接时的 cwd、固定身份的来源、合并方式。
+
+---
+
+# 历史交接：S5 第二次真实运行 PASS（只认定本次冷恢复后历史可用，2026-10-22 深夜）
+
+- 在 `38288c4` 上运行，程序版本 alpha.11，certifi 证书包为 `50f79f98…0785`。
+- 过程：
+  - 阶段 1 在新的专用 thread 上完成，健康检查通过；
+  - A（PID 18332）退出后，才启动 B（PID 32056）；
+  - 冷恢复时带回了写入的回合和消息；
+  - 恰好一条阶段 1 的用量重放（数值与阶段 1 相同）；
+  - 回忆回合在提示词不含暗号的情况下**准确答出暗号**，回合正常完成，没有工具调用；
+  - 工作目录已删除，没有后代进程残留。
+- 见 [S5 第二次实录](appserver-s5-2026-10-22-run2.md)，标签 `evidence/s5-real-run-2-pass`。
+- **仍未验证**：内核 `native_resume` 的接入、长对话和分页历史、原生工具和子 Agent 的事前控制、聊天功能的验收。S4 中输出进行中的中断、工具子进程的停止，也仍未验证。
+- 所有分支都没有合并到 main，也没有 remote。
+
+---
+
+# 历史交接：S5 判定修订完成（只容许一条重放），等待第二次单回合授权（2026-10-22 深夜）
+
+- 回忆阶段只容许一条 `thread/tokenUsage/updated`：带阶段 1 的 turn ID，在 `turn/started` 之前到达，单独记入 `replayed_usage`，不算回忆回合的用量。
+- 第二条重放、在开始之后才到的重放、其他 turn 或其他 thread 的重放，仍判 FAIL。
+- 测试：S5 75 项，连续 3 次通过；全量 813 passed。两个变异体都被测试发现。没有执行 Codex。
+- 第一次运行的 FAIL 保持不变。第二次真实 S5 需要用户另行批准。
+
+---
+
+# 历史交接：S5 第一次真实运行 FAIL（重放用量被误判），上下文恢复仍未验证（2026-10-22 晚）
+
+- 在 `2cda212` 上运行，程序版本 alpha.11，certifi 证书包为 `50f79f98…0785`。
+- 已通过：阶段 1、健康检查、进程关系（A 为 PID 10944，退出后才启动 B，PID 13496）、恢复结构（`history_returned: true`）。
+- 原因：回忆阶段收到一条 `thread/tokenUsage/updated`，带阶段 1 的 turn ID。按源码推断，这是被测版本在恢复时正常的用量重放。探针把它判为 `foreign_turn`，立即停止了进程，回忆回合在没有输出时就被中止了。
+- **上下文是否恢复仍未验证。** 两次 `turn/start` 都在上限之内。见 [S5 第一次实录](appserver-s5-2026-10-22-run1.md)，标签 `evidence/s5-real-run-1-fail`。
+- 没有重试。如果继续，需要先离线修订判定（只接受这一种重放），再另行申请。
+
+---
+
+# 历史交接：S5 三项修正完成，等待单次真实授权（2026-10-22 晚）
+
+- **证书**：pip 升级到 26.2.2，certifi 升级到 2026.10.19，`cacert.pem` 的 SHA-256 为 `50f79f98…0785`。
+  - `pip_trust.py --negative-control` 通过：PyPI 用 IP 访问时被证书错误拒绝；Codex 使用的证书包能验证 chatgpt.com。
+  - pip 现在使用系统证书库，`cert` 只追加 CA。
+  - 新旧环境的哈希都已登记，S1–S4 在旧环境下取得的证据保持原样。
+- **S5 修正一**：启动 B 之前，`plant_health` 与最终判定使用同一组函数；后代进程有 3 秒宽限期。
+- **S5 修正二**：工作目录删除失败判 INCONCLUSIVE（`workdir_cleanup_failed:<类型>`）。
+- **测试**：S5 63 项，连续 3 次通过；pip_trust 13 项；全量 801 passed。没有执行 Codex。
+- **下一步**：用户单独批准一次真实 S5（2 个回合）后才执行。
+
+---
+
+# 历史交接：S5 冷恢复探针离线准备完成，等待单次真实授权（2026-10-22）
+
+- **S4 收口**：接受有限结论。输出进行中的中断、工具子进程的停止，保持未验证。
+- **pip、证书**：`fix/pip-proxy-trust` 的 `f4a2866`。
+  - 代理不拦截 TLS，没有需要信任的私有 CA；两个 certifi 包都没有被改动。
+  - venv 的 `pip.ini` 让 pip 走代理，验证保持开启。
+  - 新增 `tools/bootstrap/pip_trust.py` 用于检查。
+- **S5**：分支 `feat/appserver-s5-probe`，目录 `E:\plug\agent-hub\.worktrees\appserver-s5-probe`。
+  - 每次运行新建一个专用 thread。进程 A 写入随机暗号，A 退出后才启动进程 B；B 冷恢复同一 thread，再提出回忆问题。
+  - 最多 2 个模型回合。
+  - PASS 需要恢复响应中带着写入的回合和消息，并且回复中出现暗号；resume 成功本身不算。
+  - 不恢复 S2–S4 的 thread。
+  - 见 [S5 方案](appserver-s5-probe.md)。
+- **测试**：S5 47 passed，全量 781 passed；S5 协议事实离线核对 11/11。没有执行 Codex。
+- **下一步**：用户单独批准一次真实 S5（2 个回合）后，才执行方案中的固定命令。
+
+---
+
+# 历史交接：S4 第一次真实运行 PASS（只认定本次主回合中断通过，2026-10-22）
+
+- 在 `36766da` 上运行，程序版本 `codex-cli 0.163.0-alpha.11`，复用 `identity-hkzdmoqj`。
+- 过程：唯一一次绑定的 `turn/interrupt`，由 5 秒计时器触发 → 应答 `{}` → 本回合 `turn/completed(interrupted)`。
+- 没有工具活动；本地进程退出码 0；关闭前后都没有后代进程；工作目录为空，已删除。
+- 中断发生在首个输出之前，所以输出进行中的中断、工具子进程的停止、重复中断和用量上报都没有验证。见 [S4 第一次实录](appserver-s4-2026-10-22-run1.md)，标签 `evidence/s4-real-run-1-pass`。
+- 授权已用完，没有重试；S5 没有运行，需要另行申请。
+
+---
+
+# 历史交接：S4 中断探针离线准备完成，等待单次真实授权（2026-10-22）
+
+- 分支 `feat/appserver-s4-probe`，基于 S3 的 `85bfae9`；目录 `E:\plug\agent-hub\.worktrees\appserver-s4-probe`。
+- 新增内容：
+  - `tools/probes/appserver_s4.py`；
+  - `packages/adapters/agenthub_adapters/appserver_s4_evidence.py`；
+  - `tools/demo/stub_appserver_s4.py`；
+  - `tests/test_appserver_s4.py`（65 项）；
+  - [S4 方案](appserver-s4-probe.md)。
+- 判定只看本回合自己的 `turn/completed(interrupted)`。中断应答、模型文字和本地进程停止，都不能证明已停止。主回合终态、工具活动和本地清理（含后代进程）分开记录。
+- 已与 interrupt-stop 的既有契约逐条对照；被测版本 alpha.11 的中断语义已按源码离线核对；S4 协议事实在现有捕获上为 13/13。
+- 测试：S4 65 passed，全量 725 passed。没有执行 Codex。S1–S3 的证据保持不变，S5 不会自动执行。
+- 下一步：用户单独批准一次真实 S4 之后，才执行方案中的固定命令。
+
+---
+
+# 历史交接：S3 第三次真实运行 PASS（只认定本次拒绝链通过，2026-10-22）
+
+当前状态：
+
+- **第三次 S3 为 PASS**：在 `11ecc4f` 上运行，程序版本 `0.163.0-alpha.11`。
+  - 过程：审批请求 → 只发送一次 decline → resolved → 同一命令以 `declined` 完成 → 回复 `DECLINED` → 回合 `completed`，并收到用量。
+  - 执行证据：没有；进程创建被拒绝。
+  - **只认定这一次的拒绝链通过**；全局拦截、只读拒写、子 Agent 控制和聊天功能都没有验收。
+  - 见 [第三次实录](appserver-s3-2026-10-22-run3.md)，标签 `evidence/s3-real-run-3-pass`。
+- 前两次真实 S3 都是 FAIL，起因都是当时的判定规则，都没有执行证据，拒绝链也都没有被触发；它们的协议层终态仍未确认。
+- 现行判定由修订一和修订二组成（`3b7bf96`）。两处审批字段的改动已经用户审计，保留。
+- 第三次的授权已用完，没有重试。S4/S5 未运行，需要另行申请。
+- **阻塞**：S3 固定的 Codex 文件（`896a0166…`）已在 2026-10-22 19:50 被自动更新删除。新文件是 `bin\6257d9e8f63c0f2b\codex.exe`（SHA-256 `00c0f1e4…d67c`，签名有效，版本未知）。继续之前需要：重新固定、重新执行步骤 A，以及视版本情况重新核对源码依据。见 [S3 方案](appserver-s3-probe.md) 的“当前状态”。
+- 已按批准完成阶段 0 和阶段 A：
+  - 阶段 0：`0cea338` 重新固定，S3 相关测试 171 passed。
+  - 阶段 A：COMPATIBLE 21/21，模型回合 0 次，**版本为 `0.163.0-alpha.11`**。
+  - 离线源码核对：修订二的规则仍然适用，不需要改代码。见 [阶段 A 记录](appserver-s3-identity-2026-10-22.md)。
+  - 阶段 B 之后另行获得批准，即上面的第三次运行。
+- 详见 [S3 方案](appserver-s3-probe.md) 的“当前状态”一节。下面是按时间排列的经过。
+
+- 在 `1fee92e`（10-18 暂存工作的 wip 提交）之上复核：离线测试、13 个 stub 场景、拒绝路径全部符合文档。
+- **直接阻塞**：S1/S2 固定的 Codex 文件已被 10-19 的自动更新删除。S3 单独重新固定为当前安装文件（`896a0166b774037a`，SHA-256 `f6dbf48c…`，341312816 字节，OpenAI 签名有效，被动核验）；S1/S2 身份保持不变。新增零模型身份检查脚本 `tools/probes/appserver_s3_identity.py`。详见 [S3 方案](appserver-s3-probe.md)。
+- 已按用户的一次性授权执行：步骤 A 为 COMPATIBLE（`codex-cli 0.163.0-alpha.10.2`，21/21 项）；步骤 B 结果为 **FAIL**（越界）：模型在任何审批请求之前就开始文字回复，探针中止，没有发出任何响应，也没有执行证据，终态未确认。拒绝链没有被触发。详见 [S3 实录](appserver-s3-2026-10-22.md)。授权已用完，没有重试；S4/S5 未运行。
+- 修订一（离线，`58e4a7a`，自第二次运行起生效）：文字不再中止、也不决定结论；`text_format`、`approval_chain`、`terminal` 三部分分别记录，并带原因代码。S1/S2 的规则没有改动。修订测试共 21 项，相关回归 385 passed。详见 [S3 方案](appserver-s3-probe.md) 的修订一节。
+- 第二次 S3（用户批准 `58e4a7a`，复用步骤 A）：**FAIL** `command_scope_mismatch`。模型没有先说话，直接发起了一个命令 item，其 `command` 与固定命令不完全一致，而且出现在任何审批请求之前；探针中止，没有发出任何响应，也没有正面执行证据。该命令是否已在沙箱中开始运行无法确定（原文按设计未保存），终态未确认，拒绝链仍未被触发。详见 [第二次实录](appserver-s3-2026-10-22-run2.md)。授权已用完，没有重试；S4/S5 未运行。（事后调查推断，命令原文未保存：内层命令与固定命令逐字相同，`command` 是包装形式。这三个待决问题已由修订二处理。）
+- 修订二，离线修复（2026-10-22 晚，`1f9f7b7` 调查、`3b7bf96` 代码；两处审批字段的改动经用户审计保留；自第三次运行起生效）：
+  - 已核对 rollout 第 12、13、16 行：内层 `cmd` 与固定命令逐字相同，并请求了 `require_escalated`；外层 `exec` 在 0.1 秒后中止；回合在本地记为 `turn_aborted / interrupted`。
+  - 已按同版本标签 `rust-v0.163.0-alpha.10.2` 查清包装规则：会话 shell 的 argv 经 shlex 拼接后成为 `command`。第二次越界属于探针误判（推断）。
+  - 探针改为把 `command` 拆回 argv，逐元素严格比对外层 argv 与内层固定命令，不做子串匹配。同时修正了审批字段的两处误判：接受 `environmentId: "local"`；不再要求 `availableDecisions` 中含 decline。
+  - S3 相关 162 passed，全量 660 passed；变异检查中，子串匹配会让 37 项测试失败。
+  - 没有启动真实 S3，没有运行 S4/S5。下一次 S3 需要另行申请。
+  - 详见 [第二次实录·补充调查](appserver-s3-2026-10-22-run2.md) 和 [S3 方案](appserver-s3-probe.md) 的“命令包装与审批字段核实”一节。
+
+---
+
+# 历史交接：S3 离线工具完成，等待单次真实授权（2026-10-18）
+
+- 分支 `feat/appserver-s3-probe`，基于 `023d0ab`；目录 `E:\plug\agent-hub\.worktrees\appserver-s3-probe`。
+- 解释器 `E:\plug\agent-hub\.venv\Scripts\python.exe`，worktree 内无 .venv。
+- S1/S2 已完成，**不得重跑**。S2 一次性授权已使用；本轮仅完成 S3 编码、桩进程与离线测试，未启动真实 Codex 或读取凭据。
+- 新工具 `tools/probes/appserver_s3.py`：新 thread、固定 read-only/on-request/user reviewer，回读有效设置后才允许一次固定主回合；唯一命令审批响应为匹配请求的 decline，所有 accept/会话策略修订均不可发送。
+- 判定要求实际审批链、完整发送的 decline、resolved、匹配 declined item、拒绝后的最终 DECLINED/增量/用量/终态及空目录；自述/缺证据不可 PASS。详细固定提示词、命令、风险与清理见 [S3 方案](appserver-s3-probe.md)。
+- 修复复核发现的三处缺口：未回读 effective reviewer/sandbox；最终回复可能早于拒绝；未区分初始命令与 writeStdin/子命令回调。非空 exitCode 可能是合成拒绝码，单独记录，不伪称命令已执行。
+- 新增 64 测试，全套 **553 passed in 34.56s**。独立 stub CLI → S3 PASSED；13 场景含权限回读反例，另验证非空工作目录保留。用量均为合成 fixture。
+- 下一步：取得一次真实 S3 的单独批准后，执行方案中的固定命令；失败即停，无重试。上轮 S2/笼统“继续”不扩大此前逐次批准的限制。
+- 本工具独立于生产内核/数据库，无生产配额行；缺匹配终态时 unconfirmed、人工核对，不能宣称保留生产配额或已停远端。
+- 严格真实准入仍关闭。旧 8080、共享 daemon、历史子 Agent、长期 home 均不处理；两项 DLL 记录保持 OPEN。未合并、未推送，无 remote。
+
+---
+
+# 历史交接：中断与原生子 Agent 观测（2026-10-22 续）
 
 - 分支 `feat/interrupt-stop`，目录 `E:\plug\agent-hub\.worktrees\interrupt-stop`，基于 `feat/chat-frontend` 的 `0a25e84`。提交号以 `git log` 为准。
 - 完成：
@@ -69,7 +242,7 @@
 
 ---
 
-# 当前交接：会话后端（2026-10-21）
+# 历史交接：会话后端（2026-10-21）
 
 - 当前分支 `feat/chat-workbench`，目录 `E:\plug\agent-hub\.worktrees\chat-workbench`，基于 `812b215`。虽然分支名含 workbench，本轮只改后端；用户明确要求前端最后做。
 - 先读本文件、仓库 `AGENTS.md`、`E:\plug\AGENT_HUB_PLAN.md` 和 [会话后端契约](conversation-backend.md)。确认 `git status` 和 `git log -1` 后再继续，不要回主目录的旧分支开发。

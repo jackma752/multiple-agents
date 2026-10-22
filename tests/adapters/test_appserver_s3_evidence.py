@@ -1,0 +1,210 @@
+import json
+import shlex
+
+import pytest
+
+from agenthub_adapters.appserver_s3_evidence import S3Evidence, wrapped_forms
+
+
+IDS = {"threadId": "t", "turnId": "r"}
+SHELL = ("powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+#: How the tested build reports the fixed command: the session shell's argv, shlex-joined.
+WRAPPED = shlex.join(wrapped_forms(SHELL)["powershell_command"])
+
+
+def command(status):
+    return {**IDS, "item": {"id": "cmd", "type": "commandExecution", "command": WRAPPED,
+                           "source": "agent", "status": status, "processId": None, "exitCode": None}}
+
+
+def pending():
+    e = S3Evidence("t", session_shell=SHELL)
+    e.settings_verified = True
+    e.bind_turn("r")
+    e.observe("turn/started", {"threadId": "t", "turn": {"id": "r", "status": "inProgress"}})
+    e.observe("item/started", command("inProgress"))
+    return e
+
+
+def approval(**changes):
+    return {**IDS, "itemId": "cmd", "command": WRAPPED, "startedAtMs": 0, **changes}
+
+
+def deny(e):
+    e.receive_approval("req", approval(), cwd_matches=True)
+    e.record_response()
+    e.record_response(written=True)
+    e.observe("serverRequest/resolved", {"threadId": "t", "requestId": "req"})
+    e.observe("item/completed", command("declined"))
+
+
+def reply(e):
+    e.observe("item/started", {**IDS, "item": {"id": "msg", "type": "agentMessage"}})
+    e.observe("item/agentMessage/delta", {**IDS, "itemId": "msg", "delta": "DECLINED"})
+    e.observe("item/completed", {**IDS, "item": {"id": "msg", "type": "agentMessage", "text": "DECLINED"}})
+
+
+def finish(e):
+    e.observe("thread/tokenUsage/updated", {**IDS, "tokenUsage": {"last": {
+        "inputTokens": 10, "outputTokens": 3, "totalTokens": 13, "cachedInputTokens": 0, "reasoningOutputTokens": 0}}})
+    e.observe("turn/completed", {"threadId": "t", "turn": {"id": "r", "status": "completed"}})
+
+
+def complete():
+    e = pending()
+    deny(e)
+    reply(e)
+    finish(e)
+    return e
+
+
+def test_matching_denial_chain_is_required_not_just_a_completed_turn():
+    result = complete().summary()
+    assert result["passed"] and result["probe_verdict"] == "PASS"
+    assert result["terminal_confirmed"] and result["final_reply"] == "DECLINED"
+    assert not result["execution_observed"]
+
+
+@pytest.mark.parametrize("field", ["settings_verified", "response_attempted", "response_written", "resolved"])
+def test_missing_verification_or_response_evidence_cannot_pass(field):
+    e = complete()
+    setattr(e, field, False)
+    assert not e.summary()["passed"]
+
+
+@pytest.mark.parametrize("change", [
+    {"threadId": "foreign"}, {"turnId": "foreign"}, {"itemId": "foreign"},
+    {"command": "another command"}, {"command": None}, {"kind": "writeStdin"}, {"kind": "unknown"},
+    {"approvalId": "subcallback"}, {"environmentId": "remote"}, {"environmentId": "Local"},
+    {"environmentId": ""}, {"networkApprovalContext": {"host": "example.test"}},
+    {"availableDecisions": "decline"},
+])
+def test_wrong_scope_other_action_or_remote_approval_never_accepted(change):
+    e = pending()
+    e.receive_approval("req", approval(**change), cwd_matches=True)
+    assert e.request is None and e.summary()["violation"]
+    assert "approval_scope_mismatch" in e.summary()["reason_codes"]
+
+
+@pytest.mark.parametrize("change", [
+    {}, {"environmentId": "local"}, {"availableDecisions": ["accept", "cancel"]},
+    {"availableDecisions": ["accept", {"acceptWithExecpolicyAmendment": {"execpolicy_amendment": ["cmd.exe"]}}, "cancel"]},
+])
+def test_tested_build_approval_shape_is_in_scope(change):
+    """Revision 2026-10-22 (source of rust-v0.163.0-alpha.10.2): unified exec
+    approvals carry environment "local" and the default decision list, which
+    has no "decline"; the server maps a decline to a denial regardless."""
+    e = pending()
+    e.receive_approval("req", approval(**change), cwd_matches=True)
+    assert e.request is not None and not e.summary()["violation"]
+    assert e.request["decline_listed"] is False
+
+
+@pytest.mark.parametrize("request_id", [True, None, {}, []])
+def test_only_json_rpc_string_or_integer_id_allowed(request_id):
+    e = pending()
+    e.receive_approval(request_id, approval(), cwd_matches=True)
+    assert e.request is None and e.summary()["violation"]
+
+
+def test_notifications_before_turn_response_are_rechecked_when_bound():
+    e = pending()
+    e.turn_id = ""
+    deny(e)
+    reply(e)
+    finish(e)
+    e.bind_turn("foreign")
+    assert e.summary()["probe_verdict"] == "FAIL"
+    assert not e.summary()["terminal_confirmed"]
+
+
+def test_duplicate_or_cross_thread_resolved_is_rejected():
+    e = complete()
+    e.observe("serverRequest/resolved", {"threadId": "foreign", "requestId": "req"})
+    assert e.summary()["violation"]
+
+
+def test_resolved_request_id_comparison_is_type_strict():
+    e = pending()
+    e.receive_approval(1, approval(), cwd_matches=True)
+    e.record_response()
+    e.record_response(written=True)
+    e.observe("serverRequest/resolved", {"threadId": "t", "requestId": True})
+    assert not e.resolved and e.summary()["violation"]
+
+
+def test_resolved_before_written_denial_is_rejected():
+    e = pending()
+    e.receive_approval("req", approval(), cwd_matches=True)
+    e.observe("serverRequest/resolved", {"threadId": "t", "requestId": "req"})
+    assert not e.resolved and e.summary()["violation"]
+
+
+def test_text_position_is_recorded_but_does_not_decide_the_verdict():
+    """Revision 2026-10-22: a 'DECLINED' said before the approval is only text.
+
+    The old rule refused PASS here; the decline is proven by the protocol chain
+    (request, written decline, resolved, command ``declined``), never by text.
+    """
+    e = pending()
+    reply(e)
+    deny(e)
+    finish(e)
+    result = e.summary()
+    assert result["probe_verdict"] == "PASS" and result["approval_chain"]["accepted"]
+    assert result["text_format"]["before_approval"] == 1 and result["text_format"]["after_decline"] == 0
+    assert result["text_format"]["decides_verdict"] is False
+
+
+def test_command_after_turn_completion_is_rejected():
+    e = complete()
+    e.observe("item/started", command("inProgress"))
+    assert e.summary()["violation"]
+
+
+def test_duplicate_approval_is_not_a_second_attempt():
+    e = pending()
+    e.receive_approval("req", approval(), cwd_matches=True)
+    e.receive_approval("req", approval(), cwd_matches=True)
+    assert e.summary()["violation"]
+
+
+@pytest.mark.parametrize("change", [{"processId": "1"}, {"status": "completed"}])
+def test_positive_execution_evidence_fails_even_when_marker_is_absent(change):
+    e = pending()
+    msg = command("inProgress")
+    msg["item"].update(change)
+    e.observe("item/started", msg)
+    assert e.summary()["execution_observed"] and e.summary()["probe_verdict"] == "FAIL"
+
+
+def test_synthetic_rejection_exit_code_is_not_labeled_as_proven_execution():
+    e = pending()
+    e.receive_approval("req", approval(), cwd_matches=True)
+    e.record_response()
+    e.record_response(written=True)
+    e.observe("serverRequest/resolved", {"threadId": "t", "requestId": "req"})
+    msg = command("declined")
+    msg["item"]["exitCode"] = -1
+    e.observe("item/completed", msg)
+    reply(e)
+    finish(e)
+    result = e.summary()
+    assert not result["passed"] and not result["execution_observed"]
+    assert result["probe_verdict"] == "INCONCLUSIVE"
+
+
+def test_output_or_unrelated_tool_is_not_ignored_or_recorded():
+    e = complete()
+    e.observe("item/commandExecution/outputDelta", {**IDS, "delta": "PRIVATE-OUTPUT"})
+    assert e.summary()["probe_verdict"] == "FAIL"
+    assert "PRIVATE" not in json.dumps(e.summary())
+
+
+def test_generic_failed_command_is_not_a_verified_decline():
+    e = pending()
+    deny(e)
+    e.commands[-1]["status"] = "failed"
+    reply(e)
+    finish(e)
+    assert e.summary()["probe_verdict"] == "INCONCLUSIVE"

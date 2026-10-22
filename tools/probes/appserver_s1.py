@@ -336,20 +336,21 @@ def build_real_environment(codex_home: str) -> dict:
     return env
 
 
-def preflight(codex_home: str) -> tuple[list[str], dict]:
+def preflight(codex_home: str, identity: "tuple[str, str, int] | None" = None) -> tuple[list[str], dict]:
     from agenthub_kernel import config
 
     # This probe validates the reviewed binary, never an environment-selected
-    # replacement. A new version requires a separately reviewed identity update.
-    codex_path = S1_CODEX_PATH
+    # replacement. A new version requires a separately reviewed identity update,
+    # passed explicitly by the probe that reviewed it (S1 keeps its own).
+    codex_path, expected_sha, expected_size = identity or (S1_CODEX_PATH, S1_CODEX_SHA256, S1_CODEX_SIZE)
     for key, expected in ((config.ENV_CODEX_PATH, codex_path),
-                          (config.ENV_CODEX_SHA256, S1_CODEX_SHA256),
-                          (config.ENV_CODEX_SIZE, str(S1_CODEX_SIZE))):
+                          (config.ENV_CODEX_SHA256, expected_sha),
+                          (config.ENV_CODEX_SIZE, str(expected_size))):
         report("固定身份未被覆盖: " + key,
                os.environ.get(key, str(expected)) == str(expected))
     report("固定可执行文件存在", os.path.isfile(codex_path), codex_path)
-    report("size 与固定值一致", os.path.getsize(codex_path) == S1_CODEX_SIZE)
-    report("sha256 与固定值一致", sha256(codex_path) == S1_CODEX_SHA256)
+    report("size 与固定值一致", os.path.getsize(codex_path) == expected_size)
+    report("sha256 与固定值一致", sha256(codex_path) == expected_sha)
     report("CODEX_HOME 位于仓库之外", not _inside(codex_home, REPO)
            and not _inside(codex_home, os.path.join(REPO, "..", "..")))
     report("CODEX_HOME 是目录", os.path.isdir(codex_home))
