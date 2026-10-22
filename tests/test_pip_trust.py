@@ -66,6 +66,31 @@ def test_extra_ca_goes_to_a_separate_bundle_and_certifi_is_untouched(tmp_path):
     assert target.read_bytes().count(b"-----BEGIN CERTIFICATE-----") == before.count(b"-----BEGIN CERTIFICATE-----") + 1
 
 
+def test_single_ca_bundle_holds_exactly_the_chosen_root(tmp_path):
+    import certifi
+    target = T.single_ca_bundle(Path(certifi.where()), "CN=Amazon Root CA 1", tmp_path / "one.pem")
+    data = target.read_text(encoding="ascii")
+    assert data.count("-----BEGIN CERTIFICATE-----") == 1 and data.startswith("# Issuer: CN=Amazon Root CA 1")
+    with pytest.raises(ValueError):
+        T.single_ca_bundle(Path(certifi.where()), "CN=No Such Root", tmp_path / "none.pem")
+
+
+@pytest.mark.parametrize("output,seen", [
+    ("Could not fetch URL https://1.2.3.4/simple/x/: There was a problem confirming the ssl certificate: "
+     "('localized OS message',) - skipping", "problem confirming the ssl certificate"),
+    ("SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED]'))", "CERTIFICATE_VERIFY_FAILED"),
+    ("ERROR: No matching distribution found for certifi", ""),
+])
+def test_certificate_errors_are_recognised_in_pip_output(monkeypatch, output, seen):
+    import subprocess
+
+    class Done:
+        returncode, stdout, stderr = 1, output, ""
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: Done())
+    assert T.pip_index("python", []) == (1, seen)
+
+
 def test_extra_ca_without_a_certificate_is_refused(tmp_path):
     base = tmp_path / "base.pem"
     base.write_text("x", encoding="utf-8")

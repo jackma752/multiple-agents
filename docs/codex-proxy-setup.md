@@ -150,3 +150,30 @@ desktop assets CDN       https://persistent.oaistatic.com/codex-app-prod/<redact
 - Codex 子进程仍然需要 `CODEX_CA_CERTIFICATE=<venv certifi>`，否则报 `UnknownIssuer`（见第 3 节），S1–S5 的预检会检查它。这一项**保留，不做改动**。
 - 没有升级 certifi（当前 2024.08.30，索引上最新为 2026.10.19），以免在 S2–S5 证据序列中途改变环境。是否升级需另行决定；升级后 `pip.ini` 引用的路径不变。
 - 如果代理不在运行，pip 会立即报连接失败，而不是卡住；这时需要先启动代理。
+
+### 7.1 升级 pip 与 certifi 并核验（2026-10-22 晚，用户要求）
+
+升级命令为 `.\.venv\Scripts\python.exe -m pip install --upgrade pip certifi`。安装经 venv 的 `pip.ini` 走代理，验证保持开启，没有使用 trusted-host。之后运行 `pip check`：No broken requirements found。
+
+| 项目 | 升级前（S1–S4 的所有运行都在这个环境下） | 升级后（S5 起） |
+|---|---|---|
+| pip | 23.2.1（内置 certifi 2023.05.07，139 张证书，SHA-256 `b301535dca491d9814ea28faa320ac7a19d0f5d94237996fa0a3b5a936432514`） | **26.2.2**（内置 truststore 0.10.4；内置 certifi 2026.10.19，与下一行逐字节相同） |
+| certifi | 2024.08.30，151 张，`cacert.pem` 299427 字节，SHA-256 `94edeb66e91774fcae93a05650914e29096259a5c7e871a1f65d461ab5201b47` | **2026.10.19**，120 张，238856 字节，SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
+| `certifi-*.dist-info/RECORD` | — | `fc9e47b66b0cbfc88a6c5b07400bffdb5ca6b4dfd10713c263b77ac4374ff1a8` |
+| `pip-*.dist-info/RECORD` | — | `7d9aed153153ec74bf3dfee8152ef9c3dd8e6587aa5301700fe355590750dd28` |
+| `.venv\pip.ini` | `9bc2a2c04e5ba29c0a241decefc60ebe2eb98d1f14a42f83f5021ebb6528cdf8` | 未变（cert 路径不变） |
+
+**核验**：运行 `tools/bootstrap/pip_trust.py --negative-control`，退出码 0：
+
+- 两个证书包都与各自的 RECORD 一致（未被修改）；`pip.ini` 检查通过；经代理访问 pypi.org 和 files.pythonhosted.org 的 TLS 验证通过（GlobalSign）。
+- **Codex 使用的证书包**（`CODEX_CA_CERTIFICATE`，即新的 certifi）：经代理访问 chatgpt.com，验证通过（Google Trust Services）。
+- **反向对照**：用 IP 而不是域名访问 PyPI，pip 拒绝连接，报 “There was a problem confirming the ssl certificate”，随后是本地化的系统消息“证书 CN 名不匹配”。这说明主机名验证确实开启，并由系统证书库执行。
+- **cert 的含义已经改变**：只含 Amazon Root CA 1 的证书包仍然能连上 PyPI。原因是 pip 24.2 起默认通过 truststore 使用 **Windows 系统证书库**，`cert` 只是在其基础上**追加** CA，不再替换。第 7 节“`cert` = certifi 即 pip 的信任源”的说法，只对升级前的 pip 23.2.1 成立。
+- 正向对照：按现有配置运行成功；不带代理环境变量时，约 1 秒成功。
+
+**影响**：
+
+- pip 现在信任“系统证书库 + certifi”，验证保持开启。
+- Codex 子进程只信任 `CODEX_CA_CERTIFICATE` 指向的新 certifi。
+- S1–S4 的证据是在旧环境下取得的，保持原样；S5 的申请和运行记录会写明新环境。
+- `tools/bootstrap/fetch_pinned.py` 中 certifi 的版本固定为 2026.10.19。
