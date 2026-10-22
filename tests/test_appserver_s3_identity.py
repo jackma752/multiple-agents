@@ -51,8 +51,9 @@ def write_capture(root: Path, *, drop=None):
 
 def test_s3_is_pinned_to_its_own_identity_and_s1_keeps_its_history():
     path, digest, size = S3.S3_CODEX_IDENTITY
-    assert path.endswith(r"bin\896a0166b774037a\codex.exe") and size == 341312816
-    assert digest == "f6dbf48cb70f62649c645f26c87dc9bf84cc36986202dfad8e12fb5b8ca70312"
+    # Re-pinned 2026-10-22 after a self-update removed bin\896a0166b774037a.
+    assert path.endswith(r"bin\6257d9e8f63c0f2b\codex.exe") and size == 342187312
+    assert digest == "00c0f1e4099246fddcd67ec620ca8ed50827c7d70e113b7224f7a2933cf2d67c"
     assert S3.S2.S1.S1_CODEX_SHA256.startswith("e98c516f") and S3.S2.S1.S1_CODEX_SIZE == 334121776
 
 

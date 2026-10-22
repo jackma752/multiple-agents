@@ -18,6 +18,7 @@
     1. 用户批准重新固定，只改 `S3_CODEX_IDENTITY`；
     2. 重新执行步骤 A，这次不能复用旧证据；
     3. 如果报告的版本号不是 `0.163.0-alpha.10.2`，先按新版本的标签重新核对修订二的源码依据，再申请模型回合。
+  - 用户已批准阶段 0（重新固定）和阶段 A（零模型检查），**暂不批准阶段 B**。阶段 0 已完成：`S3_CODEX_IDENTITY` 已改为上面的新文件。阶段 A 的结果见下一条。
 
 ## 目的与固定范围
 
@@ -96,13 +97,24 @@ Request approval to run exactly this one command in the current directory: cmd.e
 
 真实模式会消耗账号用量，**需要单独批准这一次 S3 主回合及上述命令请求范围**。探针绝不批准该命令执行；但原生工具/子 Agent 事前控制仍未验证，不能保证命令在通知之前没有运行。如控制失效，标记文件可能被写入；其它原生行为也不能靠提示词或禁用参数保证阻止。发现异常只结束本次诊断，不重试、不换模型、不放宽权限。
 
-~~保持 S1 固定身份~~（2026-10-22 更新）：S1/S2 的 `bin\9614f1d9b40d9c4f\codex.exe`（SHA-256 `e98c516f…`，大小 `334121776`）已于 2026-10-19 被 Codex 自动更新删除，按原预检会启动 0 次。S1/S2 的工具和记录保留原身份不变。S3 改为单独固定当前安装的文件（`appserver_s3.py` 中的 `S3_CODEX_IDENTITY`）：
+~~保持 S1 固定身份~~（2026-10-22 更新）：S1/S2 的 `bin\9614f1d9b40d9c4f\codex.exe`（SHA-256 `e98c516f…`，大小 `334121776`）已于 2026-10-19 被 Codex 自动更新删除，按原预检会启动 0 次。S1/S2 的工具和记录保留原身份不变。S3 单独固定当前安装的文件，即 `appserver_s3.py` 中的 `S3_CODEX_IDENTITY`。
 
-- 路径 `C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\896a0166b774037a\codex.exe`
+**S3 当前固定**（2026-10-22 重新固定，用户批准了阶段 0）：
+
+- 路径 `C:\Users\Administrator\AppData\Local\OpenAI\Codex\bin\6257d9e8f63c0f2b\codex.exe`
+- SHA-256 `00c0f1e4099246fddcd67ec620ca8ed50827c7d70e113b7224f7a2933cf2d67c`
+- 大小 `342187312`，修改时间 2026-10-21 19:50:58（目录创建于 2026-10-22 19:50:34）
+- **被动核验**：Authenticode 签名有效，签名者 `CN="OpenAI OpCo, LLC"`；文件没有版本资源。同一目录下还有 `codex-code-mode-host.exe`、`codex-command-runner.exe` 和 `codex-windows-sandbox-setup.exe`。
+- 版本以重新执行的步骤 A 为准，结果见“当前状态”。
+
+**S3 第一次固定**（历史；用于第一、二次运行；已于 2026-10-22 19:50 被自动更新删除）：
+
+- 路径 `bin\896a0166b774037a\codex.exe`
 - SHA-256 `f6dbf48cb70f62649c645f26c87dc9bf84cc36986202dfad8e12fb5b8ca70312`
 - 大小 `341312816`，修改时间 2026-10-18 14:40:40
-- **被动核验**：Authenticode 签名有效，签名者 `CN="OpenAI OpCo, LLC"`；文件没有版本资源。
-- 2026-10-22 起已执行过：步骤 A 的零模型检查一次（COMPATIBLE，报告版本 `codex-cli 0.163.0-alpha.10.2`），以及两次 S3 运行。
+- 步骤 A 报告的版本为 `codex-cli 0.163.0-alpha.10.2`，结果 COMPATIBLE。
+
+更换固定文件后，旧的步骤 A 证据不能复用。修订二中的命令包装和审批字段规则，是按 `0.163.0-alpha.10.2` 的源码核对的；新文件报告的版本不同时，必须按新版本的标签重新核对。
 
 argv 仍为 `app-server --stdio --disable multi_agent`；文件不符则启动 0 次，不会自动选择其他文件。该参数保留，但不声称能阻断原生派生（新版本的功能名可能不同）。
 
@@ -115,7 +127,7 @@ argv 仍为 `app-server --stdio --disable multi_agent`；文件不符则启动 0
 
 缺少任何一项都会停止，不进入 S3 回合。抽取器已用旧捕获自身核验，21/21 项都能找到。
 
-如果程序身份没有变化，并且用户在批准中明确同意，后续运行可以复用已通过的步骤 A 证据（`identity-jlq59qic`），不再重新导出 schema。第二次运行即按此执行。
+如果程序身份没有变化，并且用户在批准中明确同意，后续运行可以复用已通过的步骤 A 证据，不再重新导出 schema；第二次运行就复用了 `identity-jlq59qic`。程序身份一旦变化，就必须重新执行步骤 A。
 
 home 固定使用传入的仓库外长期目录，沿用 S1 的进程代理/CA（默认 8090 与 certifi）。工具不读取、复制、修改或删除凭据内容，Codex 自身会复用登录并写运行状态。不修改系统代理、生产配置或旧 8080 服务。
 
