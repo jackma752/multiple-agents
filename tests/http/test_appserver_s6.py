@@ -266,8 +266,47 @@ def test_direct_start_with_another_binding_launches_nothing(tmp_path):
     adapter = make_adapter(tmp_path, factory)
     stale = InvocationSnapshot(agent_id="codex", task_input="x", parent_task_id=None, depth=0)
     result = adapter.start_streaming("inv-1", stale, gate_token="t")
-    assert result.ok is False and result.terminal is True and "identity changed" in result.detail
+    assert result.ok is False and result.terminal is True and "another adapter identity" in result.detail
     assert adapter.start_count == 0 and factory.servers == []
+
+
+def test_switching_to_an_adapter_without_a_binding_cannot_run_the_old_approval(make_client, tmp_path):
+    """Review finding: the check compares BOTH sides, even if the new adapter declares none."""
+    from tests.adapters.test_codex_adapter import make_adapter as make_exec_adapter
+
+    factory = InMemoryStubFactory("stream")
+    client = make_client(factory)
+    cid = conversation(client)
+    turn = submit(client, cid)
+    approve(client, turn)
+    exec_adapter = make_exec_adapter(tmp_path)  # FakeCodexRunner: simulation, no process
+    assert adapter_binding(exec_adapter) == "unknown"
+    client.app.state.worker.adapter = exec_adapter
+    client.app.state.adapter = exec_adapter
+    r = run(client, turn)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "adapter_identity_changed"
+    assert exec_adapter.start_count == 0 and exec_adapter.runner.calls == []
+    with client.app.state.db.session() as s:
+        assert s.get(ApprovalRow, turn["approval_id"]).status == "approved"  # not consumed
+    # The exec adapter refuses such a snapshot by itself as well.
+    direct = exec_adapter.start("inv-x", InvocationSnapshot(
+        agent_id="codex", task_input="x", parent_task_id=None, depth=0,
+        adapter_version=STUB_BINDING), gate_token="t")
+    assert direct.ok is False and direct.terminal is True and "another adapter identity" in direct.detail
+    assert exec_adapter.start_count == 0 and exec_adapter.runner.calls == []
+
+
+def test_an_unavailable_binding_never_matches(make_client):
+    factory = InMemoryStubFactory("stream")
+    client = make_client(factory)
+    factory.binding_identity = lambda: ""  # broken declaration -> "unavailable" on both sides
+    cid = conversation(client)
+    turn = submit(client, cid)
+    assert snapshot_of(client, turn["invocation_id"])["adapter_version"] == "unavailable"
+    approve(client, turn)
+    r = run(client, turn)
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "adapter_identity_changed"
+    assert factory.servers == []
 
 
 def test_adapters_without_a_binding_keep_unknown_and_old_hashes(make_client, tmp_path):
@@ -462,10 +501,78 @@ def test_tool_item_without_completion_is_reported_unknown(make_client):
     payload = payload_of(client.app.state.adapter, turn["invocation_id"])
     assert payload["tool_process_state"] == "unknown"
     assert payload["tool_activity"] == [{"item_type": "commandExecution", "item_id": "item-cmd-9",
-                                         "process_id_reported": True, "completed": False, "status": ""}]
+                                         "process_id_reported": True, "completed": False, "status": "",
+                                         "lifecycle_seen": True, "output_events": 0}]
     assert "tool process state unknown" in payload["detail"]
     ended = [e for e in events(client, cid)["events"] if e["type"] == "stream.turn_ended"]
     assert ended[0]["payload"]["tool_process_state"] == "unknown"
+
+
+def test_tool_output_without_an_item_is_recorded_as_unknown_activity(tmp_path):
+    """Review finding: output notifications count as tool activity; no text is kept."""
+    factory = InMemoryStubFactory("tool-output-only")
+    adapter = make_adapter(tmp_path, factory)
+    assert adapter.start_streaming("inv-1", snap(adapter), gate_token="t").ok
+    payload = payload_of(adapter, "inv-1")
+    assert payload["tool_process_state"] == "unknown"
+    assert payload["tool_activity"] == [{
+        "item_type": "commandExecution", "item_id": "item-cmd-7", "process_id_reported": False,
+        "completed": False, "status": "", "lifecycle_seen": False, "output_events": 2}]
+    assert payload["foreign_events"] >= 1  # the other thread's output is not ours
+    assert "tool-output-secret" not in json.dumps(payload, ensure_ascii=False)
+
+
+class _BatchClient:
+    """Hands the pump one batch; then nothing (optionally a closed stream)."""
+
+    def __init__(self, batch, *, requests=(), disconnected=False):
+        self._batch = list(batch)
+        self._requests = list(requests)
+        self.disconnected = disconnected
+
+    def notifications(self):
+        batch, self._batch = self._batch, []
+        return batch
+
+    def server_requests(self):
+        return self._requests
+
+    def wait_for(self, _predicate, *, timeout):
+        return None
+
+
+def _post_terminal_batch(turn):
+    from agenthub_adapters.appserver import Notification
+
+    bound = {"threadId": turn.thread_id, "turnId": turn.turn_id}
+    return [
+        Notification("item/agentMessage/delta", {**bound, "itemId": "m", "delta": "OK"}),
+        Notification("turn/completed", {"threadId": turn.thread_id,
+                                        "turn": {"id": turn.turn_id, "status": "completed"}}),
+        Notification("item/started", {**bound, "item": {"id": "c1", "type": "commandExecution"}}),
+        Notification("item/agentMessage/delta", {"threadId": "other", "turnId": "x", "delta": "?"}),
+    ]
+
+
+@pytest.mark.parametrize("path", ["unrouted_request", "disconnect_drain"])
+def test_events_after_the_terminal_in_one_batch_are_counted_late(tmp_path, path):
+    """Review finding: the rest of a drained batch was dropped after the terminal event."""
+    from agenthub_adapters.appserver import ServerRequest
+
+    adapter = make_adapter(tmp_path, InMemoryStubFactory("stream"))
+    turn = aa._Turn("th-1", "tu-1")
+    if path == "unrouted_request":
+        request = ServerRequest(id=9, method="item/commandExecution/requestApproval",
+                                params={"threadId": "th-1", "turnId": "tu-1", "itemId": "c1"})
+        client = _BatchClient(_post_terminal_batch(turn), requests=[request])
+        gate = object()  # never reached: the batch ends the turn first
+    else:
+        client = _BatchClient(_post_terminal_batch(turn), disconnected=True)
+        gate = None
+    assert adapter._pump(client, turn, aa._ignore, gate) is True
+    assert turn.terminal_seen and turn.turn_status == "completed"
+    assert turn.late_events == 1  # the bound tool item; the other thread's delta is not ours
+    assert turn.tools == {}  # a late event is not attributed as this turn's activity
 
 
 def test_slow_interrupt_ack_is_not_yet_acknowledged_and_the_terminal_decides(tmp_path, monkeypatch):

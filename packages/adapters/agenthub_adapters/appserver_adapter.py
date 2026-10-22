@@ -147,6 +147,18 @@ NATIVE_AGENT_ITEM_TYPES = frozenset({"collabAgentToolCall", "subAgentActivity"})
 TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"})
 
 
+def _tool_notification_kind(method: str) -> Optional[str]:
+    """``commandExecution`` for ``item/commandExecution/outputDelta`` and the like.
+
+    Item-scoped tool notifications (output deltas, patch updates, progress)
+    are activity evidence of their own, even when no item/started was seen.
+    """
+    parts = method.split("/")
+    if len(parts) == 3 and parts[0] == "item" and parts[1] in TOOL_ITEM_TYPES:
+        return parts[1]
+    return None
+
+
 def _ignore(_etype: str, _payload: dict) -> None:
     return None
 
@@ -388,7 +400,17 @@ class _Turn:
         """
         if not self.tools:
             return "none"
+        # Output without a completed item (or without any item) is no end evidence.
         return "items_completed" if all(t["completed"] for t in self.tools.values()) else "unknown"
+
+    def tool_entry(self, item_id: str, kind: str) -> dict:
+        return self.tools.setdefault(item_id, {
+            "item_type": kind, "item_id": item_id, "process_id_reported": False,
+            "completed": False, "status": "", "lifecycle_seen": False, "output_events": 0})
+
+    def count_late(self, notes: list) -> None:
+        """Bound events already received after this turn's terminal (§4.8)."""
+        self.late_events += sum(1 for n in notes if (n.params or {}).get("threadId") == self.thread_id)
 
     def ours(self, params: dict, *, turn_from_payload: bool = False) -> bool:
         """Exact binding: both this thread's and this turn's id must be present (D8)."""
@@ -449,7 +471,9 @@ class AppServerCodexAdapter(AdapterContract):
             value = bind()
         except Exception:  # noqa: BLE001
             return "unavailable"
-        return value if isinstance(value, str) and value else "unavailable"
+        if not isinstance(value, str) or not value or value == "unknown":
+            return "unavailable"  # never matches, on either side
+        return value
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -541,11 +565,12 @@ class AppServerCodexAdapter(AdapterContract):
         if not gate_token:
             return AdapterStartResult("", ok=False, terminal=True,
                                       detail="refused: no kernel gate token (invocation not approved)")
-        if snapshot.adapter_version != self.binding_identity():
+        binding = self.binding_identity()
+        if binding == "unavailable" or snapshot.adapter_version != binding:
             # The kernel refuses this before consuming the approval; reaching
             # here means it was bypassed. Nothing is launched either way.
             return AdapterStartResult("", ok=False, terminal=True,
-                                      detail="refused: adapter identity changed since approval; nothing started")
+                                      detail="refused: approved for another adapter identity; nothing started")
         admission = execution_admission(self, snapshot.execution_mode)
         if not admission.allowed:
             return AdapterStartResult("", ok=False, terminal=True, detail=admission.reason)
@@ -665,8 +690,7 @@ class AppServerCodexAdapter(AdapterContract):
             timed_out = not self._pump(client, turn, emit, gate)
             if turn.terminal_seen:
                 # Bound events after this turn's terminal are anomalies (§4.8).
-                turn.late_events += sum(1 for n in client.notifications()
-                                        if (n.params or {}).get("threadId") == thread_id)
+                turn.count_late(client.notifications())
         except _Refused as exc:
             failure = f"refused before any turn: {exc}"
         except AppServerResponseError as exc:
@@ -707,22 +731,30 @@ class AppServerCodexAdapter(AdapterContract):
                 # Requests and notifications are queued separately by the
                 # reader; apply what arrived before the request so its output
                 # precedes the card in the event stream.
-                for queued in client.notifications():
-                    if self._observe(queued, turn, emit):
-                        return True
+                if self._observe_batch(client.notifications(), turn, emit):
+                    return True
             self._route_requests(client, turn, emit, gate, wall_deadline)
             self._answer_decided(client, turn, gate)
             note = client.wait_for(lambda _n: True, timeout=0.05)
             if note is None:
                 if client.disconnected:
                     # Drain anything that arrived before EOF, then stop.
-                    rest = client.notifications()
-                    for item in rest:
-                        if self._observe(item, turn, emit):
-                            return True
+                    self._observe_batch(client.notifications(), turn, emit)
                     return True
                 continue
             if self._observe(note, turn, emit):
+                return True
+        return False
+
+    def _observe_batch(self, batch: list, turn: _Turn, emit: Emit) -> bool:
+        """Observe a drained batch in order. True once this turn's terminal is seen.
+
+        A drained batch has left the client's queue, so whatever follows the
+        terminal in it is counted as late here instead of being lost.
+        """
+        for index, note in enumerate(batch):
+            if self._observe(note, turn, emit):
+                turn.count_late(batch[index + 1:])
                 return True
         return False
 
@@ -731,6 +763,14 @@ class AppServerCodexAdapter(AdapterContract):
         if note.method == TURN_STARTED:
             if turn.ours(params, turn_from_payload=True):
                 turn.turn_started_seen = True
+            else:
+                turn.foreign_events += 1
+            return False
+        tool_kind = _tool_notification_kind(note.method)
+        if tool_kind is not None:
+            # Output deltas and the like: counted as activity, text never kept.
+            if turn.ours(params):
+                turn.tool_entry(str(params.get("itemId") or ""), tool_kind)["output_events"] += 1
             else:
                 turn.foreign_events += 1
             return False
@@ -798,10 +838,8 @@ class AppServerCodexAdapter(AdapterContract):
 
         Command text and output are not kept. Observing is not intercepting.
         """
-        item_id = str(item.get("id") or "")
-        entry = turn.tools.setdefault(item_id, {"item_type": str(item.get("type") or ""),
-                                                "item_id": item_id, "process_id_reported": False,
-                                                "completed": False, "status": ""})
+        entry = turn.tool_entry(str(item.get("id") or ""), str(item.get("type") or ""))
+        entry["lifecycle_seen"] = True
         if item.get("processId"):
             entry["process_id_reported"] = True
         if method == ITEM_COMPLETED:

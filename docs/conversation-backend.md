@@ -300,6 +300,18 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 
 依据 [S6 规划](appserver-s6-plan.md)（修订 1）第 3–6 节。全部离线完成，**没有经过 Hub 的真实运行**。
 
+### 术语（统一用法）
+
+“门禁”只作总称。具体的检查各用下面一个名字，本节和 S6 规划都按这个用法：
+
+| 名称 | 在哪里 | 含义 |
+|---|---|---|
+| 准入 | `execution_admission`，Worker 认领时和适配器启动时 | 适配器代码声明能否启动：strict、supervised、simulation 或 blocked |
+| 身份复核 | Worker 认领时，消费门禁之前 | 比较快照记录的 `adapter_version` 和当前适配器的绑定身份，双方比较 |
+| 消费门禁 | `PolicyService.consume`，同一事务 | 原子地消费审批、预留名额。之前的任何拒绝（准入、身份复核、续接检查）都不消费审批 |
+| 工具决定关闭 | `close_decisions`，中断或停止请求的同一事务 | 写入关闭记录的时刻就是生效点。之后不再授予认领，也不发送任何工具决定。没有关闭记录 = 工具决定未关闭 |
+| 认领 | `ToolGate.claim`，写出前 | 唯一的发送路径。作废卡、未决卡和工具决定已关闭时都认领不到 |
+
 ### 准入与固定身份（D7）
 
 - 固定身份是 `agenthub_adapters.appserver_adapter.PINNED_APPSERVER`，取 alpha.11 的值，与 exec 的 `PINNED_CODEX_*` 分开，不读取环境变量。
@@ -323,9 +335,13 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
   - 真实 app-server：`codex-app-server@<版本>;sha256=<哈希>;size=<大小>`；
   - 内存桩：`appserver-stub:in-memory`；
   - stdio 桩：`appserver-stub:stdio`。
-- 会话提交、`POST /api/invocations`、子任务提议这三处，把它写入快照的 `adapter_version`，因此参与 `payload_hash`。没有声明绑定的适配器（Mock、exec）仍为 `"unknown"`，旧快照的哈希不变。
-- Worker 在**消费审批之前**比较快照中的身份与当前适配器的身份，不一致就返回 409 `adapter_identity_changed`，审批保持原状，启动 0 次。
-- 适配器在 `start_streaming` 中再比较一次，作为纵深防御。
+- 会话提交、`POST /api/invocations`、子任务提议这三处，把它写入快照的 `adapter_version`，因此参与 `payload_hash`。没有声明绑定的适配器（Mock、exec）为 `"unknown"`，旧快照的哈希不变。声明了却取不到值的为 `"unavailable"`。
+- **身份复核**（消费门禁之前，比较双方）：快照记录的值必须等于当前适配器的值。
+  - `"unknown"` 只等于 `"unknown"`；`"unavailable"` 永不放行；
+  - 当前适配器没有绑定接口时同样比较，不会跳过；
+  - 不一致就返回 409 `adapter_identity_changed`，审批保持原状，启动 0 次。
+  - 评审修正：原实现只在当前适配器有绑定接口时才比较。把 app-server 下批准的调用切换到 exec 的 Fake runner，就会被消费并启动一次。
+- 纵深防御：app-server 适配器在 `start_streaming` 中再比较一次；exec 适配器拒绝 `adapter_version` 不是 `"unknown"` 的快照。
 - 重试复制原快照，不更换身份；重新固定之后，旧调用需要重新提交。
 - `describe()` 增加 `binding_identity` 字段。
 
@@ -347,19 +363,21 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - `_fit_decision` 只会返回 `accept` 或 `decline`，**从不返回 `cancel`**。可选列表里没有 decline 时，照样发 `decline`（S3 的实测结论）。
 - 唯一的发送路径仍是发送前的认领（`ToolGate.claim`）：
   - 作废卡永远不发送；
-  - 门禁关闭之后什么都不发；
-  - 过期卡在门禁开放时发一次 `decline`。
+  - 工具决定关闭之后什么都不发；
+  - 过期卡在工具决定未关闭时发一次 `decline`。
 - 卡片详情新增：
   - `command_view`：把 `command` 按 argv 拆开，PowerShell 或 cmd 包装显示为外层程序加内层命令。只用于展示，不作为安全依据。
   - `reason_source: "model"`：页面把理由标为“模型提供的说明”。
 
 ### 工具活动（D4）、中断（D5）、事件绑定（D8）、后代进程（D10）
 
-- **工具活动**：观测 `commandExecution`、`fileChange`、`mcpToolCall`、`dynamicToolCall` 类型的 item，记录类型、ID、是否报告了 processId、是否完成，不保存命令内容和输出。
+- **工具活动**：观测 `commandExecution`、`fileChange`、`mcpToolCall`、`dynamicToolCall` 类型的 item，以及这些类型的 item 级通知（`item/<类型>/<事件>`，例如 `item/commandExecution/outputDelta`）。
+  - 每个 item 记录：类型、ID、是否报告了 processId、是否见过生命周期事件（`lifecycle_seen`）、输出通知的条数（`output_events`）、是否完成。不保存命令内容和输出原文。
+  - 评审修正：原实现忽略输出通知。只有输出、没有 item 生命周期时，现在也记为一条活动，没有完成证据，所以状态为 unknown。
   - 执行记录增加 `tool_activity` 和 `tool_process_state`（`none / items_completed / unknown`），`stream.turn_ended` 也带 `tool_process_state`。
   - 状态为 unknown 时，原因文字写明“tool process state unknown, not claimed stopped”。
 - **中断**：`turn/interrupt` 应答超时时，返回 `reason: "not_yet_acknowledged"`（页面显示“服务端尚未答复；以回合终态为准”），回合仍按终态结算。
-- **事件绑定**：计入本回合的事件必须带与本 thread 一致的 `threadId` 和本回合的 turn ID；缺少 threadId 的事件不再计入。终态之后已收到的绑定事件计入 `late_events`。
+- **事件绑定**：计入本回合的事件必须带与本 thread 一致的 `threadId` 和本回合的 turn ID；缺少 threadId 的事件不再计入。终态之后已收到的绑定事件计入 `late_events`，包括与终态同一批取出、排在终态之后的事件，以及结算时队列中剩下的事件；迟到事件不计入本回合的工具活动或用量。评审修正：原实现会丢弃同一批中排在终态之后的事件。
 - **后代进程**：stdio 传输在关闭前后各读一次进程表，真实 factory 宽限 3 秒，结果记入 `descendants`（`before_close`、`after_grace`）。只记录，不结束任何进程。
 
 ### 原生续接（D6、D9）
@@ -374,7 +392,7 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 
 - 线程应答回显所请求的 cwd，并且在请求 read-only 时，把 `sandbox` 报告为对象。
 - 恢复时返回本 factory 在该 thread 上发出过的回合，并发送一条上一个回合的用量重放。stdio 桩通过环境变量获得回合 ID 和历史。
-- 新场景：`approval-default`（默认决定列表、包装后的命令）、`settings-mismatch`、`resume-no-history`、`replay-twice`、`replay-other-turn`、`replay-after-start`、`tool-unfinished`、`unbound-delta`。
+- 新场景：`approval-default`（默认决定列表、包装后的命令）、`settings-mismatch`、`resume-no-history`、`replay-twice`、`replay-other-turn`、`replay-after-start`、`tool-unfinished`、`tool-output-only`、`unbound-delta`。
 
 ### 验证（本节）
 
@@ -388,6 +406,12 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - 跳过设置回读：1 项失败。
 
 全量测试（Windows `.venv`）：`python -m pytest -o addopts='' -q -p no:cacheprovider`，结果 **1042 passed in 200.99s**。浏览器在 demo 离线桩上走完“发消息 → 批准 → 工具卡 → 拒绝 → 完成”，卡片显示命令原文、拆开后的命令，理由标为“模型提供的说明”。没有执行 Codex，没有模型调用。
+
+评审修正之后，同一文件增至 70 项，连续 3 次通过。新增的 5 项回归在修复前的代码上都失败：
+- 切换到 exec 适配器后被拒，exec 自身也拒绝；
+- `"unavailable"` 永不放行；
+- 只有工具输出通知时状态为 unknown，不保存原文；
+- 同一批中终态之后的事件计入 `late_events`（未路由请求和断线两条路径各一项）。
 
 按新规则调整的已有测试：
 - `stream.turn_ended` 多了 `tool_process_state`；

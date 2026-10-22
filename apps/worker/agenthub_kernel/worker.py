@@ -28,7 +28,7 @@ from agenthub.contracts import (
     NATIVE_RESUME, AdapterContract, InvocationStatus, execution_admission,
 )
 from agenthub_kernel import config
-from agenthub_kernel.adapters import adapter_binding
+from agenthub_kernel.adapters import UNAVAILABLE_BINDING, adapter_binding
 from agenthub_kernel.db import Database, EventRow, InvocationRow, TaskRow
 from agenthub_kernel.events import StreamSink
 from agenthub_kernel.service import PolicyService, QuotaError
@@ -771,16 +771,19 @@ class Worker:
                     "error": admission.reason,
                     "launch_attempted": False,
                 }
-            # An approval binds the adapter identity the call was created
-            # under (D11): after a re-pin it can never run, and is left as it
-            # is. Adapters that declare no binding keep "unknown" (exec, Mock).
+            # Identity re-check (D11): the identity recorded in the approved
+            # snapshot must equal the serving adapter's identity, compared on
+            # both sides - an adapter that declares none is "unknown", which
+            # matches only a snapshot created under such an adapter, and
+            # "unavailable" (a broken declaration) never matches. On mismatch
+            # the call cannot run and its approval is left as it is.
             refusal = None
-            if callable(getattr(self.adapter, "binding_identity", None)):
-                expected = adapter_binding(self.adapter)
-                if inv.snapshot.get("adapter_version", "unknown") != expected:
-                    refusal = ("adapter_identity_changed",
-                               "the call was approved for another adapter identity; "
-                               "submit it again to approve the current one")
+            recorded = inv.snapshot.get("adapter_version", "unknown")
+            current = adapter_binding(self.adapter)
+            if recorded != current or current == UNAVAILABLE_BINDING:
+                refusal = ("adapter_identity_changed",
+                           "the call was approved for another adapter identity; "
+                           "submit it again to approve the current one")
             # Native resume is likewise decided before consumption: an adapter
             # that would ignore resume_thread_id must not run the call as if
             # it were independent, and a thread that may be busy is not reused.

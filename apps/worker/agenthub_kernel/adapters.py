@@ -104,16 +104,29 @@ def _build_appserver(s: dict) -> Any:
     )
 
 
+#: Binding of an adapter that declares no identity (exec, Mock): equal only to itself.
+UNKNOWN_BINDING = "unknown"
+#: A declaration that failed or returned nothing: it never matches anything.
+UNAVAILABLE_BINDING = "unavailable"
+
+
 def adapter_binding(adapter: Any) -> str:
-    """The identity a new call's snapshot binds to; ``unknown`` if none is declared."""
+    """The identity a new call's snapshot binds to (``adapter_version``).
+
+    ``unknown`` when the adapter declares none; ``unavailable`` when its
+    declaration fails. The Worker compares the recorded and the current value
+    on both sides and refuses ``unavailable`` outright.
+    """
     bind = getattr(adapter, "binding_identity", None)
     if not callable(bind):
-        return "unknown"
+        return UNKNOWN_BINDING
     try:
         value = bind()
     except Exception:  # noqa: BLE001
-        return "unavailable"
-    return value if isinstance(value, str) and value else "unavailable"
+        return UNAVAILABLE_BINDING
+    if not isinstance(value, str) or not value or value == UNKNOWN_BINDING:
+        return UNAVAILABLE_BINDING  # a declared identity cannot pose as "none declared"
+    return value
 
 
 def describe(adapter: Any) -> dict:

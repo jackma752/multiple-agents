@@ -46,6 +46,7 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``replay-after-start`` the previous turn's usage arrives after turn/started
 ``tool-unfinished``  a commandExecution item with a process id starts and never
                      completes before the turn does
+``tool-output-only`` command output notifications with no item lifecycle
 ``unbound-delta``    a delta without threadId, then a normal reply
 ===================  ==========================================================
 
@@ -71,6 +72,7 @@ from typing import Any, Callable, Optional
 from agenthub_adapters.appserver import (
     APPROVAL_METHODS,
     DELTA_AGENT_MESSAGE,
+    DELTA_COMMAND_OUTPUT,
     FRAMING_LSP,
     ITEM_COMPLETED,
     ITEM_STARTED,
@@ -115,6 +117,7 @@ SCENARIOS = (
     "replay-other-turn",
     "replay-after-start",
     "tool-unfinished",
+    "tool-output-only",
     "unbound-delta",
 )
 
@@ -403,6 +406,17 @@ class ScriptedAppServer:
             cmd = {"id": "item-cmd-9", "type": "commandExecution", "processId": "4242",
                    "status": "inProgress"}
             self.notify(ITEM_STARTED, {"item": cmd, "threadId": self.thread_id, "turnId": self.turn_id})
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                              "threadId": self.thread_id, "delta": "OK"})
+            self._emit_item("item-1", "agentMessage")
+            self._finish_turn(TURN_STATUS_COMPLETED)
+            return
+        if scenario == "tool-output-only":
+            # Output notifications with no item lifecycle at all (and one for
+            # another thread); the text must never be kept by the client.
+            for target in (self.thread_id, self.thread_id, "other-thread"):
+                self.notify(DELTA_COMMAND_OUTPUT, {"threadId": target, "turnId": self.turn_id,
+                                                   "itemId": "item-cmd-7", "delta": "tool-output-secret"})
             self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
                                               "threadId": self.thread_id, "delta": "OK"})
             self._emit_item("item-1", "agentMessage")

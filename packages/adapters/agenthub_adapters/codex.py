@@ -657,6 +657,12 @@ class CodexAdapter(AdapterContract):
             # the Worker's eligibility check. No home, run directory or process
             # record is created here, and start_count remains zero.
             return AdapterStartResult("", ok=False, terminal=True, detail=admission.reason)
+        if snapshot.adapter_version != "unknown":
+            # This adapter declares no binding identity, so it serves only
+            # snapshots that recorded none; one approved for another adapter
+            # (e.g. app-server) is refused. The Worker checks this first (D11).
+            return AdapterStartResult("", ok=False, terminal=True,
+                                      detail="refused: approved for another adapter identity; nothing started")
         # Agent identity must match. The snapshot records which agent the user
         # approved; running a different one would execute something that was
         # never consented to.

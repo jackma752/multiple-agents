@@ -1,4 +1,15 @@
-# 当前交接：S6-1 离线加固（2026-10-23）
+# 当前交接：S6-1 评审修正（2026-10-23）
+
+- 评审修正三处，说明见[会话后端契约](conversation-backend.md)的“S6-1”一节：
+  - 身份复核改为比较双方，切换到 exec 等没有绑定接口的适配器也会被拒，`"unavailable"` 永不放行；
+  - 工具输出通知计入工具活动，不保存原文；
+  - 同一批通知中排在终态之后的事件计入 `late_events`。
+- 统一了门禁相关用词：准入、身份复核、消费门禁、工具决定关闭（生效点）、认领。
+- S1–S5 不需要重做。
+
+---
+
+# 历史交接：S6-1 离线加固（2026-10-23）
 
 - 分支 `feat/appserver-s6`，目录 `E:\plug\agent-hub\.worktrees\appserver-s6`。说明见[会话后端契约](conversation-backend.md)的“S6-1”一节，能力表见 [adapter-capabilities](adapter-capabilities.md)。
 - 完成 D1–D11：
