@@ -1,6 +1,12 @@
 # bootstrap 工具（依赖离线下载）
 
-本机（WORKSPACE）pip 的 downloader 在网络 TLS 上会卡住（见交接包 HANDOFF §1），
+> **2026-10-22 更新**：卡住的原因已经查明。直连 PyPI 会超时，而 pip 没有走本机代理；问题不在证书。
+>
+> 解决办法：运行 `.\.venv\Scripts\python.exe tools\bootstrap\pip_trust.py --write-venv-config`，给 venv 写入 `pip.ini`（代理加 certifi 包，验证保持开启）。之后直接 `pip install` 即可。
+>
+> 详见 `docs/codex-proxy-setup.md` 第 7 节。下面的 wheelhouse 方案保留，用于没有代理的环境。
+
+（历史说明）本机（WORKSPACE）pip 的 downloader 在网络 TLS 上会卡住（见交接包 HANDOFF §1），
 但 Python 的 `urllib` 走 OpenSSL 可正常访问 `pypi.org` / `files.pythonhosted.org`。
 这几个脚本用 `urllib` 把 wheel 下载到仓库级 `wheelhouse/`（已 gitignore，不入库），
 再让 `pip install --no-index --find-links wheelhouse` 从本地完成安装。

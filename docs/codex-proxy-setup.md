@@ -116,3 +116,37 @@ desktop assets CDN       https://persistent.oaistatic.com/codex-app-prod/<redact
 - 仍需注意：**尚未完成任何成功的真实模型调用**。
   预检通过 ≠ 真实调用成功；端点在探测中曾出现一次超时，稳定性未验证。
 - 因此**真实适配器状态仍为"未验证"**，需一次成功的真实调用才能改变。
+
+---
+
+## 7. pip、certifi 与代理证书信任（2026-10-22 复核与处理）
+
+全程不调用模型，不下载任何包，只查询了索引元数据。证书验证始终开启。
+
+**事实**：
+
+| 检查 | 结果 |
+|---|---|
+| 经 `127.0.0.1:8090` 访问 pypi.org 和 files.pythonhosted.org | TLS 验证通过，证书由 GlobalSign 签发 |
+| 经同一代理访问 chatgpt.com | TLS 验证通过，证书由 Google Trust Services WE1 签发 |
+| 验证所用的 CA | venv 的 certifi（2024.08.30）、pip 自带的 certifi（2023.05.07）、系统证书库，三者结果一致 |
+| 直连上述三个站点 | 都超时 |
+| `certifi/cacert.pem`、`pip/_vendor/certifi/cacert.pem` | 都与安装时 RECORD 中的哈希一致，**没有被追加过任何证书** |
+| 不带代理环境变量时运行 `pip index versions certifi` | 约 41 秒后报 “No matching distribution found”，这就是此前的“卡住” |
+| 带代理环境变量时同样运行 | 约 1 秒返回 |
+
+**结论**：
+
+- 8090 是普通的 CONNECT 隧道，**不做 TLS 拦截**，所以不存在需要信任的私有代理 CA。
+- pip 的问题是没有走代理，不是证书问题。
+
+**处理**（只影响项目的 venv，不改系统和用户级设置）：
+
+- 新增 `tools/bootstrap/pip_trust.py`：
+  - 默认只读检查：两个 certifi 包与 RECORD 是否一致；venv 的 `pip.ini` 是否设置了代理、是否不含 `trusted-host` 或任何关闭验证的设置；经代理的 TLS 是否通过主机名和证书链验证。
+  - `--write-venv-config`：写入 `E:\plug\agent-hub\.venv\pip.ini`（site 级，只对这个 venv 生效），内容为 `proxy = http://127.0.0.1:8090`、`cert = <venv certifi>`、`timeout = 30`、`retries = 2`。
+  - 如果将来代理改为拦截 TLS，可用 `--extra-ca <代理CA.pem>`：把 certifi 与该 CA 合并成单独的 `.venv\agenthub-ca-bundle.pem` 再引用。**certifi 自己的文件不会被修改。**
+- 已写入。之后在不带代理环境变量的 shell 中，同一条 pip 查询约 1 秒成功；`pip config debug` 显示 site 级配置生效。
+- Codex 子进程仍然需要 `CODEX_CA_CERTIFICATE=<venv certifi>`，否则报 `UnknownIssuer`（见第 3 节），S1–S5 的预检会检查它。这一项**保留，不做改动**。
+- 没有升级 certifi（当前 2024.08.30，索引上最新为 2026.10.19），以免在 S2–S5 证据序列中途改变环境。是否升级需另行决定；升级后 `pip.ini` 引用的路径不变。
+- 如果代理不在运行，pip 会立即报连接失败，而不是卡住；这时需要先启动代理。
