@@ -14,10 +14,13 @@ Worker -> app-server adapter); nothing calls the adapter directly.
    input it actually sent (a SHA-256) confirms.
 
 PASS needs an actual ``thread/resume`` of the planted thread whose answer
-contains the planted turn, a new turn id, the code word in the reply, both
-calls settled with their slots released and local processes gone. A resume
-that works but a reply without the code word is INCONCLUSIVE; tool or native
-child activity stops the check (INCONCLUSIVE, never a recall success). The one
+contains the planted turn, a new turn id, call 2 ``succeeded`` with its own
+turn completed and the code word in its reply, both calls settled with their
+slots released, local processes gone and the descendant check actually done
+(an unavailable check is never read as "none"). A failed call is never a pass,
+even with the code word. A resume that works but a reply without the code word
+is INCONCLUSIVE; tool or native child activity stops the check (INCONCLUSIVE,
+never a recall success). The one
 legitimate usage replay of the planted turn is recorded apart. Only the code
 word's SHA-256 and the match booleans are written; no retry, no third call.
 """
@@ -53,7 +56,8 @@ MAX_MODEL_TURNS = 2
 #: How long call 1's app-server process may take to leave the process table.
 PROCESS_EXIT_WAIT_SECONDS = 10.0
 STUB_SCENARIOS = ("recall", "recall-forgetful", "recall-tool", "recall-native", "plant-tool",
-                  "recall-same-turn-id", "recall-wrong-thread", "recall-replay-twice")
+                  "recall-same-turn-id", "recall-wrong-thread", "recall-replay-twice",
+                  "recall-failed", "recall-failed-nocode")
 RECORD_KEYS = ("thread_id", "turn_id", "previous_turn_id", "turn_status", "turn_requested", "usage",
                "replayed_usage", "usage_anomalies", "tool_process_state", "tool_activity", "tool_approvals",
                "declined_requests", "unanswered_requests", "native_agents", "foreign_events", "late_events",
@@ -102,12 +106,33 @@ class Stop(Exception):
         self.verdict = verdict
 
 
+def descendant_check(record: dict) -> str:
+    """``checked_empty``, ``survivors`` or ``unavailable`` - never "empty" by default.
+
+    The adapter reports both snapshots (before close, after the grace period)
+    as lists only when the process table could be read each time; a missing
+    report or a missing list means the check did not happen.
+    """
+    report = record.get("descendants")
+    if not isinstance(report, dict) or not isinstance(report.get("before_close"), list) \
+            or not isinstance(report.get("after_grace"), list):
+        return "unavailable"
+    return "survivors" if report["after_grace"] else "checked_empty"
+
+
+def turn_completed(record: dict) -> bool:
+    """This turn's own terminal said completed (not failed, interrupted or missing)."""
+    return record.get("turn_status") == "completed" and record.get("terminal") is True
+
+
 def plant_codes(phase: dict) -> list[str]:
     """Call 1 must be a clean, completed planting turn on a new thread."""
     record = phase["record"]
     codes = []
     if phase["status"] != "succeeded":
         codes.append(f"plant:status_{phase['status']}")
+    if not turn_completed(record):
+        codes.append("plant:turn_not_completed")
     if not phase["reply_is_stored"]:
         codes.append("plant:reply_not_stored")
     if record.get("opening_method") != "thread/start":
@@ -123,8 +148,11 @@ def plant_codes(phase: dict) -> list[str]:
         codes.append("plant:no_usage")
     if not record.get("local_process_exit_confirmed"):
         codes.append("plant:local_exit_unconfirmed")
-    if (record.get("descendants") or {}).get("after_grace"):
+    descendants = descendant_check(record)
+    if descendants == "survivors":
         codes.append("plant:descendants_survived")
+    elif descendants == "unavailable":
+        codes.append("plant:descendants_unverifiable")  # call 2 is not submitted
     if not phase["native_session_recorded"]:
         codes.append("plant:no_native_session")
     if phase["held_slots"]:
@@ -162,17 +190,30 @@ def recall_codes(plant: dict, recall: dict, *, recall_text: str) -> tuple[list, 
         inconclusive.append("recall:tool_activity")
     if r.get("native_agents"):
         inconclusive.append("recall:native_agent")
-    if recall["status"] not in ("succeeded", "failed"):
+    # Only a succeeded call whose own turn completed can show recall; a failed
+    # (or any other) call is not a pass, even with the code word in its reply.
+    if recall["status"] != "succeeded" and not (recall["status"] == "failed" and not r.get("turn_requested")):
         inconclusive.append(f"recall:status_{recall['status']}")
+    if r.get("turn_requested") and not turn_completed(r):
+        inconclusive.append("recall:turn_not_completed")
     if not r.get("local_process_exit_confirmed"):
         inconclusive.append("recall:local_exit_unconfirmed")
-    if (r.get("descendants") or {}).get("after_grace"):
+    descendants = descendant_check(r)
+    if descendants == "survivors":
         inconclusive.append("recall:descendants_survived")
+    elif descendants == "unavailable":
+        inconclusive.append("recall:descendants_unverifiable")
     if recall["held_slots"]:
         inconclusive.append("quota_slot_held")
-    if recall["status"] == "succeeded" and not recall["reply_contains_code"]:
+    if r.get("turn_requested") and not recall["reply_contains_code"]:
         inconclusive.append("recall:answer_missing")
     return fail, inconclusive
+
+
+def passes(recall: dict, fail: list, inconclusive: list) -> bool:
+    """PASS needs no reason code AND, positively, succeeded + completed turn + the code word."""
+    return (not fail and not inconclusive and recall["status"] == "succeeded"
+            and turn_completed(recall["record"]) and recall["reply_contains_code"] is True)
 
 
 def _call(client, headers, cid, *, text: str, key: str, context_mode: str, approve: bool) -> dict:
@@ -331,6 +372,8 @@ def run_probe(*, real: bool = False, approved: bool = False, acknowledged: bool 
                     inconclusive.append("workdir_not_empty")
                 if result["model_turns"] > MAX_MODEL_TURNS or adapter.start_count - starts > 1:
                     fail.append("turn_budget_exceeded")
+                if not fail and not inconclusive and not passes(recall, fail, inconclusive):
+                    inconclusive.append("recall:pass_conditions_not_met")  # defensive; unreachable today
                 result["reason_codes"] = fail + inconclusive
                 result["verdict"] = "FAIL" if fail else ("INCONCLUSIVE" if inconclusive else "PASS")
     except Stop as stop:

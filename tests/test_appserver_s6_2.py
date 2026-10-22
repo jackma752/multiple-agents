@@ -92,5 +92,17 @@ def test_judge_rejects_wrong_order_and_survivors():
                 "order": {"starting": 1, "turn_started": 3, "first_delta": 2, "turn_ended": 4, "succeeded": 5},
                 "record": {"tool_process_state": "none", "usage": {"inputTokens": 1},
                            "local_process_exit_confirmed": True,
-                           "descendants": {"after_grace": [{"pid": 1, "image": "x.exe"}]}}}
+                           "descendants": {"before_close": [{"pid": 1, "image": "x.exe"}],
+                                           "after_grace": [{"pid": 1, "image": "x.exe"}]}}}
     assert S62.judge(evidence, expected_reply="OK") == ["event_order", "descendants_survived"]
+
+
+@pytest.mark.parametrize("report", [None, {"before_close": [], "after_grace": None},
+                                    {"before_close": None, "after_grace": []}])
+def test_judge_never_reads_an_unavailable_descendant_check_as_none(report):
+    evidence = {"status": "succeeded", "start_count": 1, "held_slots": 0, "reply_exact": True,
+                "binding_matches": True, "workdir_empty": True,
+                "order": {"starting": 1, "turn_started": 2, "first_delta": 3, "turn_ended": 4, "succeeded": 5},
+                "record": {"tool_process_state": "none", "usage": {"inputTokens": 1},
+                           "local_process_exit_confirmed": True, "descendants": report}}
+    assert S62.judge(evidence, expected_reply="OK") == ["descendants_unverifiable"]

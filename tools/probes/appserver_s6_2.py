@@ -160,8 +160,11 @@ def judge(evidence: dict, *, expected_reply: str) -> list:
         codes.append("no_usage")
     if not record.get("local_process_exit_confirmed"):
         codes.append("local_exit_unconfirmed")
-    survivors = (record.get("descendants") or {}).get("after_grace")
-    if survivors:
+    report = record.get("descendants")
+    if not (isinstance(report, dict) and isinstance(report.get("before_close"), list)
+            and isinstance(report.get("after_grace"), list)):
+        codes.append("descendants_unverifiable")  # an unavailable check is not "none"
+    elif report["after_grace"]:
         codes.append("descendants_survived")
     if not evidence["binding_matches"]:
         codes.append("binding_mismatch")

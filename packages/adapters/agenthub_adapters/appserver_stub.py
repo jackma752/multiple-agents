@@ -57,6 +57,8 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``recall-same-turn-id`` the resumed turn reuses the previous turn id
 ``recall-wrong-thread`` thread/resume answers with another thread id
 ``recall-replay-twice`` the resume sends the previous turn's usage twice
+``recall-failed``    the resumed turn answers the code word, then ends failed
+``recall-failed-nocode`` the resumed turn answers UNKNOWN, then ends failed
 ===================  ==========================================================
 
 Thread answers echo the requested cwd and report ``sandbox`` as the object the
@@ -136,12 +138,15 @@ SCENARIOS = (
     "recall-same-turn-id",
     "recall-wrong-thread",
     "recall-replay-twice",
+    "recall-failed",
+    "recall-failed-nocode",
 )
 
 #: Two-call memory scenarios (S6-3): the first call plants, the resumed one recalls.
 RECALL_SCENARIOS = frozenset({
     "recall", "recall-forgetful", "recall-tool", "recall-native", "plant-tool",
     "recall-same-turn-id", "recall-wrong-thread", "recall-replay-twice",
+    "recall-failed", "recall-failed-nocode",
 })
 
 #: ``approval-default``: the S3 shape of a wrapped command and the tested
@@ -443,12 +448,14 @@ class ScriptedAppServer:
                          "status": "completed"}
                 self.notify(ITEM_COMPLETED, {"item": spawn, "threadId": self.thread_id,
                                              "turnId": self.turn_id})
-            code = None if scenario == "recall-forgetful" else self._recalled_code()
+            forgets = scenario in ("recall-forgetful", "recall-failed-nocode")
+            code = None if forgets else self._recalled_code()
             reply = code or "UNKNOWN"
         self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
                                           "threadId": self.thread_id, "delta": reply})
         self._emit_item("item-1", "agentMessage")
-        self._finish_turn(TURN_STATUS_COMPLETED)
+        failed = self.resumed and scenario in ("recall-failed", "recall-failed-nocode")
+        self._finish_turn(TURN_STATUS_FAILED if failed else TURN_STATUS_COMPLETED)
 
     def _finish_turn(self, status: str) -> None:
         self._save_turn(status)

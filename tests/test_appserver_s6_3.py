@@ -137,6 +137,49 @@ def test_planting_text_reused_in_the_second_input_is_never_sent(tmp_path):
     assert result["reason_codes"] == ["recall:input_contains_code"] and result["recall"] is None
 
 
+@pytest.mark.parametrize("scenario, contains, codes", [
+    ("recall-failed", True, ["recall:status_failed", "recall:turn_not_completed"]),
+    ("recall-failed-nocode", False, ["recall:status_failed", "recall:turn_not_completed",
+                                     "recall:answer_missing"]),
+])
+def test_a_failed_recall_turn_never_passes(tmp_path, scenario, contains, codes):
+    """Review finding, through the Hub: failed is not PASS even with the right code word."""
+    exit_code, result = run(tmp_path, scenario=scenario)
+    assert exit_code == 1 and result["verdict"] == "INCONCLUSIVE" and result["reason_codes"] == codes
+    assert result["recall"]["status"] == "failed" and result["recall"]["record"]["turn_status"] == "failed"
+    assert result["recall_contains"] is contains
+
+
+def test_unavailable_descendant_check_in_call_1_stops_before_call_2(tmp_path, monkeypatch):
+    from agenthub_adapters import proc_tree
+
+    monkeypatch.setattr(proc_tree, "process_table", lambda: None)
+    exit_code, result = run(tmp_path, scenario="recall")
+    assert exit_code == 1 and result["verdict"] == "INCONCLUSIVE"
+    assert result["reason_codes"] == ["plant:descendants_unverifiable"]
+    assert result["plant"]["record"]["descendants"] is None
+    assert result["recall"] is None and result["model_turns"] == 1
+
+
+def test_unavailable_descendant_check_in_call_2_is_inconclusive(tmp_path, monkeypatch):
+    from agenthub_adapters import proc_tree
+
+    real_table = proc_tree.process_table
+    state = {"off": False}
+    monkeypatch.setattr(proc_tree, "process_table", lambda: None if state["off"] else real_table())
+
+    def alive(pid):
+        now = S63.process_alive(pid)
+        if now is False:
+            state["off"] = True  # the table becomes unreadable once call 1's exit is confirmed
+        return now
+
+    exit_code, result = run(tmp_path, scenario="recall", _alive=alive)
+    assert exit_code == 1 and result["verdict"] == "INCONCLUSIVE"
+    assert result["reason_codes"] == ["recall:descendants_unverifiable"]
+    assert result["recall_contains"] is True and result["model_turns"] == 2  # right answer, still not PASS
+
+
 def test_second_call_without_approval_does_not_run(tmp_path):
     exit_code, result = run(tmp_path, scenario="recall", _approve_recall=False)
     assert exit_code == 1 and result["verdict"] == "INCONCLUSIVE"
@@ -176,8 +219,9 @@ def _phases():
                          "previous_turn_id": "a", "resume_check": {"previous_turn_present": True},
                          "input_sha256": S63.digest(S63.RECALL_PROMPT), "usage": {"inputTokens": 9},
                          "replayed_usage": {"inputTokens": 5}, "usage_anomalies": 0, "workdir": "W",
-                         "turn_requested": True, "tool_process_state": "none",
-                         "local_process_exit_confirmed": True, "descendants": {"after_grace": []}}}
+                         "turn_requested": True, "tool_process_state": "none", "turn_status": "completed",
+                         "terminal": True, "local_process_exit_confirmed": True,
+                         "descendants": {"before_close": [], "after_grace": []}}}
     return plant, recall
 
 
@@ -202,8 +246,47 @@ def test_judge_fails_each_structural_violation(change, code):
 def test_judge_passes_clean_evidence_and_keeps_answer_separate():
     plant, recall = _phases()
     assert S63.recall_codes(plant, recall, recall_text=S63.RECALL_PROMPT) == ([], [])
+    assert S63.passes(recall, [], []) is True
     recall["reply_contains_code"] = False
     assert S63.recall_codes(plant, recall, recall_text=S63.RECALL_PROMPT) == ([], ["recall:answer_missing"])
+
+
+@pytest.mark.parametrize("contains, expected", [
+    (True, ["recall:status_failed", "recall:turn_not_completed"]),
+    (False, ["recall:status_failed", "recall:turn_not_completed", "recall:answer_missing"]),
+])
+def test_judge_never_passes_a_failed_call(contains, expected):
+    """Review finding: a failed call with the right code word must not pass."""
+    plant, recall = _phases()
+    recall["status"] = "failed"
+    recall["record"].update(turn_status="failed", terminal=True)
+    recall["reply_contains_code"] = contains
+    fail, inconclusive = S63.recall_codes(plant, recall, recall_text=S63.RECALL_PROMPT)
+    assert fail == [] and inconclusive == expected
+    assert S63.passes(recall, fail, []) is False  # even with the codes ignored
+
+
+@pytest.mark.parametrize("turn_status, terminal", [("interrupted", True), ("", False), ("completed", False)])
+def test_judge_requires_this_turns_own_completed_terminal(turn_status, terminal):
+    plant, recall = _phases()
+    recall["record"].update(turn_status=turn_status, terminal=terminal)
+    assert "recall:turn_not_completed" in S63.recall_codes(plant, recall, recall_text=S63.RECALL_PROMPT)[1]
+
+
+@pytest.mark.parametrize("report", [None, {"before_close": [], "after_grace": None},
+                                    {"before_close": None, "after_grace": []}, {}])
+def test_judge_never_reads_an_unavailable_descendant_check_as_none(report):
+    """Review finding: "checked and empty" and "check unavailable" are different."""
+    plant, recall = _phases()
+    recall["record"]["descendants"] = report
+    assert S63.descendant_check(recall["record"]) == "unavailable"
+    assert "recall:descendants_unverifiable" in S63.recall_codes(plant, recall, recall_text=S63.RECALL_PROMPT)[1]
+    plant_phase = {"status": "succeeded", "reply_is_stored": True, "native_session_recorded": True,
+                   "held_slots": 0, "record": {**recall["record"], "opening_method": "thread/start",
+                                               "process_id": 7}}
+    assert S63.plant_codes(plant_phase) == ["plant:descendants_unverifiable"]
+    plant_phase["record"]["descendants"] = {"before_close": [], "after_grace": []}
+    assert S63.plant_codes(plant_phase) == []
 
 
 def test_code_words_are_random_and_not_in_the_recall_prompt():
