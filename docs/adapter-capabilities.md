@@ -4,7 +4,8 @@
 
 | 能力 | 状态 |
 |---|---|
-| 准入 | 严格模式：真实 app-server 被拒（`appserver_real_unverified`）。监督模式：只有用代码常量构造的 `CodexAppServerFactory` 才放行（`user_supervised_boundary`），条件是固定身份为 alpha.11 `6257d9e8f63c0f2b`、没有环境变量覆盖、启动参数与验证时一致、代理和 CA 可读、时限不超过 600 秒；批准时仍需显式同意。离线桩为 simulation。**经过 Hub 的真实运行：未验证** |
+| 准入 | 严格模式：真实 app-server 被拒（`appserver_real_unverified`）。监督模式：只有用代码常量构造的 `CodexAppServerFactory` 才放行（`user_supervised_boundary`），条件是固定身份为 alpha.11 `6257d9e8f63c0f2b`、没有环境变量覆盖、启动参数与验证时一致、代理和 CA 可读、时限不超过 600 秒；批准时仍需显式同意。离线桩为 simulation |
+| 经过 Hub 的最小回合 | **已验证一次（S6-2，只认定当次）**：进程内的 API、内核和适配器上走通一次 supervised 调用：设置核验、增量事件、结算 succeeded、名额释放、绑定身份一致（`evidence/s6-2-real-run-1-pass`）。网页点击路径、工具、中断、续接都不在其中 |
 | 身份绑定 | 调用快照的 `adapter_version` 写入绑定身份。消费门禁之前做身份复核，比较双方（`"unknown"` 只等于 `"unknown"`，`"unavailable"` 永不放行），切换到 exec 等没有绑定接口的适配器也会被拒；不一致返回 409 `adapter_identity_changed`。启动前重新计算文件哈希。只在离线环境中验证 |
 | 固定设置 | `thread/start`、`thread/resume`、`turn/start` 都传入 read-only、on-request、reviewer user；回读不符就不开回合。只在离线桩上验证 |
 | 工具审批 | 真实 app-server 只能**拒绝**：卡片的可选决定为 `["decline"]`，provider 的原始列表另附；拒绝一律发 `decline`，从不发 `cancel`。作废卡永远不发送；工具决定关闭（中断或停止的生效点）之后什么都不发。独立探针 S3 验证过一次拒绝链（`evidence/s3-real-run-3-pass`，只认定当次）；**accept 链和经过 Hub 的拒绝：未验证**。不经审批、直接在沙箱内运行的命令只能观测 |
