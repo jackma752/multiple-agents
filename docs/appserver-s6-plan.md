@@ -336,7 +336,60 @@ supervised 放行的条件，全部由适配器代码判断：
   同时统一了“门禁”相关的用词，见[会话后端契约](conversation-backend.md)“S6-1”一节中的术语。
 - **仍未验证**：经过 Hub 的任何真实运行（S6-2 到 S6-5）、子 Agent 关闭路径（S6-V）、accept 链（S7）。
 
-## 10. 本方案不做的事
+## 10. S6-2 单次真实运行申请（未执行）
+
+**本节只是申请，不构成授权。** 用户单独批准之后才执行，只执行一次。
+
+- **被测提交**：`feat/appserver-s6` 上包含本节的提交（哈希在聊天中给出）。执行前确认 HEAD 和工作树都没有变化。
+- **固定程序**：`codex-cli 0.163.0-alpha.11`，`bin\6257d9e8f63c0f2b\codex.exe`，SHA-256 `00c0f1e4…cd67c`，342187312 字节，就是代码常量 `PINNED_APPSERVER`。复用步骤 A 证据 `identity-hkzdmoqj`（S3–S5 也是复用它），驱动会在执行前再被动核验一次大小和哈希。
+- **证书包**：certifi 2026.10.19，`cacert.pem` 的 SHA-256 为 `50f79f98…0785`，驱动执行前核验。
+- **CODEX_HOME**：`%LOCALAPPDATA%\AgentHub\codex-home`，与 S2–S5 相同。只检查登录文件是否存在，不读取。
+- **命令**（PowerShell，一次）：
+
+  ```
+  Set-Location E:\plug\agent-hub\.worktrees\appserver-s6
+  & 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools\probes\appserver_s6_2.py --mode real --approve-one-model-turn --acknowledge-supervised-boundary
+  ```
+
+- **路径**：在进程内用 `create_app` 搭起 API、Worker 和内核，适配器由 `build_adapter()` 构造（app-server 传输，代码常量身份）。经过 HTTP 接口依次：
+  1. 新建一个会话；
+  2. 提交一条 supervised 调用；
+  3. 带显式同意 `accept_unmanaged_native_agents: true` 批准；
+  4. `run?wait=true`。
+
+  驱动只发这一次调用，不回答任何工具卡，不重试，不发第二个回合。
+- **范围与上限**：
+  - 一个新 thread，最多 1 个模型回合；
+  - 固定提示词与 S2 相同（`Reply with exactly: OK. …`）；
+  - 本地时限 300 秒；
+  - 数据目录（数据库、工作目录、执行库）放在系统临时目录下，在仓库之外，保留供审计；
+  - 结果写在 `var/appserver-s6-2/real-*/result.json`，不入库，只登记哈希。
+- **执行前检查**（任何一项不满足就停止：不建数据库，不启动进程）：
+  - 没有身份环境变量覆盖；
+  - factory 恰好是用常量构造的真实 factory；
+  - 程序的大小和哈希一致；
+  - CA 哈希一致；
+  - CODEX_HOME 在仓库之外，有登录文件，可写；
+  - 监督准入放行，严格准入仍然阻止。
+- **PASS 条件**（全部满足）：
+  - 调用为 `succeeded`；适配器启动 1 次；名额已释放；
+  - 事件顺序为 `starting` < `stream.turn_started` < 第一条 `stream.delta` < `stream.turn_ended` < `succeeded`；
+  - 回复恰好是 `OK`；
+  - 没有工具活动、工具卡、被拒或未答的请求，也没有观测到原生子 Agent；
+  - 没有不绑定的事件、迟到事件或用量异常，也没有恢复相关的记录；
+  - 有服务端用量；本地进程确认退出；关闭后没有残留的后代进程；
+  - 快照中的绑定身份等于固定身份；工作目录为空。
+- **只认定**：这一次经过 Hub（API、内核、适配器、事件库）的 supervised 最小回合可用。
+- **不认定**：网页点击路径（本次走进程内 API，不经浏览器）、strict 模式、工具审批、中断、续接（分别是 S6-3 到 S6-5），以及子 Agent 控制。
+- **停止规则**：任何失败或异常都立即停止，不重试，不换模型，不放宽权限，不接着执行 S6-3。出现工具请求时，Hub 只提供“拒绝”；卡片在 120 秒后过期，由 Hub 按规则发送一次 decline，本次判 FAIL（`tool_activity`）。
+- **风险**：
+  - 按源码，会话很可能注册了 v2 子 Agent 工具（第 2.1 节）。如果模型派生子 Agent，只能观测；子 Agent 没有自身的结束证据时，调用为 unknown 并保留名额。
+  - 不经审批、直接在沙箱内运行的命令只能观测。
+  - 会消耗一次模型回合的额度，经代理 8090 访问网络。
+- **已知差异**（不属于本次范围）：产品默认的数据目录是仓库内的 `var/`，模型的 cwd 会落在仓库里、继承仓库指令。驱动把数据目录放在了仓库外，与 S2–S5 一致。是否把“工作目录必须在仓库外”加入监督准入条件，需要你另行决定。
+- **证据**：登记 `result.json`、`_logs` 下的 stderr 日志和 rollout 的 SHA-256；写运行记录；打 `evidence/s6-2-*` 标签。
+
+## 11. 本方案不做的事
 
 - 不改动 strict 模式的结论，不声称原生子 Agent 已被控制，也不把会话的模式字段当作派生证据。
 - 不开放工具 accept（等用户的决定和 S7）。
