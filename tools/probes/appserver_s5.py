@@ -33,7 +33,9 @@ SCENARIOS = ("happy", "loose-recall", "forgetful", "no-history-returned", "histo
              "wrong-thread-resume", "resume-error", "resume-writable", "plant-failed", "plant-timeout",
              "same-turn-id", "foreign-turn", "late-event", "recall-tool", "recall-approval", "recall-disconnect",
              # phase-1 health counterexamples: each must keep process B from starting
-             "plant-provider-error", "plant-exit-nonzero", "plant-tool")
+             "plant-provider-error", "plant-exit-nonzero", "plant-tool",
+             # usage replay on resume (revision after S5 run 1)
+             "no-replay", "replay-twice", "replay-after-start", "replay-other-turn", "replay-foreign-thread")
 RUN_ROOT = S2.REPO / "var/appserver-s5"
 STUB = S2.REPO / "tools/demo/stub_appserver_s5.py"
 MAX_MODEL_TURNS = 2
@@ -159,7 +161,8 @@ class S5Client(S2.S2Client):
                     self._abort("resume_thread_mismatch", "thread/resume returned another thread")
             self.validate_thread_settings(result)
             with self.guard:
-                self.evidence = TurnEvidence(thread_id, phase=self.phase)
+                self.evidence = TurnEvidence(thread_id, phase=self.phase,
+                                             replay_turn_id=self.planted_turn_id if self.phase == "recall" else None)
                 if any(t != thread_id for t in self.observed_threads):
                     self._abort("foreign_thread_started", "a different thread started")
             result = self.request("turn/start", self.turn_params())

@@ -42,6 +42,12 @@ def main():
         note("item/agentMessage/delta", {**ids(turn), "itemId": item, "delta": text})
         note("item/completed", {**ids(turn), "item": {"id": item, "type": "agentMessage", "text": text}})
 
+    def replay(turn="turn-1", thread_id=None):
+        """alpha.11 token_usage_replay: one restored usage update, owned by the planted turn."""
+        last = {"inputTokens": 30, "outputTokens": 5, "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 35}
+        note("thread/tokenUsage/updated", {"threadId": thread_id or thread["id"], "turnId": turn,
+                                           "tokenUsage": {"last": last, "total": last}})
+
     def finish(status="completed"):
         last = {"inputTokens": 30, "outputTokens": 5, "cachedInputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 35}
         note("thread/tokenUsage/updated", {**ids(), "tokenUsage": {"last": last, "total": last}})
@@ -88,7 +94,19 @@ def main():
             if phase == "recall" and CODE.search(text):
                 return 3  # the recall prompt must not carry the code word
             turn_id = "turn-1" if phase == "plant" or scenario == "same-turn-id" else "turn-2"
+            if phase == "recall":
+                # Before the recall turn starts, as the tested build does on attach.
+                if scenario == "replay-other-turn":
+                    replay(turn="turn-0")
+                elif scenario == "replay-foreign-thread":
+                    replay(thread_id="other-thread")
+                elif scenario not in ("no-replay", "replay-after-start"):
+                    replay()
+                    if scenario == "replay-twice":
+                        replay()
             note("turn/started", {"threadId": thread["id"], "turn": {"id": turn_id, "status": "inProgress", "items": []}})
+            if phase == "recall" and scenario == "replay-after-start":
+                replay()
             send({"id": msg["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "items": []}}})
             state = 4
             if phase == "plant":

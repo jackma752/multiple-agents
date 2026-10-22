@@ -71,6 +71,83 @@ def test_every_scenario_has_its_verdict_and_reasons(monkeypatch, tmp_path, scena
     assert code == (0 if verdict == "PASS" else 1)
 
 
+# --------------------------------------------------------------------------- #
+# usage replay on resume (revision after real S5 run 1)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("scenario,verdict,codes", [
+    ("no-replay", "PASS", []),
+    ("replay-twice", "FAIL", ["recall:foreign_turn"]),
+    ("replay-after-start", "FAIL", ["recall:foreign_turn"]),
+    ("replay-other-turn", "FAIL", ["recall:foreign_turn"]),
+    ("replay-foreign-thread", "FAIL", ["recall:foreign_thread"]),
+])
+def test_only_one_early_replay_of_the_planted_turn_is_tolerated(monkeypatch, tmp_path, scenario, verdict, codes):
+    _, r = run(monkeypatch, tmp_path, scenario)
+    assert r["probe_verdict"] == verdict, r["reason_codes"]
+    assert set(codes) <= set(r["reason_codes"]), r["reason_codes"]
+
+
+def test_the_run_one_shape_now_passes_and_the_replay_is_recorded_apart(monkeypatch, tmp_path):
+    _, r = run(monkeypatch, tmp_path, "happy")  # the stub replays exactly like alpha.11 did in run 1
+    evidence = r["phases"]["recall"]["evidence"]
+    assert r["probe_verdict"] == "PASS"
+    assert evidence["replayed_usage"]["turn_is_planted"] and evidence["replayed_usage"]["before_turn_started"]
+    assert evidence["usage_received"] and evidence["usage"] is not None  # the recall turn's OWN usage
+    assert any(a.get("replay_of_planted_turn") for a in evidence["audit"])
+
+
+def recall_evidence():
+    e = TurnEvidence("t", phase="recall", replay_turn_id="turn-1")
+    return e
+
+
+REPLAY = {"threadId": "t", "turnId": "turn-1", "tokenUsage": {"last": {
+    "inputTokens": 5, "outputTokens": 1, "totalTokens": 6, "cachedInputTokens": 0, "reasoningOutputTokens": 0}}}
+
+
+def test_replay_before_binding_is_not_a_foreign_turn():
+    e = recall_evidence()
+    e.observe("thread/tokenUsage/updated", REPLAY)  # arrives before the turn/start answer, as in run 1
+    e.bind_turn("turn-2")
+    e.observe("turn/started", {"threadId": "t", "turn": {"id": "turn-2", "status": "inProgress"}})
+    s = e.summary()
+    assert not s["violation"] and s["replayed_usage"]["usage"]["totalTokens"] == 6
+    assert s["usage_received"] is False  # a replay is never the recall turn's own usage
+
+
+def test_replay_after_turn_started_is_still_foreign():
+    e = recall_evidence()
+    e.bind_turn("turn-2")
+    e.observe("turn/started", {"threadId": "t", "turn": {"id": "turn-2", "status": "inProgress"}})
+    e.observe("thread/tokenUsage/updated", REPLAY)
+    assert "foreign_turn" in e.summary()["reasons"] and e.replayed_usage is None
+
+
+def test_only_the_recall_phase_tolerates_a_replay():
+    e = TurnEvidence("t", phase="plant")
+    e.bind_turn("turn-2")
+    e.observe("thread/tokenUsage/updated", REPLAY)
+    assert "foreign_turn" in e.summary()["reasons"]
+
+
+@pytest.mark.parametrize("params,reason", [
+    ({**REPLAY, "turnId": "turn-9"}, "foreign_turn"),
+    ({**REPLAY, "threadId": "other"}, "foreign_thread"),
+])
+def test_replay_shaped_events_for_anything_else_fail(params, reason):
+    e = recall_evidence()
+    e.bind_turn("turn-2")
+    e.observe("thread/tokenUsage/updated", params)
+    assert reason in e.summary()["reasons"] and e.replayed_usage is None
+
+
+def test_malformed_replay_is_recorded_and_blocks_a_pass():
+    e = recall_evidence()
+    e.observe("thread/tokenUsage/updated", {"threadId": "t", "turnId": "turn-1", "tokenUsage": {"last": {}}})
+    assert e.replayed_usage["well_formed"] is False and "replayed_usage_malformed" in e.summary()["notes"]
+
+
 def test_happy_proves_history_and_recall_across_two_processes(monkeypatch, tmp_path):
     _, r = run(monkeypatch, tmp_path, "happy")
     plant, recall = r["phases"]["plant"], r["phases"]["recall"]

@@ -8,7 +8,8 @@
   - 已通过：阶段 1、健康检查、进程关系（A 退出后才启动 B）、恢复结构（`history_returned: true`）。
   - 回忆回合刚开始，一条在恢复时**正常重放**的 `thread/tokenUsage/updated`（带阶段 1 的 turn ID）被判为外来 turn，探针随即停止进程，回忆回合在没有输出时就被中止了。这是推断，依据是 alpha.11 的 `token_usage_replay.rs` 和 rollout。
   - **上下文是否恢复仍未验证。** 见 [第一次实录](appserver-s5-2026-10-22-run1.md)。授权已用完，没有重试。
-- 下文是离线准备时的方案（截至 `2cda212`）。S1–S4 的证据和结论保持不变。
+- **判定修订（2026-10-22 深夜，离线，用户要求）**：回忆阶段只容许一条重放的用量事件，见下文“恢复时的用量重放”一节。修订只用于今后新申请的运行，不重新判定第一次运行。
+- 下文是离线准备时的方案（截至 `2cda212`）以及之后的修订。S1–S4 的证据和结论保持不变。
 - 2026-10-22 按用户要求做了三项修正：
   - 升级 pip 和 certifi，并核验证书信任；
   - 启动 B 之前，做完整的阶段 1 健康检查；
@@ -81,6 +82,29 @@
 
 后代进程的“残留”指：关闭后 3 秒宽限期结束时仍然存在。正在退出、宽限期内消失的进程不算残留。结果中记录 `grace_seconds` 和 `waited_seconds`。
 
+## 恢复时的用量重放（判定修订，2026-10-22 深夜）
+
+**起因**：第一次真实运行中，被测版本在进程 B 恢复 thread 时，向该连接发了一条重放的 `thread/tokenUsage/updated`。依据是 [token_usage_replay.rs @ alpha.11](https://github.com/openai/codex/blob/rust-v0.163.0-alpha.11/codex-rs/app-server/src/request_processors/token_usage_replay.rs)：这是生命周期重放，turn ID 取最近一次 TokenCount 时的活动回合，也就是阶段 1 的回合。旧规则把它判为 `foreign_turn`，回忆回合被提前中止。见 [第一次实录](appserver-s5-2026-10-22-run1.md)。
+
+**现行规则**：回忆阶段**只**容许一条这样的事件，必须同时满足：
+
+- 方法是 `thread/tokenUsage/updated`；
+- `threadId` 是被恢复的那个 thread；
+- `turnId` **恰好等于阶段 1 的 turn**；
+- 出现在回忆回合的 `turn/started` **之前**；
+- **最多一条**。
+
+这条事件单独记入 `replayed_usage`（`turn_is_planted`、`before_turn_started`、`usage`、`well_formed`），不计入 `seen_turn_ids`，审计中标记为 `replay_of_planted_turn`。它**永远不算**回忆回合自己的用量：PASS 仍然要求回忆回合自己报告用量。格式不合规时记 `replayed_usage_malformed`，结论为 INCONCLUSIVE。
+
+以下情况仍按原规则判 **FAIL**：
+
+- 第二条重放，`recall:foreign_turn`；
+- 在 `turn/started` 之后才到达，`recall:foreign_turn`；
+- turn ID 不是阶段 1 的回合，`recall:foreign_turn`；
+- 来自其他 thread，`recall:foreign_thread`。
+
+阶段 1 不容许任何重放。
+
 ## 判定规则
 
 **PASS** 需要同时满足：
@@ -94,7 +118,7 @@
 
 **FAIL**：协议矛盾或越界：
 
-- 外来或未绑定的 ID、重复终态、终态之后还有事件；
+- 外来或未绑定的 ID、重复终态、终态之后还有事件；唯一的例外是上一节规定的那一条重放；
 - `thread/resume` 返回了别的 thread（`recall:resume_thread_mismatch`）；
 - 阶段 2 复用了阶段 1 的 turn ID（`recall_turn_reused`）；
 - 探针拒绝了外发消息，或回合总数超过 2；
@@ -212,6 +236,29 @@ S5 的子进程环境与 S1–S4 相同：代理 `127.0.0.1:8090`，加上 `CODE
   - S5 加 pip_trust：76 passed；
   - S5 单独重复两次：63 passed in 52.90s、63 passed in 52.94s；
   - **全量 801 passed in 130.49s**。
+
+**用量重放修订后**（S5 测试从 63 项增加到 75 项）：
+
+- 桩的默认回忆阶段改为与 alpha.11 一致：在 `turn/started` 之前，发一条带阶段 1 turn ID 的重放。happy 场景就是第一次运行的形状，现在为 PASS，重放被单独记录，回忆回合自己的用量也收到了。
+- 新增桩场景：
+  - `no-replay` 为 PASS；
+  - `replay-twice`、`replay-after-start`、`replay-other-turn` 为 FAIL `recall:foreign_turn`；
+  - `replay-foreign-thread` 为 FAIL `recall:foreign_thread`。
+- 证据层单元测试：
+  - 绑定之前到达的重放，不算外来 turn；
+  - 重放不算回忆回合的用量；
+  - 在 `turn/started` 之后到达的仍判外来；
+  - 阶段 1 不容许重放；
+  - 其他 turn 或其他 thread 判 FAIL；
+  - 格式不合规的重放阻止 PASS。
+- 变异检查：
+  - 把规则放宽为“任何 tokenUsage 都放行”，13 项测试失败；
+  - 恢复为旧规则“一律不放行”，6 项失败，其中包括第一次运行形状的回归测试。
+- 实际输出：
+  - S5 测试连续 3 次通过：75 passed in 62.59s / 62.31s / 65.58s；
+  - **全量 813 passed in 141.17s**；
+  - 独立 CLI `--mode stub` 为 `S5 PASSED`；
+  - 不带确认参数的真实模式，退出码 2。
 - 独立 CLI `--mode stub`：`S5 PASSED`（A 为 PID 18260，B 为 PID 18020）；
 - 不带确认参数的真实模式，退出码 2。
 

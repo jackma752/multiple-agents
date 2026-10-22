@@ -38,6 +38,15 @@ def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _parse_usage(params):
+    usage = params.get("tokenUsage") or {}
+    last = usage.get("last") if isinstance(usage, dict) else None
+    required = ("inputTokens", "outputTokens", "cachedInputTokens", "reasoningOutputTokens", "totalTokens")
+    if isinstance(last, dict) and all(type(last.get(k)) is int and last[k] >= 0 for k in required):
+        return {k: last[k] for k in required}
+    return None
+
+
 def inspect_resume(result, *, thread_id, planted_turn_id, code_word):
     """Structural facts of a ``thread/resume`` response; never its text."""
     thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
@@ -57,9 +66,14 @@ class TurnEvidence(S2Evidence):
     """One turn on a known thread. The final reply is kept in memory only."""
     MAX_EVENTS = 4096
 
-    def __init__(self, thread_id, *, phase):
+    def __init__(self, thread_id, *, phase, replay_turn_id=None):
         super().__init__(thread_id, expected_reply="")
         self.phase = phase
+        #: Recall phase only: the planted turn. On resume the tested build sends
+        #: the attaching connection ONE restored ``thread/tokenUsage/updated``
+        #: owned by the turn active at the latest TokenCount (token_usage_replay.rs).
+        self.replay_turn_id = replay_turn_id
+        self.replayed_usage = None
         self.audit = []
         self.reasons = []        # FAIL-class
         self.notes = []          # INCONCLUSIVE-class
@@ -104,6 +118,27 @@ class TurnEvidence(S2Evidence):
         self.seen_turn_ids.add(turn_id)
         return True
 
+    def _accept_replay(self, method, params):
+        """The one tolerated exception to turn binding (revision 2026-10-22, S5 run 1).
+
+        Only ``thread/tokenUsage/updated``, only on this thread, only with the
+        planted turn's id, only before this turn's ``turn/started``, at most
+        once. Anything else - a second replay, a late one, another turn id -
+        goes through normal binding and stays a FAIL. It never counts as the
+        recall turn's own usage.
+        """
+        if (method != "thread/tokenUsage/updated" or not self.replay_turn_id or self.replayed_usage is not None
+                or params.get("threadId") != self.thread_id or params.get("turnId") != self.replay_turn_id
+                or any(e["method"] == "turn/started" for e in self.turn_events)):
+            return False
+        usage = _parse_usage(params)
+        self.replayed_usage = {"turn_is_planted": True, "before_turn_started": True,
+                               "usage": usage, "well_formed": usage is not None}
+        if usage is None:
+            self._note("replayed_usage_malformed")
+        self.audit.append({"kind": "notification", "method": method, "replay_of_planted_turn": True})
+        return True
+
     def _tool(self, label):
         self._note("tool_activity_observed")
         self.stop_requested = True  # stop at once: a tool could read the history from disk
@@ -121,6 +156,8 @@ class TurnEvidence(S2Evidence):
         if method == "error":
             self.audit.append({"kind": "notification", "method": method})
             self._note("provider_error")
+            return
+        if self._accept_replay(method, params):
             return
         if not self._bind(method, params):
             self.audit.append({"kind": "notification", "method": method})
@@ -143,11 +180,9 @@ class TurnEvidence(S2Evidence):
             return
         self.audit.append({"kind": "notification", "method": method})
         if method == "thread/tokenUsage/updated":
-            usage = params.get("tokenUsage") or {}
-            last = usage.get("last") if isinstance(usage, dict) else None
-            required = ("inputTokens", "outputTokens", "cachedInputTokens", "reasoningOutputTokens", "totalTokens")
-            if isinstance(last, dict) and all(type(last.get(k)) is int and last[k] >= 0 for k in required):
-                self.usage = {k: last[k] for k in required}
+            usage = _parse_usage(params)
+            if usage is not None:
+                self.usage = usage
             else:
                 self._note("malformed_usage")
             return
@@ -209,6 +244,7 @@ class TurnEvidence(S2Evidence):
                 "matched": matched, "status": status, "terminal_confirmed": terminal_confirmed,
                 "one_turn_started": len(starts) == 1 and starts[0]["status"] == "inProgress",
                 "usage_received": self.usage is not None, "usage": self.usage,
+                "replayed_usage": self.replayed_usage,  # separate; never the turn's own usage
                 "settings_verified": self.settings_verified,
                 "tool_activity": {"seen": tools_seen, "server_requests": list(self.server_requests),
                                   "server_requests_answered": 0, "output_notifications": self.tool_output_events,
