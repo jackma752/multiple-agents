@@ -85,7 +85,7 @@ stderr 中有 5 行与第一次相同的 `codex_skills_extension` 错误（安�
 
 ### 被测版本的命令映射（源码核实）
 
-被测程序报告的版本是 `codex-cli 0.163.0-alpha.10.2`，GitHub 上存在同名标签 `rust-v0.163.0-alpha.10.2`。以下各条都按这个标签核对：
+被测程序报告的版本是 `codex-cli 0.163.0-alpha.10.2`，GitHub 上存在同名标签 `rust-v0.163.0-alpha.10.2`。以下各条都按这个标签核对，逐文件链接见 [S3 方案](appserver-s3-probe.md) 的“固定版本源码依据”一节。版本号相同不能证明本机二进制就是从这个标签构建的。
 
 1. 模型调用代码模式的外层 `exec`（JavaScript）；脚本里的 `tools.exec_command` 是嵌套调用，`call_id = format!("{PUBLIC_TOOL_NAME}-{uuid}")`。本次 item ID `exec-c7ef8bd6-…` 与这个格式一致。外层 `exec` 自身不产生 thread item：`core/src/event_mapping.rs` 的 `parse_turn_item` 对 CustomToolCall 及其输出返回 None。
 2. unified exec 的 `get_command`（`core/src/tools/handlers/unified_exec.rs`）返回 `shell.derive_exec_args(&args.cmd, use_login_shell)`。模型没有指定 `shell` 时，使用会话 shell。
