@@ -7,7 +7,13 @@ CLI all agree:
 * ``codex`` - strict admission remains blocked. Explicit per-call supervised
   mode allows bounded operation without attesting native-child control.
   ``AGENT_HUB_CODEX_TRANSPORT=app-server`` selects the optional app-server
-  transport, which today admits only the bundled offline stub.
+  transport: the bundled offline stub (simulation), or the real app-server
+  pinned by code constant, admitted in supervised mode only
+  (docs/appserver-s6-plan.md §4.1).
+
+:func:`adapter_binding` is what a new call's snapshot binds to
+(``adapter_version``), so an approval given under one pinned identity can never
+run under another (D11).
 """
 
 from __future__ import annotations
@@ -79,20 +85,35 @@ def _build_appserver(s: dict) -> Any:
 
     if s.get("appserver_stub") in SCENARIOS:
         factory: Any = StdioStubFactory(s["appserver_stub"])
+        version = "appserver-stub"
     else:
-        factory = CodexAppServerFactory(
-            codex_path=s["codex_path"], codex_home=s["codex_home"],
-            expected_identity=s["expected_identity"],
-            proxy=s["proxy"] or None, ca_bundle=s["ca_bundle"] or None,
+        # Identity from the reviewed constant only; exec's env overrides are
+        # recorded so supervised admission can refuse them (D7).
+        factory = CodexAppServerFactory.pinned(
+            codex_home=s["codex_home"], proxy=s["proxy"] or None, ca_bundle=s["ca_bundle"] or None,
+            env_overrides=tuple(s.get("identity_env_overrides") or ()),
         )
+        version = factory.version
     store = ExecutionStore(
         path=ensure_parent(s.get("appserver_store_path") or config.appserver_execution_store_path()),
         table="appserver_executions",
     )
     return AppServerCodexAdapter(
         transport_factory=factory, workdir_root=s["workdir_root"], store=store,
-        timeout_seconds=s["timeout_seconds"], version=s["version"],
+        timeout_seconds=s["timeout_seconds"], version=version,
     )
+
+
+def adapter_binding(adapter: Any) -> str:
+    """The identity a new call's snapshot binds to; ``unknown`` if none is declared."""
+    bind = getattr(adapter, "binding_identity", None)
+    if not callable(bind):
+        return "unknown"
+    try:
+        value = bind()
+    except Exception:  # noqa: BLE001
+        return "unavailable"
+    return value if isinstance(value, str) and value else "unavailable"
 
 
 def describe(adapter: Any) -> dict:
@@ -123,6 +144,7 @@ def describe(adapter: Any) -> dict:
         info["proxy"] = getattr(adapter, "proxy", None)
         info["timeout_seconds"] = getattr(adapter, "timeout_seconds", None)
         info["transport"] = getattr(adapter, "transport", "exec")
+        info["binding_identity"] = adapter_binding(adapter)
     supports = getattr(adapter, "supports_native_resume", None)
     info["native_resume"] = bool(supports()) if callable(supports) else False
     return info

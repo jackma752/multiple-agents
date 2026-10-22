@@ -9,39 +9,52 @@ What it adds over exec: incremental assistant text (reported through the
 Worker's ``emit`` into the conversation event stream) and native thread resume
 (``snapshot.resume_thread_id``).
 
-Admission (plan §4.3, unchanged): only the two trusted offline stub factories
-are admitted, as ``simulation``. A real app-server is blocked in strict mode
-for the same native-child reason as exec, and is NOT offered in supervised
-mode either: real tool approval (S3), interrupt (S4) and thread resume (S5)
-have not been run. Nothing here may be described as verified against Codex.
+Admission (S6, docs/appserver-s6-plan.md §4.1): the two trusted offline stub
+factories are ``simulation``. A real app-server stays blocked in strict mode
+(native-child control and tool pre-interception are unverified). In supervised
+mode it is admitted only through :class:`CodexAppServerFactory` built from the
+reviewed :data:`PINNED_APPSERVER` constants, with no environment override, the
+verified argv, a proxy and a readable CA bundle, and a local deadline of at most
+600 s. Supervised is a boundary waiver the user accepts per call, not a control
+claim. S3-S5 each passed once through standalone probes (this run only); nothing
+here has run against Codex through the Hub.
 
-Safety rules carried over from :mod:`agenthub_adapters.appserver`:
+Rules this adapter enforces:
 
-* a tool approval request of this turn becomes a kernel card when the Worker
-  supplies a ``tool_gate``; only a user-approved card is answered ``accept``,
-  once, after the gate grants a claim. With a gate, any answer without a card
-  (card creation failed, foreign request) is sent only if ``may_answer()``
-  confirms the call's tool decisions are still open; otherwise nothing is
-  sent. Without a gate, every request is answered ``decline``;
-* real tool interception is still unverified (S3): the provider deciding to ask
-  is its behaviour, not something this adapter can force;
+* the call's snapshot must carry this adapter's :meth:`binding_identity` (D11);
+  the factory re-hashes the pinned file right before launching it;
+* ``thread/start``, ``thread/resume`` and ``turn/start`` send read-only,
+  on-request and reviewer ``user``; the answer of the thread request is read
+  back, and any mismatch fails the call before ``turn/start`` (D2);
+* a tool request of this turn becomes a kernel card when the Worker supplies a
+  ``tool_gate``. The only way an answer is written is the gate's claim right
+  before writing; after the call's tool decisions are closed nothing is sent,
+  and a void card is never answered. A real app-server's cards offer decline
+  only (accept is unverified, S7); a decline is always sent as ``decline`` and
+  nothing is ever turned into ``cancel`` (D1). Without a gate every request is
+  declined;
 * only this turn's ``turn/completed`` with a terminal status settles a call;
   timeout, disconnect or an unanswered ``turn/start`` stays unconfirmed, so the
-  kernel keeps the quota slot and marks the call ``unknown``;
+  kernel keeps the quota slot and marks the call ``unknown``. Events count only
+  with this thread's and this turn's ids (D8); the one usage replay a resume
+  sends for the previous turn is recorded apart (D9);
 * ``interrupt_invocation`` sends ``turn/interrupt`` for a live turn only; an
-  accepted request proves nothing - the call settles ``canceled`` only when
-  this turn's ``turn/completed`` says ``interrupted``. Generic ``cancel`` (no
-  live turn, e.g. after a restart) stays ``unsupported``; a local stop closes
-  only our own transport. Real interrupt behaviour (S4) is unverified;
-* native child agents (``collabAgentToolCall`` / ``subAgentActivity`` items)
-  are observed and reported, never controlled or counted by this adapter.
+  acknowledgement proves nothing and a slow one is "not yet acknowledged" (D5)
+  - the call settles ``canceled`` only when this turn's ``turn/completed`` says
+  ``interrupted``. Generic ``cancel`` stays ``unsupported``; a local stop closes
+  only our own transport, and descendants are recorded, never ended (D10);
+* tool items and native child agents are observed and reported, never
+  controlled or counted by this adapter (D4).
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+import math
+import ntpath
 import os
+import shlex
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -60,12 +73,17 @@ from agenthub.contracts import (
     InvocationSnapshot,
     execution_admission,
 )
+from agenthub_adapters import proc_tree
 from agenthub_adapters.appserver import (
     DELTA_AGENT_MESSAGE,
     ITEM_COMPLETED,
     ITEM_STARTED,
+    THREAD_RESUME,
+    THREAD_START,
     TURN_COMPLETED,
     TURN_INTERRUPT,
+    TURN_START,
+    TURN_STARTED,
     AppServerClient,
     AppServerDisconnected,
     AppServerError,
@@ -83,9 +101,37 @@ from agenthub_adapters.store import CANCELLED, FAILED, FINISHED, RUNNING, Execut
 TRANSPORT = "app-server"
 TOKEN_USAGE_UPDATED = "thread/tokenUsage/updated"
 
+#: The reviewed app-server identity (D7). Not shared with exec and never read
+#: from the environment; a change here is a code review decision and changes
+#: every new call's binding identity (D11). Re-pinning: plan §4.2.
+PINNED_APPSERVER = {
+    "path": os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                         "OpenAI", "Codex", "bin", "6257d9e8f63c0f2b", "codex.exe"),
+    "sha256": "00c0f1e4099246fddcd67ec620ca8ed50827c7d70e113b7224f7a2933cf2d67c",
+    "size": 342187312,
+    "version": "codex-cli 0.163.0-alpha.11",
+}
+#: The argv S3-S5 ran with. ``--disable multi_agent`` turns off Collab only and
+#: is not consulted when the model declares a multi-agent version (plan §2.1):
+#: it is sent as a request, never shown as "sub-agents disabled".
+APPSERVER_ARGV_TAIL = ("app-server", "--stdio", "--disable", "multi_agent")
+
+#: Settings sent with thread/start and thread/resume, then read back (D2).
+THREAD_SETTINGS = {"sandbox": "read-only", "approvalPolicy": "on-request", "approvalsReviewer": "user"}
+#: Policy repeated on every turn/start.
+TURN_POLICY = {"approvalPolicy": "on-request", "approvalsReviewer": "user",
+               "sandboxPolicy": {"type": "readOnly", "networkAccess": False}}
+#: What a decline-only card offers: the user can refuse, nothing else (plan §4.4).
+DECLINE_ONLY = ["decline"]
+
 REAL_APPSERVER_BLOCK_REASON = (
-    "app-server 传输目前只接受离线桩：原生子 Agent 不可控，真实工具审批、中断与线程恢复"
-    "（S3–S5）均未验证。严格与监督模式都不会启动真实 app-server。"
+    "严格模式不启动真实 app-server：原生子 Agent 的事前控制与工具事前拦截均未验证"
+    "（S3–S5 只各验证了一条窄路径，只认定当次）。"
+)
+SUPERVISED_REASON = (
+    "仅保证 Hub 审批、固定身份与固定设置核验、本次入口进程控制；工具审批只能拒绝。"
+    "原生子 Agent 与不经审批的工具操作（可能包括启动其他 Agent 的 CLI）不在 Hub 配额内，"
+    "停止只关闭本次入口进程，后代进程与远端停止不保证。"
 )
 
 Emit = Callable[[str, dict], None]
@@ -97,6 +143,8 @@ CARD_POLL_SECONDS = 0.1
 INTERRUPT_REQUEST_TIMEOUT = 5.0
 #: Thread item types that mean a provider-native child agent (local schema).
 NATIVE_AGENT_ITEM_TYPES = frozenset({"collabAgentToolCall", "subAgentActivity"})
+#: Thread item types that are tool activity (observed, never controlled).
+TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall"})
 
 
 def _ignore(_etype: str, _payload: dict) -> None:
@@ -109,29 +157,109 @@ def _utc_naive() -> dt.datetime:
 
 
 def _fit_decision(decision: str, offered: Any) -> str:
-    """Keep within the provider's ``availableDecisions``; never upgrade to accept."""
-    if not isinstance(offered, list) or decision in offered:
-        return decision
-    for fallback in ("decline", "cancel"):
-        if fallback in offered:
-            return fallback
+    """What to write for a decision. Never ``cancel``; never upgraded to accept.
+
+    A decline is sent as ``decline`` even when the provider's list omits it:
+    alpha.11's default list is accept / (amendment) / cancel, and S3 showed the
+    server honours ``decline`` regardless, while ``cancel`` would abort the
+    whole turn (D1). An accept the provider did not offer becomes a decline.
+    """
+    if decision == "accept" and (not isinstance(offered, list) or "accept" in offered):
+        return "accept"
     return "decline"
 
 
-class CodexAppServerFactory:
-    """Real ``codex app-server --stdio`` launcher. Never admitted today.
+def settings_problems(result: dict, cwd: str) -> list[str]:
+    """Read-back of a thread/start or thread/resume answer (S3-S5 rule)."""
+    problems = []
+    if result.get("approvalsReviewer") != "user":
+        problems.append("approvalsReviewer")
+    if result.get("approvalPolicy") != "on-request":
+        problems.append("approvalPolicy")
+    sandbox = result.get("sandbox")
+    if not (isinstance(sandbox, dict) and sandbox.get("type") == "readOnly"
+            and sandbox.get("networkAccess", False) is False
+            and set(sandbox) <= {"type", "networkAccess"}):
+        problems.append("sandbox")
+    got = result.get("cwd")
+    if not (isinstance(got, str) and os.path.isabs(got)
+            and os.path.normcase(os.path.abspath(got)) == os.path.normcase(os.path.abspath(cwd))):
+        problems.append("cwd")
+    return problems
 
-    Kept so configuration can name the transport and so admission has a
-    concrete type to refuse; it is the argv the S1/S2 probes used.
+
+def command_view(text: Any) -> dict:
+    """The reported ``command`` split back into argv, for display only (D3).
+
+    ``command`` is ``shlex_join`` of the shell's argv (S3); a PowerShell or cmd
+    wrapper is shown as the shell plus the inner command. This is a reading
+    aid: it is never a safety decision.
+    """
+    if not isinstance(text, str) or not text or "\0" in text:
+        return {"parsed": False}
+    try:
+        argv = shlex.split(text, posix=True)
+    except ValueError:
+        return {"parsed": False}
+    if not argv:
+        return {"parsed": False}
+    name = ntpath.basename(argv[0]).lower()
+    if (name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh") and len(argv) >= 3
+            and argv[-2] == "-Command" and set(argv[1:-2]) <= {"-NoProfile"}):
+        return {"parsed": True, "shell": argv[0], "shell_flags": argv[1:-1], "inner_command": argv[-1]}
+    if name in ("cmd.exe", "cmd") and len(argv) == 3 and argv[1].lower() == "/c":
+        return {"parsed": True, "shell": argv[0], "shell_flags": [argv[1]], "inner_command": argv[2]}
+    return {"parsed": True, "argv": argv}
+
+
+def _thread_id(result: dict) -> str:
+    thread = result.get("thread")
+    if isinstance(thread, dict):
+        return str(thread.get("id") or "")
+    return str(result.get("threadId") or "")
+
+
+class LaunchRefused(OSError):
+    """The factory will not start the process; nothing was launched."""
+
+
+class CodexAppServerFactory:
+    """Real ``codex app-server --stdio`` launcher (supervised mode only).
+
+    Build it with :meth:`pinned`; admission compares every field with
+    :data:`PINNED_APPSERVER`, so a factory pointed anywhere else is refused.
     """
 
+    #: How long a descendant may take to exit after its parent was closed (S5).
+    close_grace_seconds = 3.0
+
     def __init__(self, *, codex_path: str, codex_home: str, expected_identity: Optional[dict],
-                 proxy: Optional[str] = None, ca_bundle: Optional[str] = None) -> None:
+                 version: str = "unknown", proxy: Optional[str] = None,
+                 ca_bundle: Optional[str] = None, env_overrides: tuple[str, ...] = ()) -> None:
         self.codex_path = codex_path
         self.codex_home = codex_home
         self.expected_identity = expected_identity
+        self.version = version
         self.proxy = proxy
         self.ca_bundle = ca_bundle
+        #: Identity environment variables that were set (they are never used
+        #: here; their presence blocks supervised admission).
+        self.env_overrides = tuple(env_overrides)
+        self.argv = [codex_path, *APPSERVER_ARGV_TAIL]
+
+    @classmethod
+    def pinned(cls, *, codex_home: str, proxy: Optional[str] = None, ca_bundle: Optional[str] = None,
+               env_overrides: tuple[str, ...] = ()) -> "CodexAppServerFactory":
+        return cls(codex_path=PINNED_APPSERVER["path"], codex_home=codex_home,
+                   expected_identity={"sha256": PINNED_APPSERVER["sha256"],
+                                      "size": PINNED_APPSERVER["size"]},
+                   version=PINNED_APPSERVER["version"], proxy=proxy, ca_bundle=ca_bundle,
+                   env_overrides=env_overrides)
+
+    def binding_identity(self) -> str:
+        ident = self.expected_identity or {}
+        return (f"codex-app-server@{self.version};sha256={ident.get('sha256', '')};"
+                f"size={ident.get('size', '')}")
 
     def identity_matches(self) -> tuple[bool, str]:
         from agenthub_adapters.codex import file_identity
@@ -139,21 +267,58 @@ class CodexAppServerFactory:
         if not self.codex_path or not os.path.isfile(self.codex_path):
             return False, "executable missing"
         if not self.expected_identity:
-            return True, "no expected identity recorded (not pinned)"
+            return False, "no expected identity recorded (not pinned)"
         actual = file_identity(self.codex_path)
         for key in ("size", "sha256"):
             if self.expected_identity.get(key) != actual.get(key):
                 return False, f"{key} mismatch"
         return True, "identity matches"
 
+    def supervised_problems(self) -> list[str]:
+        """Cheap checks for admission (it runs under the kernel's writer lock).
+
+        The full SHA-256 of the ~340 MB file is computed at launch instead.
+        """
+        problems = []
+        if self.env_overrides:
+            problems.append("env_override:" + ",".join(self.env_overrides))
+        pinned = PINNED_APPSERVER
+        if (os.path.normcase(self.codex_path or "") != os.path.normcase(pinned["path"])
+                or (self.expected_identity or {}) != {"sha256": pinned["sha256"], "size": pinned["size"]}
+                or self.version != pinned["version"]):
+            problems.append("identity_not_pinned_constant")
+        if not self.codex_path or not os.path.isfile(self.codex_path):
+            problems.append("executable_missing")
+        elif os.path.getsize(self.codex_path) != (self.expected_identity or {}).get("size"):
+            problems.append("size_mismatch")
+        if self.argv != [self.codex_path, *APPSERVER_ARGV_TAIL]:
+            problems.append("argv_changed")
+        if not self.proxy:
+            problems.append("proxy_missing")
+        if not (self.ca_bundle and os.path.isfile(self.ca_bundle) and os.access(self.ca_bundle, os.R_OK)):
+            problems.append("ca_unreadable")
+        return problems
+
     def __call__(self, invocation_id: str, workdir: str) -> Any:
         from agenthub_adapters.appserver import StdioTransport
-        from agenthub_adapters.codex import SUBAGENT_FEATURE, build_env
+        from agenthub_adapters.codex import build_env
 
-        argv = [self.codex_path, "app-server", "--stdio", "--disable", SUBAGENT_FEATURE]
+        problems = self.supervised_problems()
+        if problems:
+            raise LaunchRefused("launch refused: " + ", ".join(problems))
+        ok, why = self.identity_matches()  # full hash, right before the launch
+        if not ok:
+            raise LaunchRefused(f"launch refused: {why}")
         env = build_env(codex_home=self.codex_home, proxy=self.proxy, ca_bundle=self.ca_bundle)
-        return StdioTransport(argv, env=env, cwd=workdir,
-                              stderr_path=os.path.join(workdir, "appserver-stderr.log"))
+        return StdioTransport(list(self.argv), env=env, cwd=workdir,
+                              stderr_path=log_path(workdir, invocation_id, "appserver-stderr"))
+
+
+def log_path(workdir: str, invocation_id: str, kind: str) -> str:
+    """Diagnostics live beside the work directories, never inside the cwd (D6)."""
+    logs = os.path.join(os.path.dirname(os.path.abspath(workdir)), "_logs")
+    os.makedirs(logs, exist_ok=True)
+    return os.path.join(logs, f"{invocation_id}-{kind}.log")
 
 
 def _trusted_offline(factory: Any) -> bool:
@@ -175,15 +340,21 @@ def _trusted_offline(factory: Any) -> bool:
 class _Turn:
     """Everything observed about one turn; no user text is kept."""
 
-    def __init__(self, thread_id: str, turn_id: str) -> None:
+    def __init__(self, thread_id: str, turn_id: str, previous_turn_id: str = "") -> None:
         self.thread_id = thread_id
         self.turn_id = turn_id
+        #: Resume only: the thread's previous turn, owner of the one usage replay.
+        self.previous_turn_id = previous_turn_id
         self.deltas: dict[str, list[str]] = {}
         self.final_message = ""
         self.usage: dict = {}
+        self.replayed_usage: Optional[dict] = None
+        self.usage_anomalies = 0
+        self.turn_started_seen = False
         self.turn_status = ""
         self.terminal_seen = False
         self.foreign_events = 0
+        self.late_events = 0
         self.declined: list[str] = []
         # request id -> (ServerRequest, card id) while the user decides.
         self.cards: dict[Any, tuple[Any, str]] = {}
@@ -195,19 +366,33 @@ class _Turn:
         self.closed_requests: set[Any] = set()
         # Methods of requests deliberately left unanswered by the gate.
         self.unanswered: list[str] = []
+        # Cards whose (forged or unexpected) approval was not sent as accept.
+        self.accept_suppressed: list[str] = []
         self.interrupt_requested = False
         self.interrupt_accepted = False
         # Provider-native child agents seen in this turn (ids/enums only).
         self.native_agents: list[dict] = []
         # child thread id -> its latest own state ("unknown" until reported).
         self.child_state: dict[str, str] = {}
+        # Tool items of this turn (type, id, process id seen, completed).
+        self.tools: dict[str, dict] = {}
 
     def unfinished_children(self) -> list[str]:
         return [t for t, s in self.child_state.items() if s not in NATIVE_CHILD_END_STATES]
 
+    def tool_process_state(self) -> str:
+        """``none`` / ``items_completed`` / ``unknown`` - never "stopped".
+
+        A completed item is the provider's report about the item; it is not a
+        separate confirmation that a process it started has exited.
+        """
+        if not self.tools:
+            return "none"
+        return "items_completed" if all(t["completed"] for t in self.tools.values()) else "unknown"
+
     def ours(self, params: dict, *, turn_from_payload: bool = False) -> bool:
-        """Exact binding: an event without this turn's id is never attributed."""
-        if params.get("threadId") not in (None, self.thread_id):
+        """Exact binding: both this thread's and this turn's id must be present (D8)."""
+        if params.get("threadId") != self.thread_id:
             return False
         got = turn_id_of_params(params) if turn_from_payload else params.get("turnId")
         return got == self.turn_id
@@ -219,7 +404,7 @@ def turn_id_of_params(params: dict) -> str:
 
 
 class AppServerCodexAdapter(AdapterContract):
-    """Codex via app-server. Gated exactly like the exec adapter."""
+    """Codex via app-server. Gated like the exec adapter, plus D1-D11."""
 
     name = "codex"
     transport = TRANSPORT
@@ -234,10 +419,12 @@ class AppServerCodexAdapter(AdapterContract):
         self.timeout_seconds = timeout_seconds
         self.request_timeout = request_timeout
         self.version = version
-        # thread/start sends no sandbox field yet; the server default applies
-        # and has not been checked, so nothing stronger than "unknown" is shown.
-        self.sandbox = "unknown"
-        self.disable_subagents = True  # requested via --disable; not proof
+        # Requested on every thread request and read back before any turn.
+        self.sandbox = "read-only"
+        self.disable_subagents = True  # requested via --disable; not proof, not control
+        #: Only the trusted offline stubs may answer accept. A real app-server
+        #: offers decline only until the accept chain is verified (S7).
+        self.accept_enabled = _trusted_offline(transport_factory)
         self._start_count = 0
         self._lock = threading.Lock()
         self._active: dict[str, Any] = {}
@@ -253,23 +440,41 @@ class AppServerCodexAdapter(AdapterContract):
     def start_count(self) -> int:
         return self._start_count
 
+    def binding_identity(self) -> str:
+        """What a call's snapshot binds to (D11); changes with the pinned identity."""
+        bind = getattr(self.transport_factory, "binding_identity", None)
+        if not callable(bind):
+            return "unavailable"
+        try:
+            value = bind()
+        except Exception:  # noqa: BLE001
+            return "unavailable"
+        return value if isinstance(value, str) and value else "unavailable"
+
     def capabilities(self) -> dict[str, Any]:
         return {
             "post_message": True,
             "stream": True,
             "resume_session": True,
             "cancel": False,  # no stop without a live turn (e.g. after a restart)
-            "interrupt_live_turn": True,  # turn/interrupt; offline stub only
+            "interrupt_live_turn": True,  # turn/interrupt; settles only on the terminal event
             "observe_native_agents": True,  # collab/sub-agent items; observation, not control
+            "observe_tool_items": True,  # tool items; observation, not control
             "stop_local_process": True,
             "limit_dir": "unknown",
             "intercept_tool": False,
             "control_subagent": False,
             "real_usage": "unknown",
-            # Offline stub behaviour only; S2 covered one real turn without
-            # resume, approvals or interrupt.
+            "tool_accept": self.accept_enabled,  # offline stubs only
+            # Nothing has been verified through the Hub. Standalone probes,
+            # each this run only (docs/appserver-s6-plan.md §2):
             "verified": {"post_message": False, "stream": False, "resume_session": False,
                          "cancel": False, "intercept_tool": False, "control_subagent": False},
+            "probe_evidence": {
+                "decline_one_command_approval": "evidence/s3-real-run-3-pass",
+                "interrupt_before_first_output": "evidence/s4-real-run-1-pass",
+                "cold_resume_history": "evidence/s5-real-run-2-pass",
+            },
             "transport": TRANSPORT,
         }
 
@@ -281,8 +486,26 @@ class AppServerCodexAdapter(AdapterContract):
                                   REAL_APPSERVER_BLOCK_REASON)
 
     def supervised_execution_admission(self) -> ExecutionAdmission:
-        return ExecutionAdmission(False, "blocked", "appserver_real_unverified",
-                                  REAL_APPSERVER_BLOCK_REASON)
+        factory = self.transport_factory
+        if type(factory) is not CodexAppServerFactory:
+            return ExecutionAdmission(False, "blocked", "appserver_real_unverified",
+                                      REAL_APPSERVER_BLOCK_REASON)
+        try:
+            problems = factory.supervised_problems()
+        except Exception:  # noqa: BLE001
+            problems = ["factory_check_failed"]
+        if not (isinstance(self.timeout_seconds, (int, float)) and math.isfinite(self.timeout_seconds)
+                and 0 < self.timeout_seconds <= 600):
+            problems.append("timeout")
+        if self.accept_enabled:
+            problems.append("tool_accept_enabled")  # decline-only until S7
+
+        if problems:
+            return ExecutionAdmission(
+                False, "blocked", "appserver_supervised_conditions",
+                "用户监督模式要求代码常量中的固定身份（无环境变量覆盖）、验证过的启动参数、"
+                "代理和可读的 CA、最多 600 秒的本地时限。未满足：" + ", ".join(problems))
+        return ExecutionAdmission(True, "supervised", "user_supervised_boundary", SUPERVISED_REASON)
 
     def supports_native_resume(self) -> bool:
         return True
@@ -318,6 +541,11 @@ class AppServerCodexAdapter(AdapterContract):
         if not gate_token:
             return AdapterStartResult("", ok=False, terminal=True,
                                       detail="refused: no kernel gate token (invocation not approved)")
+        if snapshot.adapter_version != self.binding_identity():
+            # The kernel refuses this before consuming the approval; reaching
+            # here means it was bypassed. Nothing is launched either way.
+            return AdapterStartResult("", ok=False, terminal=True,
+                                      detail="refused: adapter identity changed since approval; nothing started")
         admission = execution_admission(self, snapshot.execution_mode)
         if not admission.allowed:
             return AdapterStartResult("", ok=False, terminal=True, detail=admission.reason)
@@ -339,14 +567,34 @@ class AppServerCodexAdapter(AdapterContract):
                 with self._lock:
                     self._threads_in_use.discard(resume_id)
 
+    def _thread_home(self, thread_id: str) -> Optional[tuple[str, str]]:
+        """(cwd, previous turn id) of the latest call that started a turn on a thread (D6)."""
+        for record in self.store.records_for_adapter_id(thread_id):
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            workdir, turn_id = payload.get("workdir"), payload.get("turn_id")
+            if isinstance(workdir, str) and workdir and isinstance(turn_id, str) and turn_id:
+                return workdir, turn_id
+        return None
+
     def _run(self, invocation_id: str, snapshot: InvocationSnapshot,
              resume_id: Optional[str], emit: Emit, gate: Any = None) -> AdapterStartResult:
-        try:
-            workdir = os.path.join(self.workdir_root, invocation_id)
-            os.makedirs(workdir, exist_ok=True)
-        except OSError as exc:
-            return AdapterStartResult("", ok=False, terminal=True,
-                                      detail=f"refused: launch preparation failed ({exc})")
+        previous_turn_id = ""
+        if resume_id:
+            home = self._thread_home(resume_id)
+            if home is None or not os.path.isdir(home[0]):
+                return AdapterStartResult(
+                    "", ok=False, terminal=True,
+                    detail="refused: no recorded work directory for this provider thread; nothing started")
+            workdir, previous_turn_id = home
+        else:
+            try:
+                workdir = os.path.join(self.workdir_root, invocation_id)
+                os.makedirs(workdir, exist_ok=True)
+            except OSError as exc:
+                return AdapterStartResult("", ok=False, terminal=True,
+                                          detail=f"refused: launch preparation failed ({exc})")
 
         self._start_count += 1
         # Record before launching: a crash afterwards reads as "may be running".
@@ -378,28 +626,47 @@ class AppServerCodexAdapter(AdapterContract):
         turn_requested = False
         failure: Optional[str] = None
         timed_out = False
+        descendants: Optional[dict] = None
         try:
             client.start()
             session.initialize(client_name="agent-hub", version=self.version)
             if resume_id:
-                thread_id = session.resume_thread(resume_id)
+                result = client.request(THREAD_RESUME, {"threadId": resume_id, "cwd": workdir,
+                                                        **THREAD_SETTINGS})
+                thread_id = _thread_id(result)
                 if thread_id != resume_id:
                     raise _Refused("thread/resume returned a different thread id")
             else:
-                thread_id = session.start_thread(cwd=workdir)
+                result = client.request(THREAD_START, {"cwd": workdir, **THREAD_SETTINGS})
+                thread_id = _thread_id(result)
             if not thread_id:
                 raise _Refused("server returned no thread id")
             self.store.set_adapter_id(invocation_id, thread_id)
+            problems = settings_problems(result, workdir)
+            if problems:
+                raise _Refused("appserver_settings_mismatch: " + ",".join(problems))
+            if resume_id:
+                turns = (result.get("thread") or {}).get("turns") or []
+                if not any(isinstance(t, dict) and t.get("id") == previous_turn_id for t in turns):
+                    raise _Refused("thread/resume did not return the previous turn; history not confirmed")
             turn_requested = True
-            turn_id = session.start_turn(snapshot.task_input, thread_id=thread_id)
+            result = client.request(TURN_START, {
+                "threadId": thread_id, "input": [{"type": "text", "text": snapshot.task_input}],
+                **TURN_POLICY,
+            })
+            turn_id = str((result.get("turn") or {}).get("id") or result.get("turnId") or "")
             if not turn_id:
                 raise AppServerError("turn/start returned no turn id")
-            turn = _Turn(thread_id, turn_id)
+            turn = _Turn(thread_id, turn_id, previous_turn_id)
             with self._lock:
                 self._live[invocation_id] = (client, turn)
             emit(STREAM_TURN_STARTED, {"thread_id": thread_id, "turn_id": turn_id,
                                        "resumed": bool(resume_id)})
             timed_out = not self._pump(client, turn, emit, gate)
+            if turn.terminal_seen:
+                # Bound events after this turn's terminal are anomalies (§4.8).
+                turn.late_events += sum(1 for n in client.notifications()
+                                        if (n.params or {}).get("threadId") == thread_id)
         except _Refused as exc:
             failure = f"refused before any turn: {exc}"
         except AppServerResponseError as exc:
@@ -414,10 +681,11 @@ class AppServerCodexAdapter(AdapterContract):
         finally:
             with self._lock:
                 self._live.pop(invocation_id, None)
-            local_exit_confirmed = self._close(invocation_id, transport)
+            local_exit_confirmed, descendants = self._close(invocation_id, transport)
             if gate is not None and turn is not None and turn.cards:
                 # Unanswered requests died with the turn/transport: void them
                 # so a late click cannot "approve" something no one will run.
+                # A void card is never answered (plan §4.4).
                 try:
                     gate.void_pending()
                 except Exception:  # noqa: BLE001
@@ -427,7 +695,8 @@ class AppServerCodexAdapter(AdapterContract):
             stop_requested = invocation_id in self._stop_requests
             self._stop_requests.discard(invocation_id)
         return self._settle(invocation_id, thread_id, turn, turn_requested, failure,
-                            timed_out, stop_requested, local_exit_confirmed, resume_id, emit)
+                            timed_out, stop_requested, local_exit_confirmed, resume_id, emit,
+                            workdir=workdir, descendants=descendants)
 
     def _pump(self, client: AppServerClient, turn: _Turn, emit: Emit, gate: Any = None) -> bool:
         """Follow this turn until its terminal event. False on timeout."""
@@ -459,13 +728,22 @@ class AppServerCodexAdapter(AdapterContract):
 
     def _observe(self, note: Any, turn: _Turn, emit: Emit) -> bool:
         params = note.params or {}
+        if note.method == TURN_STARTED:
+            if turn.ours(params, turn_from_payload=True):
+                turn.turn_started_seen = True
+            else:
+                turn.foreign_events += 1
+            return False
         if note.method in (ITEM_STARTED, ITEM_COMPLETED):
             item = params.get("item") or {}
-            if isinstance(item, dict) and item.get("type") in NATIVE_AGENT_ITEM_TYPES:
-                if turn.ours(params):
+            kind = item.get("type") if isinstance(item, dict) else None
+            if kind in NATIVE_AGENT_ITEM_TYPES or kind in TOOL_ITEM_TYPES:
+                if not turn.ours(params):
+                    turn.foreign_events += 1
+                elif kind in NATIVE_AGENT_ITEM_TYPES:
                     self._observe_native(item, turn, emit)
                 else:
-                    turn.foreign_events += 1
+                    self._observe_tool(item, note.method, turn)
                 return False
         if note.method == TURN_COMPLETED:
             if not turn.ours(params, turn_from_payload=True):
@@ -498,11 +776,37 @@ class AppServerCodexAdapter(AdapterContract):
                     text = "".join(turn.deltas.get(str(item.get("id") or ""), []))
                 turn.final_message = text
             return False
-        if note.method == TOKEN_USAGE_UPDATED and turn.ours(params):
+        if note.method == TOKEN_USAGE_UPDATED:
             last = (params.get("tokenUsage") or {}).get("last")
-            if isinstance(last, dict):
-                turn.usage = dict(last)
+            if turn.ours(params):
+                if isinstance(last, dict):
+                    turn.usage = dict(last)
+            elif (turn.previous_turn_id and params.get("threadId") == turn.thread_id
+                  and params.get("turnId") == turn.previous_turn_id
+                  and not turn.turn_started_seen and turn.replayed_usage is None):
+                # The one restored usage a resume sends for the previous turn
+                # (S5): recorded apart, never this turn's usage (D9).
+                turn.replayed_usage = dict(last) if isinstance(last, dict) else {}
+            else:
+                turn.usage_anomalies += 1
+                turn.foreign_events += 1
         return False
+
+    @staticmethod
+    def _observe_tool(item: dict, method: str, turn: _Turn) -> None:
+        """Record a tool item: type, id, whether a process id was reported, completion.
+
+        Command text and output are not kept. Observing is not intercepting.
+        """
+        item_id = str(item.get("id") or "")
+        entry = turn.tools.setdefault(item_id, {"item_type": str(item.get("type") or ""),
+                                                "item_id": item_id, "process_id_reported": False,
+                                                "completed": False, "status": ""})
+        if item.get("processId"):
+            entry["process_id_reported"] = True
+        if method == ITEM_COMPLETED:
+            entry["completed"] = True
+            entry["status"] = str(item.get("status") or "")
 
     @staticmethod
     def _observe_native(item: dict, turn: _Turn, emit: Emit) -> None:
@@ -553,6 +857,8 @@ class AppServerCodexAdapter(AdapterContract):
         An accepted request is not a stop. The running ``start_streaming``
         keeps following the turn; only its ``turn/completed`` with a terminal
         status settles the call (``interrupted`` -> ``outcome="canceled"``).
+        The tested build answers only once the turn is actually aborted (S4),
+        so no answer within the wait means "not yet acknowledged" (D5).
         """
         with self._lock:
             live = self._live.get(invocation_id)
@@ -567,6 +873,9 @@ class AppServerCodexAdapter(AdapterContract):
         except AppServerResponseError as exc:
             return {"interrupt_requested": True, "interrupt_accepted": False,
                     "remote_stop_confirmed": False, "reason": f"server_refused:{exc.code}"}
+        except AppServerTimeout:
+            return {"interrupt_requested": True, "interrupt_accepted": False,
+                    "remote_stop_confirmed": False, "reason": "not_yet_acknowledged"}
         except AppServerError as exc:
             return {"interrupt_requested": True, "interrupt_accepted": False,
                     "remote_stop_confirmed": False, "reason": type(exc).__name__}
@@ -589,6 +898,17 @@ class AppServerCodexAdapter(AdapterContract):
         return any(not r.answered and r.id not in turn.cards and r.id not in turn.closed_requests
                    for r in client.server_requests())
 
+    def _card_details(self, params: dict) -> dict:
+        details = {k: v for k, v in describe_approval(params).items()
+                   if k not in ("itemId", "threadId", "turnId", "availableDecisions")}
+        if "command" in details:
+            details["command_view"] = command_view(details["command"])
+        if "reason" in details:
+            details["reason_source"] = "model"  # the model's own explanation, not a fact
+        if not self.accept_enabled:
+            details["provider_available_decisions"] = params.get("availableDecisions")
+        return details
+
     def _route_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
                         gate: Any, wall_deadline: dt.datetime) -> None:
         """New tool requests of THIS turn become cards; everything else is declined."""
@@ -603,10 +923,9 @@ class AppServerCodexAdapter(AdapterContract):
                         method=request.method, request_key=json.dumps(request.id),
                         thread_id=turn.thread_id, turn_id=turn.turn_id,
                         item_id=str(params.get("itemId") or ""),
-                        details={k: v for k, v in describe_approval(params).items()
-                                 if k not in ("itemId", "threadId", "turnId",
-                                              "availableDecisions")},
-                        available_decisions=params.get("availableDecisions"),
+                        details=self._card_details(params),
+                        available_decisions=(params.get("availableDecisions") if self.accept_enabled
+                                             else list(DECLINE_ONLY)),
                         deadline=wall_deadline,
                     )
                 except Exception:  # noqa: BLE001
@@ -643,7 +962,8 @@ class AppServerCodexAdapter(AdapterContract):
             if callable(claim):
                 # Last check before writing: once the call's tool decisions are
                 # closed (interrupt/stop effective point) this returns None and
-                # the decision is recorded as blocked, never sent.
+                # the decision is recorded as blocked, never sent. A void card
+                # is never claimable, so it is never answered.
                 try:
                     claimed = claim(card_id)
                 except Exception:  # noqa: BLE001
@@ -656,6 +976,10 @@ class AppServerCodexAdapter(AdapterContract):
             else:
                 # Only an approved card becomes accept; everything else declines.
                 answer = "accept" if status == "approved" else "decline"
+            if answer == "accept" and not self.accept_enabled:
+                # Decline-only: no path may write accept, not even a forged row.
+                answer = "decline"
+                turn.accept_suppressed.append(card_id)
             decision = _fit_decision(answer, (request.params or {}).get("availableDecisions"))
             ok = True
             try:
@@ -692,20 +1016,41 @@ class AppServerCodexAdapter(AdapterContract):
             emit(STREAM_REQUEST_DECLINED, {"method": request.method, "item_id": item_id,
                                            "decision": decision})
 
-    def _close(self, invocation_id: str, transport: Any) -> bool:
+    def _close(self, invocation_id: str, transport: Any) -> tuple[bool, Optional[dict]]:
+        """Close our own transport; record (never end) its descendants (D10)."""
         with self._lock:
             self._active.pop(invocation_id, None)
+        pid = getattr(transport, "pid", None)
+        before = None
+        if isinstance(pid, int) and not isinstance(pid, bool):
+            try:
+                before = proc_tree.snapshot_descendants(pid)
+            except Exception:  # noqa: BLE001 - a record, never a reason to fail
+                before = None
         try:
             transport.close()
+            closed = True
         except Exception:  # noqa: BLE001 - AppServerTimeout: child exit unconfirmed
-            return False
+            closed = False
         alive = getattr(transport, "alive", None)
-        return not alive if isinstance(alive, bool) else True
+        exited = closed and (not alive if isinstance(alive, bool) else True)
+        report = None
+        if before is not None:
+            grace = getattr(self.transport_factory, "close_grace_seconds", 0.0)
+            try:
+                left = proc_tree.survivors(before, float(grace)) if before else []
+            except Exception:  # noqa: BLE001
+                left = None
+            report = {"before_close": [{"pid": p, "image": n} for p, n in before],
+                      "after_grace": None if left is None else [{"pid": p, "image": n} for p, n in left],
+                      "grace_seconds": float(grace)}
+        return exited, report
 
     def _settle(self, invocation_id: str, thread_id: str, turn: Optional[_Turn],
                 turn_requested: bool, failure: Optional[str], timed_out: bool,
                 stop_requested: bool, local_exit_confirmed: bool,
-                resume_id: Optional[str], emit: Emit) -> AdapterStartResult:
+                resume_id: Optional[str], emit: Emit, *, workdir: str = "",
+                descendants: Optional[dict] = None) -> AdapterStartResult:
         if failure is not None:
             verdict, terminal, detail = FAILED, True, failure
         elif stop_requested:
@@ -742,6 +1087,13 @@ class AppServerCodexAdapter(AdapterContract):
             detail = (f"parent turn ended {turn.turn_status or 'without status'}; native child "
                       f"agents without end evidence: {', '.join(unfinished)}; "
                       "not counted in Hub quota, quota slot kept")
+        tool_state = turn.tool_process_state() if turn is not None else "none"
+        if tool_state == "unknown":
+            detail += "; tool items without completion: tool process state unknown, not claimed stopped"
+        survivors = (descendants or {}).get("after_grace")
+        if survivors:
+            detail += (f"; {len(survivors)} descendant process(es) still present after close "
+                       "(recorded only; Hub does not end them)")
         if verdict == FINISHED and not local_exit_confirmed:
             detail += "; local app-server exit unconfirmed"
 
@@ -749,14 +1101,21 @@ class AppServerCodexAdapter(AdapterContract):
             "transport": TRANSPORT,
             "thread_id": thread_id,
             "turn_id": turn.turn_id if turn else "",
+            "workdir": workdir,
             "resumed": bool(resume_id),
+            "previous_turn_id": turn.previous_turn_id if turn else "",
             "turn_requested": turn_requested,
             "turn_status": turn.turn_status if turn else "",
             "final_message": turn.final_message if turn else "",
             "usage": turn.usage if turn else {},
+            "replayed_usage": turn.replayed_usage if turn else None,
+            "usage_anomalies": turn.usage_anomalies if turn else 0,
             "declined_requests": list(turn.declined) if turn else [],
             "unanswered_requests": list(turn.unanswered) if turn else [],
             "tool_approvals": list(turn.card_ids) if turn else [],
+            "accept_suppressed": list(turn.accept_suppressed) if turn else [],
+            "tool_activity": list(turn.tools.values()) if turn else [],
+            "tool_process_state": tool_state,
             "interrupt_requested": bool(turn and turn.interrupt_requested),
             "interrupt_accepted": bool(turn and turn.interrupt_accepted),
             "native_agents": list(turn.native_agents) if turn else [],
@@ -764,7 +1123,9 @@ class AppServerCodexAdapter(AdapterContract):
             "native_unfinished": unfinished,
             "parent_turn": parent_turn,
             "foreign_events": turn.foreign_events if turn else 0,
+            "late_events": turn.late_events if turn else 0,
             "local_process_exit_confirmed": local_exit_confirmed,
+            "descendants": descendants,
             "verdict": verdict,
             "terminal": terminal,
             "detail": detail,
@@ -775,7 +1136,8 @@ class AppServerCodexAdapter(AdapterContract):
         self.store.set_status(invocation_id, verdict, detail[:400])
         if turn is not None:
             emit(STREAM_TURN_ENDED, {"turn_status": turn.turn_status, "verdict": verdict,
-                                     "terminal": terminal, "native_unfinished": unfinished})
+                                     "terminal": terminal, "native_unfinished": unfinished,
+                                     "tool_process_state": tool_state})
         if verdict == FINISHED:
             return AdapterStartResult(thread_id, ok=True, terminal=True, detail=detail[:200])
         if verdict == CANCELLED:
@@ -790,13 +1152,13 @@ class AppServerCodexAdapter(AdapterContract):
 
     def cancel(self, adapter_invocation_id: str) -> Any:
         return {"ok": False, "reason": "unsupported",
-                "detail": "turn/interrupt is unverified (S4); not claiming a stop"}
+                "detail": "no stop without a live turn; turn/interrupt settles only on the terminal event"}
 
     def cancel_invocation(self, invocation_id: str) -> dict[str, Any]:
         return self.cancel(invocation_id)
 
     def stop_local_invocation(self, invocation_id: str) -> dict:
-        """Close only our own transport. Never a remote or native-child stop."""
+        """Close only our own transport. Never a remote, descendant or native-child stop."""
         with self._lock:
             self._stop_requests.add(invocation_id)
             transport = self._active.get(invocation_id)

@@ -283,7 +283,7 @@ STREAM_FIELDS: dict[str, dict[str, tuple[type, ...]]] = {
     STREAM_DELTA: {"item_id": (str,)},
     STREAM_REQUEST_DECLINED: {"method": (str,), "item_id": (str,), "decision": (str,)},
     STREAM_TURN_ENDED: {"turn_status": (str,), "verdict": (str,), "terminal": (bool,),
-                        "native_unfinished": (list,)},
+                        "native_unfinished": (list,), "tool_process_state": (str,)},
     # Ids and enum values only; a collab call's prompt never enters the stream.
     STREAM_NATIVE_AGENT: {"item_type": (str,), "tool": (str,), "item_id": (str,),
                           "status": (str,), "child_thread_ids": (list,),

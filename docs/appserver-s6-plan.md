@@ -127,7 +127,7 @@
 supervised 放行的条件，全部由适配器代码判断：
 
 - factory 的类型必须恰好是 `CodexAppServerFactory`；
-- 路径和身份等于代码常量，**没有任何环境变量覆盖**，准入时和启动时都要复核大小和 SHA-256；
+- 路径和身份等于代码常量，**没有任何环境变量覆盖**。准入时检查文件存在和大小；完整的 SHA-256 在启动进程前计算。准入在数据库写锁内执行，不适合计算约 340 MB 文件的哈希（S6-1 实施时的调整）；
 - argv 与验证形态一致：`app-server --stdio --disable multi_agent`。这个参数只是附带的请求，不作为控制手段（第 2.1 节）；
 - 代理和 CA 可读；
 - 本地时限大于 0 且不超过 600 秒；
@@ -178,7 +178,7 @@ supervised 放行的条件，全部由适配器代码判断：
 ### 4.5 工具活动与子进程
 
 - 观测 commandExecution、fileChange、mcpToolCall、dynamicToolCall 等 item，只记录类型、ID、是否有 processId、结束状态，不保存命令内容和输出。
-- 结算时，`detail` 和事件流如实写明“工具子进程状态：none / ended / unknown”。出现 unknown 时，即使主回合已经 completed 或 interrupted，也附带说明，不声称工具已停止。
+- 结算时，`detail` 和事件流如实写明工具状态：`none`（没有工具 item）、`items_completed`（所有工具 item 都报告完成）、`unknown`（有 item 开始后没有完成）。item 完成是 provider 对这个 item 的报告，不单独证明它启动的进程已经退出，所以不用 “ended” 这个词（S6-1 实施时的调整）。出现 unknown 时，即使主回合已经 completed 或 interrupted，也附带说明，不声称工具已停止。
 - 本地停止和结算时，记录 app-server 后代进程在关闭前后的名单，宽限 3 秒，与 S5 相同。只记录，不结束（第 4.11 节）。
 
 ### 4.6 中断
@@ -197,7 +197,7 @@ supervised 放行的条件，全部由适配器代码判断：
 
 ### 4.8 事件绑定
 
-所有影响结算的事件，都必须带与本 thread、本 turn 一致的 threadId 和 turnId。D9 的重放是唯一例外，并单独记录。终态之后的 item 或 turn 事件，记为异常并写入 detail。
+所有影响结算的事件，都必须带与本 thread、本 turn 一致的 threadId 和 turnId。D9 的重放是唯一例外，并单独记录。终态之后的事件记为 `late_events`；只统计结算时已经收到的事件，之后到达的不再读取。
 
 ### 4.9 网络与证书
 
@@ -317,7 +317,16 @@ supervised 放行的条件，全部由适配器代码判断：
 
 用户可以随时改变上述任何一项；改变后，按新的决定修订方案和代码。
 
-## 9. 本方案不做的事
+## 9. 实施记录
+
+- **S6-0**（`2afba44`）：`feat/appserver-s6` 以 `feat/interrupt-stop` 为基础合并本分支，冲突只有 HANDOFF。合并后全量 977 passed。
+- **S6-1**（本提交）：D1–D11 都已在离线桩上实现，说明见[会话后端契约](conversation-backend.md)的“S6-1”一节。实施中有三处调整，已改入上文：
+  - 准入只检查文件存在和大小，完整哈希在启动前计算（第 4.1 节）；
+  - 工具状态用 `items_completed`，不用 “ended”（第 4.5 节）；
+  - 终态之后的事件只统计结算时已收到的部分（第 4.8 节）。
+- **仍未验证**：经过 Hub 的任何真实运行（S6-2 到 S6-5）、子 Agent 关闭路径（S6-V）、accept 链（S7）。
+
+## 10. 本方案不做的事
 
 - 不改动 strict 模式的结论，不声称原生子 Agent 已被控制，也不把会话的模式字段当作派生证据。
 - 不开放工具 accept（等用户的决定和 S7）。

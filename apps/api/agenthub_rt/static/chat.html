@@ -511,7 +511,20 @@ const METHOD_LABEL = {
   "item/fileChange/requestApproval": "Agent 请求修改文件",
   "item/permissions/requestApproval": "Agent 请求权限",
 };
-const DETAIL_LABEL = { command: "命令", cwd: "目录", reason: "理由", path: "路径", grantRoot: "授权范围" };
+const DETAIL_LABEL = { command: "命令（原文）", command_view: "命令（拆开后）", cwd: "目录",
+  reason: "理由（模型提供的说明）", reason_source: null, path: "路径", grantRoot: "授权范围",
+  provider_available_decisions: "provider 提供的选项" };
+
+function commandView(v) {
+  if (!v || !v.parsed) return "无法拆开，以原文为准";
+  if (v.inner_command !== undefined)
+    return `外层程序：${v.shell} ${(v.shell_flags || []).join(" ")}\n内层命令：${v.inner_command}`;
+  return (v.argv || []).join(" ‖ ");
+}
+
+function acceptOffered(card) {
+  return !Array.isArray(card.available_decisions) || card.available_decisions.includes("accept");
+}
 
 function chip(text, kind) { return el("span", { class: "chip " + (kind || "") }, text); }
 
@@ -526,10 +539,12 @@ function renderCard(id) {
   const pending = card.status === "pending";
   const busy = S.busy.has("card:" + id);
   const details = card.details || {};
-  const rows = Object.entries(details).map(([k, v]) => [
+  const rows = Object.entries(details).filter(([k]) => DETAIL_LABEL[k] !== null).map(([k, v]) => [
     el("dt", {}, DETAIL_LABEL[k] || k),
-    el("dd", { class: k === "command" ? "mono" : "" }, typeof v === "string" ? v : JSON.stringify(v)),
+    el("dd", { class: k === "command" || k === "command_view" ? "mono" : "" },
+       k === "command_view" ? commandView(v) : typeof v === "string" ? v : JSON.stringify(v)),
   ]);
+  const canApprove = acceptOffered(card);
   const delivery = card.delivery === "sent" ? `已发出：${card.decision_sent}`
     : card.delivery === "sending" ? "已认领，可能正在发出（无法撤回）"
     : card.delivery === "failed" ? `送达失败（${card.decision_sent || "无"}）`
@@ -545,11 +560,12 @@ function renderCard(id) {
         : null,
       delivery ? chip(delivery, "") : null,
       el("span", { class: "grow" }),
-      pending ? el("button", { class: "danger", disabled: busy || !card.card_hash,
+      pending && canApprove ? el("button", { class: "danger", disabled: busy || !card.card_hash,
                                onclick: () => answerCard(card, "approve") }, "批准这一次") : null,
       pending ? el("button", { disabled: busy, onclick: () => answerCard(card, "decline") }, "拒绝") : null),
-    pending ? el("div", { class: "note" },
-      "只批准这一个请求，不影响以后的请求；拒绝、超时或请求结束都不会执行。") : null);
+    pending ? el("div", { class: "note" }, canApprove
+      ? "只批准这一个请求，不影响以后的请求；拒绝、超时或请求结束都不会执行。"
+      : "这一阶段只能拒绝：批准后的执行链尚未验证。不经审批、直接在沙箱内运行的命令（可能包括启动其他 Agent 的 CLI）Hub 只能观测、不能拦截。") : null);
 }
 
 function renderCall(c) {
@@ -598,6 +614,7 @@ function renderCall(c) {
     notes.push(i.pending ? "已请求中断，等待服务端答复…"
       : settled ? `已请求中断 → 已收到终态：${(CALL_LABEL[c.status] || [c.status])[0]}`
       : i.interrupt_accepted ? "已请求中断，服务端已接受；尚未收到终态，远端停止未确认，名额保留"
+      : i.reason === "not_yet_acknowledged" ? "已请求中断，服务端尚未答复；以回合终态为准，名额保留"
       : `已请求中断，服务端未接受（${i.reason || "原因未知"}）；名额保留`);
   }
   for (const n of c.native) {

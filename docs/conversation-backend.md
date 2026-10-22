@@ -295,3 +295,102 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - “认领 → 暂停 → 关闭 → 恢复发送”的确定性测试：认领后让适配器停在写出之前，此时关闭；关闭结果计入 `in_flight`，卡片保持 `sending`（不改写成 sent，桩也还没有收到）。恢复后决定照常写出（桩收到 accept），卡片才变为 `sent`。
 - “关闭后的新请求 + 建卡失败”：没有发出任何响应（桩没有收到 srv-1 的回答），请求记入 `unanswered_requests`；对照组是调用仍开放时建卡失败，照常自动 decline。
 - 适配器单元测试：gate 没有 `may_answer`、`may_answer` 抛异常、或已关闭这三种情况下，对本回合请求和未知请求都不发送任何内容，也不会再处理同一请求；`may_answer` 能反映关闭状态，数据库不可用时返回 False。
+
+## S6-1：app-server 加固（2026-10-23）
+
+依据 [S6 规划](appserver-s6-plan.md)（修订 1）第 3–6 节。全部离线完成，**没有经过 Hub 的真实运行**。
+
+### 准入与固定身份（D7）
+
+- 固定身份是 `agenthub_adapters.appserver_adapter.PINNED_APPSERVER`，取 alpha.11 的值，与 exec 的 `PINNED_CODEX_*` 分开，不读取环境变量。
+- `build_adapter()` 用 `CodexAppServerFactory.pinned(...)` 构造 factory。如果设置了 `AGENT_HUB_CODEX_PATH`、`AGENT_HUB_CODEX_SHA256`、`AGENT_HUB_CODEX_SIZE` 或 `AGENT_HUB_CODEX_VERSION`，它们不会被使用，而是记入 `env_overrides`，监督准入因此被拒。
+- 严格模式继续返回 `appserver_real_unverified`。
+- 监督模式在以下条件**全部**满足时返回 `user_supervised_boundary`，否则返回 `appserver_supervised_conditions`，原因中列出未满足的项：
+  - factory 的类型恰好是 `CodexAppServerFactory`；
+  - 路径、哈希、大小、版本都等于常量；
+  - 没有环境变量覆盖；
+  - 文件存在，大小一致；
+  - argv 为 `app-server --stdio --disable multi_agent`；
+  - 设置了代理，CA 可读；
+  - 时限大于 0 且不超过 600 秒；
+  - 不能回答 accept。
+- 准入只做低成本的检查，因为它在写锁内执行。启动前，factory 再检查一遍上述条件，并完整计算 SHA-256；不符就抛出 `LaunchRefused`，不启动进程，调用判 failed。
+- 批准时仍需显式同意 `accept_unmanaged_native_agents: true`。
+
+### 身份绑定（D11）
+
+- 适配器的 `binding_identity()`：
+  - 真实 app-server：`codex-app-server@<版本>;sha256=<哈希>;size=<大小>`；
+  - 内存桩：`appserver-stub:in-memory`；
+  - stdio 桩：`appserver-stub:stdio`。
+- 会话提交、`POST /api/invocations`、子任务提议这三处，把它写入快照的 `adapter_version`，因此参与 `payload_hash`。没有声明绑定的适配器（Mock、exec）仍为 `"unknown"`，旧快照的哈希不变。
+- Worker 在**消费审批之前**比较快照中的身份与当前适配器的身份，不一致就返回 409 `adapter_identity_changed`，审批保持原状，启动 0 次。
+- 适配器在 `start_streaming` 中再比较一次，作为纵深防御。
+- 重试复制原快照，不更换身份；重新固定之后，旧调用需要重新提交。
+- `describe()` 增加 `binding_identity` 字段。
+
+### 固定设置与回读（D2）
+
+- `thread/start` 发送 `{cwd, sandbox:"read-only", approvalPolicy:"on-request", approvalsReviewer:"user"}`。
+- `thread/resume` 在此基础上加 `threadId`。
+- `turn/start` 另带 `approvalPolicy`、`approvalsReviewer` 和 `sandboxPolicy:{type:"readOnly", networkAccess:false}`。
+- 线程请求的应答按 S3–S5 的规则回读：reviewer、policy、sandbox 对象和 cwd。任何一项不符，就判 failed（`appserver_settings_mismatch: <项>`），不发 `turn/start`，释放名额。
+
+### 工具审批（D1、第 4.4 节）
+
+- 真实 factory 的适配器 `accept_enabled=False`：
+  - 卡片的 `available_decisions` 为 `["decline"]`，provider 的原始列表放在 `details.provider_available_decisions`；
+  - API 的批准请求因此返回 409 `accept_not_offered`；
+  - 页面上不显示“批准”按钮，并提示“这一阶段只能拒绝”；
+  - 即使数据库里出现伪造的 approved，适配器也改发 `decline`，并把卡片记入 `accept_suppressed`。
+- 离线桩仍可回答 accept，以覆盖现有的往返测试。
+- `_fit_decision` 只会返回 `accept` 或 `decline`，**从不返回 `cancel`**。可选列表里没有 decline 时，照样发 `decline`（S3 的实测结论）。
+- 唯一的发送路径仍是发送前的认领（`ToolGate.claim`）：
+  - 作废卡永远不发送；
+  - 门禁关闭之后什么都不发；
+  - 过期卡在门禁开放时发一次 `decline`。
+- 卡片详情新增：
+  - `command_view`：把 `command` 按 argv 拆开，PowerShell 或 cmd 包装显示为外层程序加内层命令。只用于展示，不作为安全依据。
+  - `reason_source: "model"`：页面把理由标为“模型提供的说明”。
+
+### 工具活动（D4）、中断（D5）、事件绑定（D8）、后代进程（D10）
+
+- **工具活动**：观测 `commandExecution`、`fileChange`、`mcpToolCall`、`dynamicToolCall` 类型的 item，记录类型、ID、是否报告了 processId、是否完成，不保存命令内容和输出。
+  - 执行记录增加 `tool_activity` 和 `tool_process_state`（`none / items_completed / unknown`），`stream.turn_ended` 也带 `tool_process_state`。
+  - 状态为 unknown 时，原因文字写明“tool process state unknown, not claimed stopped”。
+- **中断**：`turn/interrupt` 应答超时时，返回 `reason: "not_yet_acknowledged"`（页面显示“服务端尚未答复；以回合终态为准”），回合仍按终态结算。
+- **事件绑定**：计入本回合的事件必须带与本 thread 一致的 `threadId` 和本回合的 turn ID；缺少 threadId 的事件不再计入。终态之后已收到的绑定事件计入 `late_events`。
+- **后代进程**：stdio 传输在关闭前后各读一次进程表，真实 factory 宽限 3 秒，结果记入 `descendants`（`before_close`、`after_grace`）。只记录，不结束任何进程。
+
+### 原生续接（D6、D9）
+
+- 首次调用的 cwd 是 `workdir_root/<invocation_id>`，执行记录中写入 `workdir`。续接时，从执行库中找出同一 thread 最近一次开始过回合的记录，取回其 cwd 和 `turn_id`。
+  - 没有这样的记录，或者目录已不存在，就拒绝续接，0 次启动，不改用新目录。
+  - 恢复的应答必须包含上一个回合，否则判 failed（history not confirmed），不发 `turn/start`。
+- 恢复时的用量重放按 S5 修订后的规则处理：只接受一条，带本 thread 和上一个回合的 ID，在 `turn/started` 之前到达，记入 `replayed_usage`，不算本回合的用量。其余的重放计入 `usage_anomalies`。
+- app-server 和 stdio 桩的 stderr 日志写到 `workdir_root/_logs/`，cwd 保持为空。
+
+### 离线桩
+
+- 线程应答回显所请求的 cwd，并且在请求 read-only 时，把 `sandbox` 报告为对象。
+- 恢复时返回本 factory 在该 thread 上发出过的回合，并发送一条上一个回合的用量重放。stdio 桩通过环境变量获得回合 ID 和历史。
+- 新场景：`approval-default`（默认决定列表、包装后的命令）、`settings-mismatch`、`resume-no-history`、`replay-twice`、`replay-other-turn`、`replay-after-start`、`tool-unfinished`、`unbound-delta`。
+
+### 验证（本节）
+
+新增 `tests/http/test_appserver_s6.py`（65 项，连续 3 次通过），覆盖准入矩阵、D11、设置回读、只拒绝的卡片规则、`_fit_decision`、命令拆分、工具活动、中断应答超时、事件绑定、后代进程记录、续接与重放，以及文案。
+
+变异检查：以下 5 个变异体都被这些测试发现，之后已还原：
+- 恢复 cancel 回退：6 项失败；
+- 去掉消费前的身份复核：1 项失败；
+- 去掉 accept 抑制：1 项失败；
+- 允许缺少 threadId：1 项失败；
+- 跳过设置回读：1 项失败。
+
+全量测试（Windows `.venv`）：`python -m pytest -o addopts='' -q -p no:cacheprovider`，结果 **1042 passed in 200.99s**。浏览器在 demo 离线桩上走完“发消息 → 批准 → 工具卡 → 拒绝 → 完成”，卡片显示命令原文、拆开后的命令，理由标为“模型提供的说明”。没有执行 Codex，没有模型调用。
+
+按新规则调整的已有测试：
+- `stream.turn_ended` 多了 `tool_process_state`；
+- 直接调用适配器时，快照需要带绑定身份；
+- 真实 factory 在监督模式下的拒绝码改为 `appserver_supervised_conditions`；
+- `thread/resume` 的参数多了 cwd 和固定设置。

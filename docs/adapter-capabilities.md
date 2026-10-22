@@ -1,5 +1,19 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-23 S6-1 app-server 加固**（离线；见 [S6 规划](appserver-s6-plan.md)和[会话后端契约](conversation-backend.md)末节）。下面这张表取代 2026-10-21 那张表中 app-server 的各行；那张表保留在后面，作为历史记录。
+
+| 能力 | 状态 |
+|---|---|
+| 准入 | 严格模式：真实 app-server 被拒（`appserver_real_unverified`）。监督模式：只有用代码常量构造的 `CodexAppServerFactory` 才放行（`user_supervised_boundary`），条件是固定身份为 alpha.11 `6257d9e8f63c0f2b`、没有环境变量覆盖、启动参数与验证时一致、代理和 CA 可读、时限不超过 600 秒；批准时仍需显式同意。离线桩为 simulation。**经过 Hub 的真实运行：未验证** |
+| 身份绑定 | 调用快照的 `adapter_version` 写入绑定身份；消费审批前复核，不一致返回 409 `adapter_identity_changed`；启动前重新计算文件哈希。只在离线环境中验证 |
+| 固定设置 | `thread/start`、`thread/resume`、`turn/start` 都传入 read-only、on-request、reviewer user；回读不符就不开回合。只在离线桩上验证 |
+| 工具审批 | 真实 app-server 只能**拒绝**：卡片的可选决定为 `["decline"]`，provider 的原始列表另附；拒绝一律发 `decline`，从不发 `cancel`。作废卡永远不发送；门禁关闭后什么都不发。独立探针 S3 验证过一次拒绝链（`evidence/s3-real-run-3-pass`，只认定当次）；**accept 链和经过 Hub 的拒绝：未验证**。不经审批、直接在沙箱内运行的命令只能观测 |
+| 工具活动 | 观测工具 item，结算时写明 `none / items_completed / unknown`。item 完成不等于进程已退出；**不能拦截，不能停止** |
+| 中断 | 以本回合 `turn/completed(interrupted)` 为准；应答超时记为“尚未应答”。独立探针 S4 只验证了首个输出之前的中断（`evidence/s4-real-run-1-pass`）；**输出进行中的中断、工具子进程的停止：未验证** |
+| 恢复会话 | thread 沿用首次调用的工作目录；核验返回的 cwd 和上一个回合；恢复时的一条用量重放单独记录。独立探针 S5 验证过一次冷恢复（`evidence/s5-real-run-2-pass`）；**经过 Hub 的续接、换 cwd、长对话：未验证** |
+| 控制内部子 Agent | **不能控制**，只能观测。`--disable multi_agent` 只关闭 Collab 功能，模型声明了版本时不起作用（S6 规划第 2.1 节）：它只是请求，**不是**“已禁用子 Agent”。会话中的 `multi_agent_version` 是模式字段，不是派生证据 |
+| 停止 | 只关闭本次调用自有的入口进程；后代进程只记录、不结束；远端停止不保证（监督模式既有边界） |
+
 **2026-10-21 app-server 可选传输**：新增 `AppServerCodexAdapter`（`AGENT_HUB_CODEX_TRANSPORT=app-server`），作为 exec 之外的另一种传输。下表 Codex 行描述的仍是 exec。app-server 传输各项能力如下：
 
 | 能力 | 状态 |

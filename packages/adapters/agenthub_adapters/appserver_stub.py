@@ -36,7 +36,25 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
                      turn; interrupts are acknowledged and ignored
 ``complete-on-interrupt`` the turn completes normally the moment an interrupt
                      arrives (completion wins the race)
+``approval-default`` alpha.11's default decision list (accept / cancel, no
+                     decline) and a PowerShell-wrapped command (S3 shape); the
+                     answer it receives decides the turn's ending
+``settings-mismatch`` thread/start reports a workspace-write sandbox
+``resume-no-history`` thread/resume returns no earlier turns
+``replay-twice``     resume sends the previous turn's usage twice
+``replay-other-turn`` resume sends usage owned by an unknown turn
+``replay-after-start`` the previous turn's usage arrives after turn/started
+``tool-unfinished``  a commandExecution item with a process id starts and never
+                     completes before the turn does
+``unbound-delta``    a delta without threadId, then a normal reply
 ===================  ==========================================================
+
+Thread answers echo the requested cwd and report ``sandbox`` as the object the
+tested build returns (``{"type": "readOnly", "networkAccess": false}``) when
+``read-only`` was asked for. A resume returns the turns this factory issued
+earlier on the thread and, like the tested build (S5), one restored
+``thread/tokenUsage/updated`` owned by the previous turn. The stub keeps no
+conversation content.
 
 :class:`InMemoryStubFactory` and :class:`StdioStubFactory` are the two trusted
 transport factories the app-server adapter admits as offline simulation.
@@ -90,7 +108,24 @@ SCENARIOS = (
     "native-spawn-finished",
     "approval-hold",
     "complete-on-interrupt",
+    "approval-default",
+    "settings-mismatch",
+    "resume-no-history",
+    "replay-twice",
+    "replay-other-turn",
+    "replay-after-start",
+    "tool-unfinished",
+    "unbound-delta",
 )
+
+#: ``approval-default``: the S3 shape of a wrapped command and the tested
+#: build's default decision list.
+DEFAULT_DECISIONS = ["accept", "cancel"]
+WRAPPED_COMMAND = ('"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
+                   "-Command 'Get-ChildItem -Name'")
+#: Usage the tested build restores on resume (shape of thread/tokenUsage/updated).
+REPLAY_USAGE = {"inputTokens": 7, "cachedInputTokens": 0, "outputTokens": 3,
+                "reasoningOutputTokens": 0, "totalTokens": 10}
 
 #: Deltas of the ``stream`` scenario; the final item text is their join.
 STREAM_PIECES = ("Hel", "lo, ", "流式", " world")
@@ -118,7 +153,8 @@ class ScriptedAppServer:
     def __init__(self, scenario: str, *, framing: str = "lines",
                  thread_id: str = "stub-thread-0001",
                  turn_id: str = "stub-turn-0001",
-                 on_sent: Optional[Callable[[dict], None]] = None) -> None:
+                 on_sent: Optional[Callable[[dict], None]] = None,
+                 history: Optional[list[dict]] = None) -> None:
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}; known: {list(SCENARIOS)}")
         self.scenario = scenario
@@ -126,6 +162,10 @@ class ScriptedAppServer:
         self.thread_id = thread_id
         self.turn_id = turn_id
         self.on_sent = on_sent
+        #: Earlier turns of this thread (ids/statuses only), returned on resume.
+        self.history = [dict(t) for t in (history or [])]
+        self.turn_started = False
+        self.resumed = False
         self.sent: list[dict] = []
         self.received: list[dict] = []
         self._answered_approvals: list[dict] = []
@@ -223,25 +263,42 @@ class ScriptedAppServer:
             return
 
         if method in (THREAD_START, THREAD_RESUME):
-            thread = {"id": self.thread_id, "turns": []}
+            resume = method == THREAD_RESUME
+            turns = [] if not resume or self.scenario == "resume-no-history" else list(self.history)
+            thread = {"id": self.thread_id, "turns": turns}
             # Schema: the notification carries `thread` (no top-level threadId).
             self.notify(THREAD_STARTED, {"thread": thread})
+            sandbox: Any = "read-only"
+            if params.get("sandbox") == "read-only":
+                sandbox = {"type": "readOnly", "networkAccess": False}
+            if self.scenario == "settings-mismatch":
+                sandbox = {"type": "workspaceWrite", "networkAccess": False}
             self.reply(request_id, {
                 "thread": thread,
-                "cwd": "C:\\stub",
+                "cwd": params.get("cwd") or "C:\\stub",
                 "model": "stub-model",
                 "modelProvider": "stub",
-                "sandbox": "read-only",
-                "approvalPolicy": "on-request",
-                "approvalsReviewer": "user",
+                "sandbox": sandbox,
+                "approvalPolicy": params.get("approvalPolicy") or "on-request",
+                "approvalsReviewer": params.get("approvalsReviewer") or "user",
             })
+            if resume:
+                self.resumed = True
+                previous = self.history[-1]["id"] if self.history else None
+                if previous and self.scenario != "replay-after-start":
+                    owner = "stub-turn-unknown" if self.scenario == "replay-other-turn" else previous
+                    for _ in range(2 if self.scenario == "replay-twice" else 1):
+                        self._replay_usage(owner)
             return
 
         if method == TURN_START:
             self.turn_status = "inProgress"
+            self.turn_started = True
             self.notify(TURN_STARTED, {"threadId": self.thread_id,
                                        "turn": {"id": self.turn_id, "items": [],
                                                 "status": self.turn_status}})
+            if self.scenario == "replay-after-start" and self.resumed and self.history:
+                self._replay_usage(self.history[-1]["id"])
             if self.scenario == "out-of-order":
                 # A notification may legitimately precede the response to the request
                 # that caused it; the client must cope either way.
@@ -286,6 +343,12 @@ class ScriptedAppServer:
 
         # Any other request: acknowledge so the client is not left hanging.
         self.reply(request_id, {})
+
+    def _replay_usage(self, turn_id: str) -> None:
+        self.notify("thread/tokenUsage/updated", {
+            "threadId": self.thread_id, "turnId": turn_id,
+            "tokenUsage": {"last": dict(REPLAY_USAGE), "total": dict(REPLAY_USAGE)},
+        })
 
     def _finish_turn(self, status: str) -> None:
         self.turn_status = status
@@ -332,6 +395,22 @@ class ScriptedAppServer:
         if scenario == "turn-failed":
             self._finish_turn(TURN_STATUS_FAILED)
             return
+        if scenario == "approval-default":
+            self._drive_default_approval()
+            return
+        if scenario == "tool-unfinished":
+            # Ran without asking (sandboxed) and never reported its end.
+            cmd = {"id": "item-cmd-9", "type": "commandExecution", "processId": "4242",
+                   "status": "inProgress"}
+            self.notify(ITEM_STARTED, {"item": cmd, "threadId": self.thread_id, "turnId": self.turn_id})
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                              "threadId": self.thread_id, "delta": "OK"})
+            self._emit_item("item-1", "agentMessage")
+            self._finish_turn(TURN_STATUS_COMPLETED)
+            return
+        if scenario == "unbound-delta":
+            self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                              "delta": "UNBOUND"})
         if scenario == "demo":
             self._drive_demo()
             return
@@ -443,6 +522,37 @@ class ScriptedAppServer:
             else:
                 self._finish_turn(TURN_STATUS_INTERRUPTED)
             return
+
+    def _drive_default_approval(self) -> None:
+        """S3 shape: pending item, then the request with the default list (no decline)."""
+        cmd = {"id": "item-cmd-1", "type": "commandExecution", "command": WRAPPED_COMMAND,
+               "status": "inProgress", "processId": None}
+        self.notify(ITEM_STARTED, {"item": cmd, "threadId": self.thread_id, "turnId": self.turn_id})
+        request_id = self.request(APPROVAL_REQUEST, {
+            "itemId": "item-cmd-1", "startedAtMs": 1, "threadId": self.thread_id,
+            "turnId": self.turn_id, "command": WRAPPED_COMMAND, "cwd": "C:\\stub",
+            "reason": "列出目录（离线桩）", "environmentId": "local",
+            "availableDecisions": list(DEFAULT_DECISIONS),
+        })
+        decision = None
+        end = time.monotonic() + 30.0
+        while decision is None and time.monotonic() < end and not self._stop.is_set():
+            answer = self._wait_for_response(request_id, timeout=0.1)
+            if answer is not None:
+                decision = (answer.get("result") or {}).get("decision") or "error"
+        if decision is None:
+            return  # unanswered: the turn stays open; the client's deadline decides
+        self._answered_approvals.append({"id": request_id, "decision": decision})
+        if decision == "cancel":
+            self._finish_turn(TURN_STATUS_INTERRUPTED)
+            return
+        status = "completed" if decision == "accept" else "declined"
+        self.notify(ITEM_COMPLETED, {"item": {**cmd, "status": status}, "threadId": self.thread_id,
+                                     "turnId": self.turn_id})
+        self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                          "threadId": self.thread_id, "delta": status.upper()})
+        self._emit_item("item-1", "agentMessage")
+        self._finish_turn(TURN_STATUS_COMPLETED)
 
     def _say(self, item_id: str, pieces: tuple[str, ...]) -> str:
         for piece in pieces:
@@ -574,13 +684,19 @@ class InMemoryStubFactory:
 
     def __call__(self, invocation_id: str, workdir: str) -> InMemoryStubTransport:
         scenario = self._scenarios.pop(0) if self._scenarios is not None else self.scenario
+        history = [{"id": s.turn_id, "status": s.turn_status, "items": []}
+                   for s in self.servers if s.turn_started]
         server, streams = make_pair(scenario, thread_id=self.thread_id,
-                                    turn_id=f"stub-turn-{len(self.servers) + 1:04d}")
+                                    turn_id=f"stub-turn-{len(self.servers) + 1:04d}",
+                                    history=history)
         self.servers.append(server)
         return InMemoryStubTransport(server, streams["reader"], streams["writer"])
 
     def identity_matches(self) -> tuple[bool, str]:
         return True, "in-memory offline stub"
+
+    def binding_identity(self) -> str:
+        return "appserver-stub:in-memory"
 
 
 def bundled_stdio_stub_path() -> str:
@@ -600,6 +716,9 @@ class StdioStubFactory:
         self.scenario = scenario
         self.stderr_dir = stderr_dir
         self.argv = [sys.executable, bundled_stdio_stub_path(), "--scenario", scenario]
+        #: Turn ids issued so far; each process is told the thread's earlier
+        #: turns (ids only) so a resume can return them, as the in-memory one does.
+        self.turn_ids: list[str] = []
 
     def __call__(self, invocation_id: str, workdir: str) -> Any:
         import os
@@ -608,11 +727,20 @@ class StdioStubFactory:
 
         env = dict(os.environ)
         env["CODEX_HOME"] = workdir  # the stub has no auth path; isolate state
-        stderr = os.path.join(self.stderr_dir or workdir, f"stub-{invocation_id}.log")
+        turn_id = f"stub-turn-{len(self.turn_ids) + 1:04d}"
+        env["STUB_APPSERVER_TURN_ID"] = turn_id
+        env["STUB_APPSERVER_HISTORY"] = json.dumps(self.turn_ids)
+        self.turn_ids.append(turn_id)
+        logs = self.stderr_dir or os.path.join(os.path.dirname(os.path.abspath(workdir)), "_logs")
+        os.makedirs(logs, exist_ok=True)
+        stderr = os.path.join(logs, f"stub-{invocation_id}.log")
         return StdioTransport(list(self.argv), env=env, cwd=workdir, stderr_path=stderr)
 
     def identity_matches(self) -> tuple[bool, str]:
         return True, "bundled stdio stub"
+
+    def binding_identity(self) -> str:
+        return "appserver-stub:stdio"
 
 
 def run_stdio(scenario: str) -> int:
@@ -630,7 +758,15 @@ def run_stdio(scenario: str) -> int:
         def read(self, count: int = -1) -> bytes:
             return sys.stdin.buffer.read(count)
 
-    server = ScriptedAppServer(scenario)
+    import os
+
+    try:
+        earlier = json.loads(os.environ.get("STUB_APPSERVER_HISTORY") or "[]")
+    except ValueError:
+        earlier = []
+    history = [{"id": t, "status": "completed", "items": []} for t in earlier if isinstance(t, str)]
+    server = ScriptedAppServer(scenario, turn_id=os.environ.get("STUB_APPSERVER_TURN_ID") or "stub-turn-0001",
+                               history=history)
     server._out = _Stdout()   # noqa: SLF001 - the stdio role of the same object
     server._in = _Stdin()     # noqa: SLF001
     server.serve_forever()

@@ -139,6 +139,7 @@ def test_deltas_join_the_same_ordered_stream_before_settlement(make_client):
     assert page["events"][ended]["payload"] == {
         "invocation_id": turn["invocation_id"], "turn_status": "completed",
         "verdict": "finished", "terminal": True, "native_unfinished": [],
+        "tool_process_state": "none",
     }
     assert names[-1] == "message.created"
     reply = messages(client, cid)[-1]
@@ -368,7 +369,8 @@ def test_without_a_gate_tool_requests_are_still_declined(tmp_path):
     """Direct adapter use (no Worker gate) keeps the old fail-closed answer."""
     factory = InMemoryStubFactory("approval-allow")
     adapter = make_adapter(tmp_path, factory)
-    snap = InvocationSnapshot(agent_id="codex", task_input="x", parent_task_id=None, depth=0)
+    snap = InvocationSnapshot(agent_id="codex", task_input="x", parent_task_id=None, depth=0,
+                              adapter_version=adapter.binding_identity())
     seen = []
     result = adapter.start_streaming("inv-direct", snap, gate_token="t",
                                      emit=lambda etype, payload: seen.append((etype, payload)))
@@ -394,12 +396,15 @@ def test_unapproved_call_launches_nothing(make_client):
 
 
 def test_real_appserver_is_blocked_in_strict_and_supervised(make_client, tmp_path):
+    """Strict never admits it; supervised only when every pinned condition holds (S6)."""
     real = CodexAppServerFactory(codex_path=str(tmp_path / "missing.exe"),
                                  codex_home=str(tmp_path / "home"), expected_identity=None)
     adapter = make_adapter(tmp_path, real)
-    for mode in ("strict", "supervised"):
-        admission = execution_admission(adapter, mode)
-        assert not admission.allowed and admission.code == "appserver_real_unverified"
+    assert execution_admission(adapter, "strict").code == "appserver_real_unverified"
+    supervised = execution_admission(adapter, "supervised")
+    assert not supervised.allowed and supervised.code == "appserver_supervised_conditions"
+    assert "identity_not_pinned_constant" in supervised.reason
+    assert "executable_missing" in supervised.reason
 
     class LookalikeStub(InMemoryStubFactory):
         pass
@@ -412,7 +417,7 @@ def test_real_appserver_is_blocked_in_strict_and_supervised(make_client, tmp_pat
                           json={"accept_unmanaged_native_agents": True})
     assert consent.status_code == 200, consent.text
     r = run(client, turn)
-    assert r.status_code == 409 and r.json()["detail"]["code"] == "appserver_real_unverified"
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "appserver_supervised_conditions"
     assert adapter.start_count == 0
     with client.app.state.db.session() as s:
         assert s.get(ApprovalRow, turn["approval_id"]).status == "approved"
@@ -478,7 +483,12 @@ def test_native_resume_binds_thread_and_sends_thread_resume(make_client):
     assert "thread/start" in first_methods and "thread/resume" not in first_methods
     assert "thread/resume" in second_methods and "thread/start" not in second_methods
     resume = next(m for m in factory.servers[1].received if m.get("method") == "thread/resume")
-    assert resume["params"] == {"threadId": "thread-abc"}
+    start = next(m for m in factory.servers[0].received if m.get("method") == "thread/start")
+    # Same cwd as the thread's first call, and the fixed settings again (D2, D6).
+    assert resume["params"] == {"threadId": "thread-abc", "cwd": start["params"]["cwd"],
+                                "sandbox": "read-only", "approvalPolicy": "on-request",
+                                "approvalsReviewer": "user"}
+    assert start["params"]["cwd"].endswith(first["invocation_id"])
     started = [e for e in stream_events(events(client, cid), second["invocation_id"])
                if e["type"] == "stream.turn_started"]
     assert started[0]["payload"]["resumed"] is True

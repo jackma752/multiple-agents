@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from starlette.concurrency import run_in_threadpool
 
 from agenthub.chat import MAX_MESSAGE_CHARS, ConversationTurn
+from agenthub_kernel.adapters import adapter_binding
 from agenthub_kernel.conversations import (
     conversation_view, owned_conversation, submit_turn, turn_view,
 )
@@ -233,7 +234,8 @@ def register_conversations(app, db) -> None:
         with db.session() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             try:
-                return submit_turn(session, cid, principal.identity, request)
+                return submit_turn(session, cid, principal.identity, request,
+                                   adapter_version=adapter_binding(app.state.worker.adapter))
             except QuotaError as exc:
                 raise HTTPException(
                     404 if exc.code == "no_conversation" else 409,

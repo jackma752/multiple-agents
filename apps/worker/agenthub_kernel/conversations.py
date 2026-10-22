@@ -101,8 +101,13 @@ def native_resume_blocker(session: Session, inv: InvocationRow) -> Optional[tupl
 
 def submit_turn(
     session: Session, cid: str, user_id: str, request: ConversationTurn,
+    *, adapter_version: str = "unknown",
 ) -> dict[str, Any]:
-    """Caller holds SQLite's writer lock; message/draft/approval commit together."""
+    """Caller holds SQLite's writer lock; message/draft/approval commit together.
+
+    ``adapter_version`` is the serving adapter's binding identity; it enters
+    the snapshot, so the approval binds it (D11).
+    """
     conversation = owned_conversation(session, cid, user_id)
     previous = session.scalar(select(ChatMessageRow).where(
         ChatMessageRow.conversation_id == cid,
@@ -140,6 +145,7 @@ def submit_turn(
         agent_id=request.agent_id, task_input=request.text, parent_task_id=None,
         depth=0, policy_version=root.policy_version, execution_mode=request.execution_mode,
         context_mode=request.context_mode, resume_thread_id=resume_thread_id,
+        adapter_version=adapter_version,
     )
     inv = svc.create_invocation(task_id=root.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)

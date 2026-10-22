@@ -183,6 +183,22 @@ class ExecutionStore:
                 pass
         return rec
 
+    def records_for_adapter_id(self, adapter_invocation_id: str) -> list[dict[str, Any]]:
+        """Records for one external id (e.g. a thread), most recently started first."""
+        if not adapter_invocation_id:
+            return []
+        with self._lock:
+            conn = self._connect()
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"SELECT invocation_id FROM {self.TABLE} WHERE adapter_invocation_id=? "
+                "ORDER BY started_at DESC, rowid DESC",
+                (adapter_invocation_id,),
+            ).fetchall()
+            if self.path != ":memory:":
+                conn.close()
+        return [rec for rec in (self.get(r["invocation_id"]) for r in rows) if rec is not None]
+
     def all_records(self) -> list[dict[str, Any]]:
         with self._lock:
             conn = self._connect()

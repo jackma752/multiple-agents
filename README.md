@@ -12,8 +12,12 @@
   - S4：在首个输出之前中断；
   - S5：冷恢复后历史可用。
   - 证据标签为 `evidence/s3-real-run-3-pass`、`evidence/s4-real-run-1-pass`、`evidence/s5-real-run-2-pass`。
-- 产品适配器还没有接入这些结论，真实 app-server 仍被准入阻止。
-- 本分支 `feat/appserver-s6` 合并了产品线和探针线，正在做离线加固。[S6 规划](docs/appserver-s6-plan.md)
+- 本分支 `feat/appserver-s6` 合并了产品线和探针线，并完成了 S6-1 离线加固：
+  - 真实 app-server 在严格模式下仍被阻止；
+  - 监督模式下，只有代码常量中的 alpha.11 固定身份、验证过的启动参数和固定设置都满足时才放行；
+  - 工具卡只能拒绝；
+  - 审批绑定适配器身份。
+- 经过 Hub 的真实运行未验证，需要逐次批准。[S6 规划](docs/appserver-s6-plan.md)、[能力表](docs/adapter-capabilities.md)
 
 **2026-10-22 中断与原生子 Agent 观测**：可以对活动回合发送 `turn/interrupt`，只有 provider 报告的终态才算确认停止，否则保留名额；能观测到原生子 Agent，但不能控制；页面加入“中断本轮”。只在离线桩上验证，真实中断（S4）未验证。[说明](docs/conversation-backend.md)
 

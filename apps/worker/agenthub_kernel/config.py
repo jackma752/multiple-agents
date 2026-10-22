@@ -261,9 +261,21 @@ def appserver_execution_store_path() -> str:
     return os.path.join(DATA_DIR, "appserver-executions.db")
 
 
+def identity_env_overrides() -> tuple[str, ...]:
+    """Identity variables that are set. exec honours them; app-server never does.
+
+    The app-server identity is a reviewed code constant
+    (``agenthub_adapters.appserver_adapter.PINNED_APPSERVER``); any of these
+    being set blocks its supervised admission instead of being silently ignored.
+    """
+    names = (ENV_CODEX_PATH, ENV_CODEX_SHA256, ENV_CODEX_SIZE, ENV_CODEX_VERSION)
+    return tuple(name for name in names if os.environ.get(name))
+
+
 def codex_settings() -> dict:
-    """Resolved Codex adapter settings (env override wins)."""
+    """Resolved Codex adapter settings (env override wins, exec only)."""
     return {
+        "identity_env_overrides": identity_env_overrides(),
         "transport": codex_transport(),
         "appserver_stub": (os.environ.get(ENV_APPSERVER_STUB) or "").strip(),
         "appserver_store_path": appserver_execution_store_path(),

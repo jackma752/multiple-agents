@@ -1,4 +1,25 @@
-# 当前交接：S6-0 整合分支（2026-10-23）
+# 当前交接：S6-1 离线加固（2026-10-23）
+
+- 分支 `feat/appserver-s6`，目录 `E:\plug\agent-hub\.worktrees\appserver-s6`。说明见[会话后端契约](conversation-backend.md)的“S6-1”一节，能力表见 [adapter-capabilities](adapter-capabilities.md)。
+- 完成 D1–D11：
+  - 拒绝从不变成 cancel；
+  - 固定设置传入并回读；
+  - 卡片上的命令拆开展示，理由标为模型说明；
+  - 观测工具 item；
+  - 中断应答超时记为“尚未应答”；
+  - thread 沿用首次的 cwd；
+  - app-server 专用固定身份常量（alpha.11），不读环境变量；
+  - 事件必须带 threadId；
+  - 恢复时的用量重放单独记录；
+  - 后代进程只记录；
+  - 快照绑定适配器身份，消费前复核。
+- 准入：真实 app-server 在严格模式下仍被阻止；监督模式只在全部固定条件满足时放行。真实 factory 的工具卡只能拒绝。
+- 验证（Windows `.venv`，离线）：全量 **1042 passed in 200.99s**。新文件 `tests/http/test_appserver_s6.py` 共 65 项，连续 3 次通过；5 个变异体（cancel 回退、去掉消费前的身份复核、去掉 accept 抑制、放宽 threadId、跳过设置回读）都被测试发现。浏览器在 demo 离线桩上走完“发消息 → 批准 → 工具卡（原文、拆开后的命令、理由标注）→ 拒绝 → 完成”。没有执行 Codex。
+- **仍未验证**：经过 Hub 的任何真实运行（S6-2 到 S6-5，每次单独批准）、子 Agent 关闭路径（S6-V）、accept 链（S7）。S4 收口和 S1–S5 的历史证据不变。
+
+---
+
+# 历史交接：S6-0 整合分支（2026-10-23）
 
 - 分支 `feat/appserver-s6`，目录 `E:\plug\agent-hub\.worktrees\appserver-s6`：以 `feat/interrupt-stop`（98fbc44）为基础，合并 `plan/appserver-s6`（7a0c0a9，其中包含 `feat/appserver-s5-probe` 的 425281e）。没有 rebase，没有改动 main，没有推送。
 - 冲突只有本文件：两条线的交接按“探针线、产品线”的顺序并列保留，原文不改。`README.md` 自动合并。
