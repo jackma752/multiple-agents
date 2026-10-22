@@ -17,7 +17,7 @@
   - 监督模式下，只有代码常量中的 alpha.11 固定身份、验证过的启动参数和固定设置都满足时才放行；
   - 工具卡只能拒绝；
   - 审批绑定适配器身份。
-- 2026-10-23 S6-2 经过 Hub 走通了一次 supervised 最小回合，PASS，只认定当次（`evidence/s6-2-real-run-1-pass`，[实录](docs/appserver-s6-2-2026-10-23-run1.md)）。续接、工具拒绝、中断（S6-3 到 S6-5）仍需逐次批准。[S6 规划](docs/appserver-s6-plan.md)、[能力表](docs/adapter-capabilities.md)
+- 2026-10-23 S6-2 经过 Hub 走通了一次 supervised 最小回合，PASS，只认定当次（`evidence/s6-2-real-run-1-pass`，[实录](docs/appserver-s6-2-2026-10-23-run1.md)）。同日 S6-3 经过 Hub 完成一次原生续接（冷恢复后答出暗号），PASS，只认定当次（`evidence/s6-3-real-run-1-pass`，[实录](docs/appserver-s6-3-2026-10-23-run1.md)）。工具拒绝和中断（S6-4、S6-5）仍需逐次批准。[S6 规划](docs/appserver-s6-plan.md)、[能力表](docs/adapter-capabilities.md)
 
 **2026-10-22 中断与原生子 Agent 观测**：可以对活动回合发送 `turn/interrupt`，只有 provider 报告的终态才算确认停止，否则保留名额；能观测到原生子 Agent，但不能控制；页面加入“中断本轮”。只在离线桩上验证，真实中断（S4）未验证。[说明](docs/conversation-backend.md)
 
