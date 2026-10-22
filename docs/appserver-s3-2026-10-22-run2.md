@@ -65,3 +65,54 @@ stderr 中有 5 行与第一次相同的 `codex_skills_extension` 错误（安�
 | `identity-jlq59qic\report.json`（复用的步骤 A） | 1025 | 2026-10-22 02:44:07 | `3d44216cf625f0fa205bf6070a3e324f963ffd1876378ef49fbff9dbb01b66a4` |
 
 分支合并时，把上表并入证据清单。
+
+## 补充调查（2026-10-22 晚，离线；以上原始结论与证据不变）
+
+用户要求核对本次 rollout 第 12、13、16 行，并查清命令如何映射到 commandExecution。全程没有启动 Codex，也没有模型回合。
+
+### rollout 记录
+
+文件位于长期 home，不入库：`C:\Users\Administrator\AppData\Local\AgentHub\codex-home\sessions\2026\10\22\rollout-2026-10-22T03-02-17-01a15fd7-ba60-7b01-9a22-aef7fe05772e.jsonl`。共 16 行，50337 字节，SHA-256 `f4bd7cf5e7c6abca19d0f7ffc3bb8be7e6b698be3760061ecfb299216d4f4502`。其中含提示词、模型输出和账号限额信息，这里只记录必要字段。
+
+| 行 | 时间（UTC） | 内容 |
+|---|---|---|
+| 8 | 19:02:21.780 | `turn_context`：approval_policy `on-request`，reviewer `user`，sandbox `read-only`，文件系统 `restricted`（根目录只读），网络 `restricted`，cwd 为本次工作目录 |
+| 12 | 19:02:24.750 | `custom_tool_call`，名称 `exec`（代码模式的外层工具），call_id `call_5194062a…`。脚本调用 `tools.exec_command`：`cmd` **与固定命令逐字相同**，`sandbox_permissions: "require_escalated"`，附有一句模型写的请求批准说明（未转录） |
+| 13 | 19:02:24.814 | 同一 call_id 的 `custom_tool_call_output`：`aborted by user after 0.1s`。这里的“user”是 Codex 对中断的统称；本次中断由探针停止进程引起，用户没有操作 |
+| 14 | 19:02:24.823 | `token_count`，`info` 为空：没有本回合用量 |
+| 15 | 19:02:24.833 | 通用的 `turn_aborted` 开发者提示（“被中止的工具可能已部分执行”），不针对任何具体命令 |
+| 16 | 19:02:24.843 | `turn_aborted`，turn ID 与本回合一致，reason `interrupted`，duration_ms 6709 |
+
+### 被测版本的命令映射（源码核实）
+
+被测程序报告的版本是 `codex-cli 0.163.0-alpha.10.2`，GitHub 上存在同名标签 `rust-v0.163.0-alpha.10.2`。以下各条都按这个标签核对：
+
+1. 模型调用代码模式的外层 `exec`（JavaScript）；脚本里的 `tools.exec_command` 是嵌套调用，`call_id = format!("{PUBLIC_TOOL_NAME}-{uuid}")`。本次 item ID `exec-c7ef8bd6-…` 与这个格式一致。外层 `exec` 自身不产生 thread item：`core/src/event_mapping.rs` 的 `parse_turn_item` 对 CustomToolCall 及其输出返回 None。
+2. unified exec 的 `get_command`（`core/src/tools/handlers/unified_exec.rs`）返回 `shell.derive_exec_args(&args.cmd, use_login_shell)`。模型没有指定 `shell` 时，使用会话 shell。
+3. `derive_exec_args`（`core/src/shell.rs`）对 PowerShell 生成 `[shell_path, ("-NoProfile"，仅当不是登录 shell), "-Command", cmd]`，对 Cmd 生成 `[shell_path, "/c", cmd]`。
+4. Windows 上的会话 shell（`shell-command/src/shell_detect.rs`）按以下顺序选取：
+   - 先在 PATH 中找 `pwsh`，再查 `C:\Program Files\PowerShell\7\pwsh.exe`；
+   - 再在 PATH 中找 `powershell`，再查 `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`；
+   - 都没有时用 `cmd.exe`。
+
+   本机没有 pwsh，PATH 中的 powershell 位于 `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`。
+5. 审批（`core/src/tools/runtimes/unified_exec.rs` 的 `approval_action`）使用未经修改的这份 argv。UTF-8 前缀 `prefix_powershell_script_with_utf8` 只在真正派生进程时才加上，不会出现在审批里。
+6. app-server 处理 `ExecApprovalRequest`（`app-server/src/bespoke_event_handling.rs`）时，先发待决的 `item/started`，再发审批请求：
+   - 待决 item：id 为 call_id，source 为 `agent`，状态 `inProgress`，processId 为空；`command = redact_secrets(shlex_join(argv))`。
+   - 审批请求：`command = shlex_join(argv)`。
+   - `shlex_join` 来自 `shell-command/src/parse_command.rs`，调用 shlex 的 `try_join`；argv 含 NUL 时，字符串固定为 `<command included NUL byte>`。
+7. 真正执行时，core 发出的 Begin 事件（`core/src/unified_exec/process_manager.rs`）在审批与派生之后，带 `processId`，source 为 `unifiedExecStartup`。
+8. 在 on-request 策略且文件系统受限时，`default_exec_approval_requirement` 返回 `NeedsApproval`。orchestrator 在这个分支中先请求审批，再进行第一次运行尝试。
+
+### 结论更新
+
+- **第二次运行越界的原因（推断）**：模型请求的内层命令与固定命令逐字相同。但 commandExecution 的 `command` 字段按源码是外层 PowerShell argv 拼接后的字符串，例如 `'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Command 'cmd.exe /d /c "echo S3_EXECUTED>S3_EXECUTED.txt"'`，所以不可能等于裸的固定命令。旧规则用 `command == 固定命令` 比较，因而必然判为越界。这是**探针判定缺陷**，不是模型偏离。由于当时只保存了“是否一致”，`command` 原文无法逐字核对；这一结论来自 rollout 与源码，属于推断。
+- **审批当时即将到来（推断）**：processId 为空的 commandExecution `item/started`，按源码只会来自审批请求处理中的待决 item；真正执行后的 Begin 会带 processId。探针在读到审批请求之前就中止了。
+- **执行情况**：按源码，`NeedsApproval` 时先审批再运行。rollout 显示外层调用在 0.1 秒后中止，标记文件不存在，因此没有执行证据，而且时序与“命令在等待审批”一致。由于命令原文和 core 内部状态都没有直接证据，仍不宣称“已证明未执行”。
+- **回合终态**：rollout 第 16 行表明，Codex 在本地把这个回合记为 `turn_aborted / interrupted`，由探针停止进程引起。协议层没有收到 `turn/completed`，所以原记录中的 `terminal_confirmed: false` 保持不变；“回合已结束”现在有本地 rollout 作为旁证。
+- **另外两处判定缺陷（同一次核实发现）**：
+  - unified exec 审批的 `environmentId` 总是 `"local"`：`core/src/tools/approvals.rs` 传入 `Some(environment_id)`，`exec-server` 中 `LOCAL_ENVIRONMENT_ID = "local"`。
+  - 审批调用传入 `available_decisions: None`。默认列表（`protocol/src/approvals.rs`）只有 Approved、可选的 ApprovedExecpolicyAmendment 和 Abort，**不含 decline**；但 app-server 不会拿客户端的决定去对照这个列表：`decline` 映射为 `denied("rejected by user")`，并以 `declined` 状态、source `agent`、processId 为空完成该 item。
+  - 旧规则要求 `environmentId` 为空、列表中含 decline。即使命令匹配通过，也会在审批这一步误判为越界。
+
+这些规则的修订见 [S3 方案](appserver-s3-probe.md) 的“命令包装与审批字段核实”一节。修订只用于今后新申请的运行，不重新判定第二次运行。
