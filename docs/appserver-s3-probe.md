@@ -19,6 +19,13 @@
     2. 重新执行步骤 A，这次不能复用旧证据；
     3. 如果报告的版本号不是 `0.163.0-alpha.10.2`，先按新版本的标签重新核对修订二的源码依据，再申请模型回合。
   - 用户已批准阶段 0（重新固定）和阶段 A（零模型检查），**暂不批准阶段 B**。阶段 0 已完成：`S3_CODEX_IDENTITY` 已改为上面的新文件。阶段 A 的结果见下一条。
+- **阶段 A 结果（2026-10-22 20:41，所测提交 `0cea338`）**：
+  - 程序身份一致，21/21 COMPATIBLE，模型回合 0 次；
+  - **版本变为 `codex-cli 0.163.0-alpha.11`**；
+  - schema 只有 realtime 相关的 `ThreadRealtimeStartParams` 有变化；
+  - 离线源码核对：修订二依据的 17 个文件中，16 个在 alpha.11 上的 blob 与 alpha.10.2 相同；`core/src/session/mod.rs` 不同，但相关函数已直接核对，行为不变。修订二的规则对 alpha.11 仍然适用，不需要改代码。
+  - 详见 [阶段 A 记录](appserver-s3-identity-2026-10-22.md)。
+  - 阶段 B 没有运行，需要另行批准。
 
 ## 目的与固定范围
 
@@ -271,7 +278,14 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\appserver_s3.py --mode s
 
 ## 固定版本源码依据（`rust-v0.163.0-alpha.10.2`）
 
-被测程序报告的版本是 `codex-cli 0.163.0-alpha.10.2`，下列链接都固定在同名标签上。所有路径都在 `codex-rs/` 下，2026-10-22 逐项核对。
+第一、二次运行的被测程序报告的版本是 `codex-cli 0.163.0-alpha.10.2`，下列链接都固定在同名标签上。所有路径都在 `codex-rs/` 下，2026-10-22 逐项核对。
+
+重新固定后，程序报告的版本为 `0.163.0-alpha.11`。对下表 17 个文件的复核结果：
+
+- 16 个文件在标签 `rust-v0.163.0-alpha.11` 上的 git blob 与 alpha.10.2 相同；
+- [core/src/session/mod.rs @ alpha.11](https://github.com/openai/codex/blob/rust-v0.163.0-alpha.11/codex-rs/core/src/session/mod.rs) 不同，但其中的 `request_command_approval` 已直接核对，行为不变。
+
+详见 [阶段 A 记录](appserver-s3-identity-2026-10-22.md)。
 
 | 事实 | 源码 |
 |---|---|
