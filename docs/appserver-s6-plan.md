@@ -334,7 +334,11 @@ supervised 放行的条件，全部由适配器代码判断：
   - 同一批通知中排在终态之后的事件被丢弃。改为计入 `late_events`。
   
   同时统一了“门禁”相关的用词，见[会话后端契约](conversation-backend.md)“S6-1”一节中的术语。
-- **S6-2**：2026-10-23 执行一次，PASS，只认定当次（`evidence/s6-2-real-run-1-pass`）。
+- **S6-2**：2026-10-23 执行一次，PASS，只认定当次（`evidence/s6-2-real-run-1-pass`）。按用户要求以现有证据收口，不追加重复运行。
+- **S6-3 离线准备**：
+  - 驱动 `tools/probes/appserver_s6_3.py` 和反例测试；
+  - 适配器新增审计字段 `opening_method`、`input_sha256`、`resume_check`、`turn_id_reused`、`process_id`；
+  - 修正后代进程判定中 PID 复用导致的误报（说明见[会话后端契约](conversation-backend.md)“S6-3 的离线准备”）。
 - **仍未验证**：S6-3 到 S6-5、子 Agent 关闭路径（S6-V）、accept 链（S7）。
 
 ## 10. S6-2 单次真实运行申请

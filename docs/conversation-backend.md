@@ -388,6 +388,23 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - 恢复时的用量重放按 S5 修订后的规则处理：只接受一条，带本 thread 和上一个回合的 ID，在 `turn/started` 之前到达，记入 `replayed_usage`，不算本回合的用量。其余的重放计入 `usage_anomalies`。
 - app-server 和 stdio 桩的 stderr 日志写到 `workdir_root/_logs/`，cwd 保持为空。
 
+### S6-3 的离线准备（2026-10-23）
+
+- **适配器的审计字段**：执行记录新增以下字段，都只有 ID、哈希和布尔值，不含文本。
+  - `opening_method`：实际发出的是 `thread/start` 还是 `thread/resume`；
+  - `input_sha256`：`turn/start` 实际发送的输入的 SHA-256；
+  - `resume_check`：恢复应答中返回的回合数、上一个回合是否存在、它的状态、其中是否有 userMessage；
+  - `turn_id_reused`：续接后的回合是否复用了上一个回合的 ID。复用时，这个回合的事件和上一个回合的用量重放无法区分，原因文字会写明“usage not attributable”；
+  - `process_id`：本次 app-server 进程的 PID，供驱动确认它已经退出。
+- **后代进程判定的修正**：
+  - Windows 会复用 PID，进程的父 PID 在父进程退出后也不会更新。离线时观察到一个无关的托盘程序（`acrotray.exe`），它早已退出的父进程的 PID 恰好被新的桩启动器复用了，于是被误算成后代，并被判为“残留”。
+  - 现在只有当子进程的创建时间不早于父进程时，才算父子关系；判断“残留”时，还要求 PID、映像名和创建时间都一致，被新进程复用的 PID 不算残留。读不到创建时间时，按保守处理保留这条关系。
+  - S6-2 的真实运行中，后代名单前后都为空，不受影响。S4、S5 探针中的同名函数有同样的弱点，但它只会多报、不会漏报，而且当时的名单都为空，所以没有改动已收口的 S4、S5 代码。
+- **stdio 桩**：
+  - 工厂的关闭宽限期设为 3 秒，与真实 factory 一致。venv 的 python.exe 是一个启动器，真正的解释器是它的子进程，关闭后可能还在退出中。
+  - 新增一个“thread 存储”状态文件，放在 `_logs` 下、cwd 之外，让后一个桩进程能返回前一个回合（包括 userMessage），用来离线模拟冷恢复。
+  - 新增场景：`recall`、`recall-forgetful`、`recall-tool`、`recall-native`、`plant-tool`、`recall-same-turn-id`、`recall-wrong-thread`、`recall-replay-twice`。
+
 ### 离线桩
 
 - 线程应答回显所请求的 cwd，并且在请求 read-only 时，把 `sandbox` 报告为对象。

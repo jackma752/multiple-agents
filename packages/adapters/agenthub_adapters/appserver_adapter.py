@@ -50,6 +50,7 @@ Rules this adapter enforces:
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import ntpath
@@ -222,6 +223,17 @@ def command_view(text: Any) -> dict:
     if name in ("cmd.exe", "cmd") and len(argv) == 3 and argv[1].lower() == "/c":
         return {"parsed": True, "shell": argv[0], "shell_flags": [argv[1]], "inner_command": argv[2]}
     return {"parsed": True, "argv": argv}
+
+
+def resume_structure(result: dict, previous_turn_id: str) -> dict:
+    """Structural facts of a thread/resume answer about the previous turn; no text."""
+    thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
+    turns = [t for t in thread.get("turns") or [] if isinstance(t, dict)]
+    previous = next((t for t in turns if t.get("id") == previous_turn_id), None)
+    items = [i for i in (previous or {}).get("items") or [] if isinstance(i, dict)]
+    return {"turns_returned": len(turns), "previous_turn_present": previous is not None,
+            "previous_turn_status": str(previous.get("status") or "") if previous else "",
+            "previous_turn_user_message": any(i.get("type") == "userMessage" for i in items)}
 
 
 def _thread_id(result: dict) -> str:
@@ -652,16 +664,24 @@ class AppServerCodexAdapter(AdapterContract):
         failure: Optional[str] = None
         timed_out = False
         descendants: Optional[dict] = None
+        # What actually went over the wire, for audits (no text, ids and hashes only).
+        pid = getattr(transport, "pid", None)
+        facts: dict[str, Any] = {
+            "process_id": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
+            "opening_method": "", "input_sha256": "", "resume_check": None, "turn_id_reused": False,
+        }
         try:
             client.start()
             session.initialize(client_name="agent-hub", version=self.version)
             if resume_id:
+                facts["opening_method"] = THREAD_RESUME
                 result = client.request(THREAD_RESUME, {"threadId": resume_id, "cwd": workdir,
                                                         **THREAD_SETTINGS})
                 thread_id = _thread_id(result)
                 if thread_id != resume_id:
                     raise _Refused("thread/resume returned a different thread id")
             else:
+                facts["opening_method"] = THREAD_START
                 result = client.request(THREAD_START, {"cwd": workdir, **THREAD_SETTINGS})
                 thread_id = _thread_id(result)
             if not thread_id:
@@ -671,10 +691,11 @@ class AppServerCodexAdapter(AdapterContract):
             if problems:
                 raise _Refused("appserver_settings_mismatch: " + ",".join(problems))
             if resume_id:
-                turns = (result.get("thread") or {}).get("turns") or []
-                if not any(isinstance(t, dict) and t.get("id") == previous_turn_id for t in turns):
+                facts["resume_check"] = resume_structure(result, previous_turn_id)
+                if not facts["resume_check"]["previous_turn_present"]:
                     raise _Refused("thread/resume did not return the previous turn; history not confirmed")
             turn_requested = True
+            facts["input_sha256"] = hashlib.sha256(snapshot.task_input.encode("utf-8")).hexdigest()
             result = client.request(TURN_START, {
                 "threadId": thread_id, "input": [{"type": "text", "text": snapshot.task_input}],
                 **TURN_POLICY,
@@ -682,6 +703,10 @@ class AppServerCodexAdapter(AdapterContract):
             turn_id = str((result.get("turn") or {}).get("id") or result.get("turnId") or "")
             if not turn_id:
                 raise AppServerError("turn/start returned no turn id")
+            # A resumed turn must be a NEW turn. If the server reuses the previous
+            # id, this turn's events and the previous turn's usage replay cannot
+            # be told apart: recorded, and the usage is not trusted.
+            facts["turn_id_reused"] = bool(resume_id) and turn_id == previous_turn_id
             turn = _Turn(thread_id, turn_id, previous_turn_id)
             with self._lock:
                 self._live[invocation_id] = (client, turn)
@@ -720,7 +745,7 @@ class AppServerCodexAdapter(AdapterContract):
             self._stop_requests.discard(invocation_id)
         return self._settle(invocation_id, thread_id, turn, turn_requested, failure,
                             timed_out, stop_requested, local_exit_confirmed, resume_id, emit,
-                            workdir=workdir, descendants=descendants)
+                            workdir=workdir, descendants=descendants, facts=facts)
 
     def _pump(self, client: AppServerClient, turn: _Turn, emit: Emit, gate: Any = None) -> bool:
         """Follow this turn until its terminal event. False on timeout."""
@@ -1079,8 +1104,8 @@ class AppServerCodexAdapter(AdapterContract):
                 left = proc_tree.survivors(before, float(grace)) if before else []
             except Exception:  # noqa: BLE001
                 left = None
-            report = {"before_close": [{"pid": p, "image": n} for p, n in before],
-                      "after_grace": None if left is None else [{"pid": p, "image": n} for p, n in left],
+            report = {"before_close": [{"pid": e[0], "image": e[1]} for e in before],
+                      "after_grace": None if left is None else [{"pid": e[0], "image": e[1]} for e in left],
                       "grace_seconds": float(grace)}
         return exited, report
 
@@ -1088,7 +1113,8 @@ class AppServerCodexAdapter(AdapterContract):
                 turn_requested: bool, failure: Optional[str], timed_out: bool,
                 stop_requested: bool, local_exit_confirmed: bool,
                 resume_id: Optional[str], emit: Emit, *, workdir: str = "",
-                descendants: Optional[dict] = None) -> AdapterStartResult:
+                descendants: Optional[dict] = None,
+                facts: Optional[dict] = None) -> AdapterStartResult:
         if failure is not None:
             verdict, terminal, detail = FAILED, True, failure
         elif stop_requested:
@@ -1125,6 +1151,8 @@ class AppServerCodexAdapter(AdapterContract):
             detail = (f"parent turn ended {turn.turn_status or 'without status'}; native child "
                       f"agents without end evidence: {', '.join(unfinished)}; "
                       "not counted in Hub quota, quota slot kept")
+        if (facts or {}).get("turn_id_reused"):
+            detail += "; resumed turn reused the previous turn id: its usage is not attributable"
         tool_state = turn.tool_process_state() if turn is not None else "none"
         if tool_state == "unknown":
             detail += "; tool items without completion: tool process state unknown, not claimed stopped"
@@ -1167,6 +1195,7 @@ class AppServerCodexAdapter(AdapterContract):
             "verdict": verdict,
             "terminal": terminal,
             "detail": detail,
+            **(facts or {}),
         }
         if thread_id and terminal and turn_requested:
             payload["native_session"] = {"transport": TRANSPORT, "thread_id": thread_id}

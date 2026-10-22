@@ -615,9 +615,23 @@ def test_stdio_call_records_descendants_and_keeps_the_cwd_empty(tmp_path):
 
 def test_survivors_are_only_recorded(monkeypatch):
     monkeypatch.setattr(proc_tree, "process_table", lambda: [(11, 1, "b.exe"), (12, 1, "c.exe")])
-    assert proc_tree.survivors([(10, "a.exe"), (11, "b.exe")], 0) == [(11, "b.exe")]
-    assert proc_tree.descendants(1, [(11, 1, "b.exe"), (13, 11, "d.exe"), (14, 9, "e.exe")]) == [
+    unknown = lambda pid: None  # noqa: E731 - creation times unreadable: links are kept
+    assert proc_tree.survivors([(10, "a.exe"), (11, "b.exe")], 0, unknown) == [(11, "b.exe")]
+    assert proc_tree.descendants(1, [(11, 1, "b.exe"), (13, 11, "d.exe"), (14, 9, "e.exe")], unknown) == [
         (11, "b.exe"), (13, "d.exe")]
+
+
+def test_a_reused_parent_id_does_not_make_an_old_process_a_descendant():
+    """Seen offline: a tray program whose dead parent's id was reused by a fresh launcher."""
+    born = {100: 5000, 101: 5001, 77: 10}  # 77 is far older than its "parent" 100
+    table = [(101, 100, "python.exe"), (77, 100, "acrotray.exe")]
+    assert proc_tree.descendants(100, table, born.get) == [(101, "python.exe")]
+
+
+def test_an_id_reused_by_a_new_process_is_not_a_survivor(monkeypatch):
+    monkeypatch.setattr(proc_tree, "process_table", lambda: [(11, 1, "b.exe")])
+    assert proc_tree.survivors([(11, "b.exe", 500)], 0, lambda pid: 900) == []  # another process now
+    assert proc_tree.survivors([(11, "b.exe", 500)], 0, lambda pid: 500) == [(11, "b.exe", 500)]
 
 
 # --------------------------------------------------------------------------- #

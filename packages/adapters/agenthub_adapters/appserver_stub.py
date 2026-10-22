@@ -48,6 +48,15 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
                      completes before the turn does
 ``tool-output-only`` command output notifications with no item lifecycle
 ``unbound-delta``    a delta without threadId, then a normal reply
+``recall``           S6-3: a fresh thread replies STORED; a resumed one answers
+                     the code word found in the stored earlier turn
+``recall-forgetful`` the resumed turn answers UNKNOWN
+``recall-tool``      the resumed turn runs a command item before answering
+``recall-native``    the resumed turn spawns a native child (no end evidence)
+``plant-tool``       the planting turn runs a command item
+``recall-same-turn-id`` the resumed turn reuses the previous turn id
+``recall-wrong-thread`` thread/resume answers with another thread id
+``recall-replay-twice`` the resume sends the previous turn's usage twice
 ===================  ==========================================================
 
 Thread answers echo the requested cwd and report ``sandbox`` as the object the
@@ -119,7 +128,21 @@ SCENARIOS = (
     "tool-unfinished",
     "tool-output-only",
     "unbound-delta",
+    "recall",
+    "recall-forgetful",
+    "recall-tool",
+    "recall-native",
+    "plant-tool",
+    "recall-same-turn-id",
+    "recall-wrong-thread",
+    "recall-replay-twice",
 )
+
+#: Two-call memory scenarios (S6-3): the first call plants, the resumed one recalls.
+RECALL_SCENARIOS = frozenset({
+    "recall", "recall-forgetful", "recall-tool", "recall-native", "plant-tool",
+    "recall-same-turn-id", "recall-wrong-thread", "recall-replay-twice",
+})
 
 #: ``approval-default``: the S3 shape of a wrapped command and the tested
 #: build's default decision list.
@@ -157,7 +180,8 @@ class ScriptedAppServer:
                  thread_id: str = "stub-thread-0001",
                  turn_id: str = "stub-turn-0001",
                  on_sent: Optional[Callable[[dict], None]] = None,
-                 history: Optional[list[dict]] = None) -> None:
+                 history: Optional[list[dict]] = None,
+                 state_path: Optional[str] = None) -> None:
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}; known: {list(SCENARIOS)}")
         self.scenario = scenario
@@ -165,10 +189,16 @@ class ScriptedAppServer:
         self.thread_id = thread_id
         self.turn_id = turn_id
         self.on_sent = on_sent
-        #: Earlier turns of this thread (ids/statuses only), returned on resume.
-        self.history = [dict(t) for t in (history or [])]
+        #: Optional file standing in for the server's thread store, so a later
+        #: stub PROCESS can return earlier turns WITH their user message (offline
+        #: stand-in for a cold resume). Kept beside the work dirs, never inside.
+        self.state_path = state_path
+        stored = self._load_state()
+        #: Earlier turns of this thread, returned on resume.
+        self.history = stored if stored else [dict(t) for t in (history or [])]
         self.turn_started = False
         self.resumed = False
+        self.current_input = ""
         self.sent: list[dict] = []
         self.received: list[dict] = []
         self._answered_approvals: list[dict] = []
@@ -268,7 +298,10 @@ class ScriptedAppServer:
         if method in (THREAD_START, THREAD_RESUME):
             resume = method == THREAD_RESUME
             turns = [] if not resume or self.scenario == "resume-no-history" else list(self.history)
-            thread = {"id": self.thread_id, "turns": turns}
+            thread_id = self.thread_id
+            if resume and self.scenario == "recall-wrong-thread":
+                thread_id = "stub-thread-other"
+            thread = {"id": thread_id, "turns": turns}
             # Schema: the notification carries `thread` (no top-level threadId).
             self.notify(THREAD_STARTED, {"thread": thread})
             sandbox: Any = "read-only"
@@ -290,13 +323,18 @@ class ScriptedAppServer:
                 previous = self.history[-1]["id"] if self.history else None
                 if previous and self.scenario != "replay-after-start":
                     owner = "stub-turn-unknown" if self.scenario == "replay-other-turn" else previous
-                    for _ in range(2 if self.scenario == "replay-twice" else 1):
+                    twice = self.scenario in ("replay-twice", "recall-replay-twice")
+                    for _ in range(2 if twice else 1):
                         self._replay_usage(owner)
             return
 
         if method == TURN_START:
             self.turn_status = "inProgress"
             self.turn_started = True
+            pieces = params.get("input") or []
+            self.current_input = "".join(p.get("text") or "" for p in pieces if isinstance(p, dict))
+            if self.scenario == "recall-same-turn-id" and self.resumed and self.history:
+                self.turn_id = self.history[-1]["id"]  # a server that reuses the previous id
             self.notify(TURN_STARTED, {"threadId": self.thread_id,
                                        "turn": {"id": self.turn_id, "items": [],
                                                 "status": self.turn_status}})
@@ -353,7 +391,67 @@ class ScriptedAppServer:
             "tokenUsage": {"last": dict(REPLAY_USAGE), "total": dict(REPLAY_USAGE)},
         })
 
+    def _load_state(self) -> list[dict]:
+        if not self.state_path:
+            return []
+        try:
+            with open(self.state_path, encoding="utf-8") as fh:
+                threads = json.load(fh)
+        except (OSError, ValueError):
+            return []
+        return [dict(t) for t in (threads.get(self.thread_id) or []) if isinstance(t, dict)]
+
+    def _save_turn(self, status: str) -> None:
+        if not self.state_path:
+            return
+        try:
+            with open(self.state_path, encoding="utf-8") as fh:
+                threads = json.load(fh)
+        except (OSError, ValueError):
+            threads = {}
+        turns = [t for t in threads.get(self.thread_id) or [] if t.get("id") != self.turn_id]
+        turns.append({"id": self.turn_id, "status": status, "items": [
+            {"type": "userMessage", "content": [{"type": "text", "text": self.current_input}]}]})
+        threads[self.thread_id] = turns
+        with open(self.state_path, "w", encoding="utf-8") as fh:
+            json.dump(threads, fh)
+
+    def _recalled_code(self) -> Optional[str]:
+        """What a model with this history would answer: a code word from an earlier turn."""
+        import re
+
+        for turn in self.history:
+            for item in turn.get("items") or []:
+                found = re.search(r"S\d-[A-Z0-9]{10}", json.dumps(item))
+                if found:
+                    return found.group(0)
+        return None
+
+    def _drive_recall(self) -> None:
+        """Plant (a fresh thread) acknowledges; recall (a resumed one) answers from history."""
+        scenario = self.scenario
+        if not self.resumed:
+            if scenario == "plant-tool":
+                self._emit_item("item-cmd-1", "commandExecution")
+            reply = "STORED"
+        else:
+            if scenario == "recall-tool":
+                self._emit_item("item-cmd-1", "commandExecution")
+            if scenario == "recall-native":
+                spawn = {"id": "item-collab-1", "type": "collabAgentToolCall", "tool": "spawnAgent",
+                         "receiverThreadIds": ["child-thread-1"], "agentsStates": {},
+                         "status": "completed"}
+                self.notify(ITEM_COMPLETED, {"item": spawn, "threadId": self.thread_id,
+                                             "turnId": self.turn_id})
+            code = None if scenario == "recall-forgetful" else self._recalled_code()
+            reply = code or "UNKNOWN"
+        self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
+                                          "threadId": self.thread_id, "delta": reply})
+        self._emit_item("item-1", "agentMessage")
+        self._finish_turn(TURN_STATUS_COMPLETED)
+
     def _finish_turn(self, status: str) -> None:
+        self._save_turn(status)
         self.turn_status = status
         self.notify(TURN_COMPLETED, {
             "threadId": self.thread_id,
@@ -400,6 +498,9 @@ class ScriptedAppServer:
             return
         if scenario == "approval-default":
             self._drive_default_approval()
+            return
+        if scenario in RECALL_SCENARIOS:
+            self._drive_recall()
             return
         if scenario == "tool-unfinished":
             # Ran without asking (sandboxed) and never reported its end.
@@ -724,6 +825,11 @@ def bundled_stdio_stub_path() -> str:
 class StdioStubFactory:
     """Trusted offline factory: the bundled stub as a real child process."""
 
+    #: The venv's python.exe is a launcher with the real interpreter as its
+    #: child; that child may still be exiting right after the launcher closed
+    #: (the S5 finding). Same grace as the real factory; returns early once gone.
+    close_grace_seconds = 3.0
+
     def __init__(self, scenario: str = "happy", *, stderr_dir: Optional[str] = None) -> None:
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}")
@@ -747,6 +853,8 @@ class StdioStubFactory:
         self.turn_ids.append(turn_id)
         logs = self.stderr_dir or os.path.join(os.path.dirname(os.path.abspath(workdir)), "_logs")
         os.makedirs(logs, exist_ok=True)
+        # The stub's "thread store" lives beside the logs, never in the cwd.
+        env["STUB_APPSERVER_STATE"] = os.path.join(logs, "stub-thread-state.json")
         stderr = os.path.join(logs, f"stub-{invocation_id}.log")
         return StdioTransport(list(self.argv), env=env, cwd=workdir, stderr_path=stderr)
 
@@ -780,7 +888,7 @@ def run_stdio(scenario: str) -> int:
         earlier = []
     history = [{"id": t, "status": "completed", "items": []} for t in earlier if isinstance(t, str)]
     server = ScriptedAppServer(scenario, turn_id=os.environ.get("STUB_APPSERVER_TURN_ID") or "stub-turn-0001",
-                               history=history)
+                               history=history, state_path=os.environ.get("STUB_APPSERVER_STATE") or None)
     server._out = _Stdout()   # noqa: SLF001 - the stdio role of the same object
     server._in = _Stdin()     # noqa: SLF001
     server.serve_forever()
