@@ -94,6 +94,12 @@ def main():
             if phase == "plant":
                 if scenario == "plant-timeout":
                     continue
+                if scenario == "plant-tool":
+                    note("item/started", {**ids(), "item": {"id": "exec-0", "type": "commandExecution", "command": "x",
+                                                             "cwd": os.getcwd(), "status": "inProgress", "processId": "55"}})
+                    continue
+                if scenario == "plant-provider-error":
+                    note("error", {**ids(), "error": {"message": "SYNTHETIC provider error"}, "willRetry": False})
                 say("STORED")
                 status = "failed" if scenario == "plant-failed" else "completed"
                 thread["turns"].append({"id": turn_id, "status": status, "items": [
@@ -129,6 +135,8 @@ def main():
                 note("item/agentMessage/delta", {**ids(), "itemId": "msg-2", "delta": "late"})
         else:
             return 3
+    if scenario == "plant-exit-nonzero" and phase == "plant":
+        return 1  # the turn completed, but process A does not exit cleanly
     return 0
 
 

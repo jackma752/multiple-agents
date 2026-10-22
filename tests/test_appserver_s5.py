@@ -21,7 +21,7 @@ SPEC.loader.exec_module(S5)
 CODE = "S5-K7QX2M9PLA"
 
 
-def run(monkeypatch, tmp_path, scenario):
+def run(monkeypatch, tmp_path, scenario, *, plant_exit=(0, None)):
     monkeypatch.setattr(S5, "RUN_ROOT", tmp_path / "evidence")
     monkeypatch.setattr(S5.S2, "WORK_ROOT", tmp_path)
     monkeypatch.setattr(S5.S1, "preflight", lambda *_: pytest.fail("offline only"))
@@ -36,8 +36,13 @@ def run(monkeypatch, tmp_path, scenario):
         assert [m["method"] for m in recall["sent"]][:3] == ["initialize", "initialized", "thread/resume"]
         assert recall["pid"] != plant["pid"] and r["process_relation"]["first_process_exited_before_second"]
     assert sum(p.get("turn_attempts", 0) for p in (plant, recall)) <= 2
-    for phase in (plant, recall):
-        assert phase.get("exit_code") in (0, None), "the peer exits 3 on an answer or a code word in the recall prompt"
+    assert plant.get("exit_code") in plant_exit and recall.get("exit_code") in (0, None), \
+        "the peer exits 3 on an answer or a code word in the recall prompt"
+    if plant:
+        # The gate before B is exactly the final rule set applied to phase 1.
+        assert r["plant_health"]["healthy"] == (not r["plant_health"]["blockers"])
+        assert bool(recall) == r["plant_health"]["healthy"] or "first_process_alive_before_resume" in r["reason_codes"]
+        assert "plant_health_inconsistent" not in r["reason_codes"]
     return code, r
 
 
@@ -100,6 +105,155 @@ def test_no_recall_turn_without_a_valid_resume(monkeypatch, tmp_path, scenario):
 def test_no_second_process_after_a_bad_plant(monkeypatch, tmp_path, scenario):
     _, r = run(monkeypatch, tmp_path, scenario)
     assert "recall" not in r["phases"]
+
+
+# --------------------------------------------------------------------------- #
+# full phase-1 health check before process B (counterexamples)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("scenario,blocker,plant_exit", [
+    ("plant-provider-error", "plant:provider_error", (0,)),
+    ("plant-exit-nonzero", "plant:process_exit:1", (1,)),
+    ("plant-tool", "plant:tool_activity_observed", (0,)),
+])
+def test_unhealthy_phase_one_never_starts_process_b(monkeypatch, tmp_path, scenario, blocker, plant_exit):
+    _, r = run(monkeypatch, tmp_path, scenario, plant_exit=plant_exit)
+    assert "recall" not in r["phases"] and r["process_relation"] is None
+    assert r["plant_health"]["healthy"] is False and blocker in r["plant_health"]["blockers"]
+    assert r["probe_verdict"] == "INCONCLUSIVE" and {blocker, "resume_not_attempted"} <= set(r["reason_codes"])
+
+
+@pytest.mark.parametrize("tree,blocker", [
+    ({"available": True, "descendants_before_close": ["helper.exe"], "descendants_after_close": ["helper.exe"]},
+     "plant:descendants_survived_close"),
+    ({"available": False}, "plant:process_tree_unavailable"),
+])
+def test_phase_one_local_cleanup_is_part_of_the_gate(monkeypatch, tmp_path, tree, blocker):
+    original = S5.S5Client.close
+
+    def close(self):
+        original(self)
+        if self.phase == "plant":
+            self.process_tree = tree
+
+    monkeypatch.setattr(S5.S5Client, "close", close)
+    _, r = run(monkeypatch, tmp_path, "happy")
+    assert "recall" not in r["phases"] and blocker in r["plant_health"]["blockers"]
+    assert r["probe_verdict"] == "INCONCLUSIVE" and blocker in r["reason_codes"]
+
+
+class Transport500:
+    pid = 500
+
+    def write(self, data):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("afters,grace,survivors", [
+    # mid-exit at the first look, gone at the second: not a survivor
+    ([[(501, 999, "helper.exe")], []], 3.0, []),
+    # still there when the grace period is over: a survivor
+    ([[(501, 999, "helper.exe")]] * 50, 0.3, ["helper.exe"]),
+])
+def test_descendants_get_a_bounded_grace_period(monkeypatch, afters, grace, survivors):
+    tables = iter([[(500, 1, "codex.exe"), (501, 500, "helper.exe")], *afters])
+    monkeypatch.setattr(S5.S4, "process_table", lambda: next(tables))
+    monkeypatch.setattr(S5, "CLOSE_GRACE_SECONDS", grace)
+    c = S5.S5Client(Transport500(), workdir=str(ROOT), timeout=5, phase="plant", code_word=CODE)
+    c.close()
+    assert c.process_tree["available"] and c.process_tree["descendants_before_close"] == ["helper.exe"]
+    assert c.process_tree["descendants_after_close"] == survivors
+
+
+def test_phase_one_close_error_is_part_of_the_gate(monkeypatch, tmp_path):
+    original = S5.S5Client.close
+
+    def close(self):
+        original(self)
+        if self.phase == "plant":
+            raise OSError("synthetic close failure")
+
+    monkeypatch.setattr(S5.S5Client, "close", close)
+    _, r = run(monkeypatch, tmp_path, "happy")
+    assert "recall" not in r["phases"]
+    assert {"plant:cleanup_error:OSError", "plant:process_not_stopped"} <= set(r["plant_health"]["blockers"])
+
+
+def test_happy_phase_one_is_healthy_and_the_gate_matches_the_verdict(monkeypatch, tmp_path):
+    _, r = run(monkeypatch, tmp_path, "happy")
+    assert r["plant_health"] == {"healthy": True, "blockers": []} and r["probe_verdict"] == "PASS"
+
+
+@pytest.mark.parametrize("phase,code", [
+    ({}, "plant:not_run"),
+    ({"evidence": {"settings_verified": False, "matched": True, "status": "completed", "one_turn_started": True},
+      "process_stopped": True, "exit_code": 0, "turn_attempts": 1,
+      "process_tree": {"available": True, "descendants_after_close": []}}, "plant:settings_not_verified"),
+    ({"evidence": {"settings_verified": True, "matched": True, "status": "completed", "one_turn_started": False},
+      "process_stopped": True, "exit_code": 0, "turn_attempts": 1,
+      "process_tree": {"available": True, "descendants_after_close": []}}, "plant:turn_not_started_once"),
+    ({"evidence": {"settings_verified": True, "matched": True, "status": "completed", "one_turn_started": True},
+      "process_stopped": True, "exit_code": 0, "turn_attempts": 1, "reader_error_type": "AppServerProtocolError",
+      "process_tree": {"available": True, "descendants_after_close": []}}, "plant:reader_error:AppServerProtocolError"),
+    ({"evidence": {"settings_verified": True, "matched": True, "status": "completed", "one_turn_started": True},
+      "process_stopped": True, "exit_code": 0, "turn_attempts": 2,
+      "process_tree": {"available": True, "descendants_after_close": []}}, "plant:turn_attempts:2"),
+])
+def test_phase_problems_name_every_blocker(phase, code):
+    from agenthub_adapters.appserver_s5_evidence import plant_health
+    health = plant_health(phase)
+    assert health["healthy"] is False and code in health["blockers"]
+
+
+# --------------------------------------------------------------------------- #
+# work directory cleanup is part of the verdict
+# --------------------------------------------------------------------------- #
+
+def test_failed_workdir_removal_prevents_pass(monkeypatch, tmp_path):
+    original = Path.rmdir
+
+    def rmdir(self, *args, **kwargs):
+        if self.name.startswith("agenthub-s5-work-"):
+            raise PermissionError("synthetic: directory in use")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rmdir", rmdir)
+    _, r = run(monkeypatch, tmp_path, "happy")
+    assert r["workdir_empty"] is True and r["workdir_removed"] is False
+    assert r["probe_verdict"] == "INCONCLUSIVE" and "workdir_cleanup_failed:PermissionError" in r["reason_codes"]
+    assert r["phases"]["recall"]["recall"]["contains"] is True  # everything else succeeded
+
+
+def happy_result():
+    phase = {"evidence": {"settings_verified": True, "matched": True, "status": "completed", "one_turn_started": True,
+                          "usage_received": True, "reasons": [], "notes": [], "tool_activity": {"seen": False}},
+             "process_stopped": True, "exit_code": 0, "turn_attempts": 1, "client_reasons": [],
+             "process_tree": {"available": True, "descendants_after_close": []}}
+    recall = {**phase, "turn_id": "turn-2", "recall": {"contains": True, "exact": True},
+              "resume": {"rejected": False, "thread_id_matches": True, "history_returned": True}}
+    return {"phases": {"plant": {**phase, "turn_id": "turn-1"}, "recall": recall},
+            "plant_health": {"healthy": True, "blockers": []},
+            "process_relation": {"first_process_exited_before_second": True, "same_pid": False},
+            "workdir_empty": True, "workdir_removed": True}
+
+
+def test_judge_needs_the_workdir_removed_and_a_consistent_gate():
+    assert judge(happy_result()) == ("PASS", [])
+    r = happy_result()
+    r["workdir_removed"] = False
+    assert judge(r) == ("INCONCLUSIVE", ["workdir_not_removed"])
+    r = happy_result()
+    r["workdir_removed"], r["cleanup_error_type"] = False, "PermissionError"
+    assert judge(r) == ("INCONCLUSIVE", ["workdir_cleanup_failed:PermissionError"])
+    r = happy_result()
+    r["workdir_empty"] = None
+    assert judge(r)[0] == "INCONCLUSIVE" and "workdir_unreadable" in judge(r)[1]
+    r = happy_result()
+    r["plant_health"] = {"healthy": True, "blockers": ["plant:something_else"]}
+    assert judge(r) == ("INCONCLUSIVE", ["plant_health_inconsistent"])
 
 
 @pytest.mark.parametrize("alive", [True, None])

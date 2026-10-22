@@ -5,6 +5,12 @@
 ## 当前状态
 
 - **离线准备完成，真实 S5 尚未授权，也未执行。** S1–S4 的证据和结论保持不变。
+- 2026-10-22 按用户要求做了三项修正：
+  - 升级 pip 和 certifi，并核验证书信任；
+  - 启动 B 之前，做完整的阶段 1 健康检查；
+  - 工作目录清理失败纳入最终判定。
+
+  两进程方案和随机暗号方案保持不变。
 - 被测程序沿用固定文件 `bin\6257d9e8f63c0f2b\codex.exe`（`codex-cli 0.163.0-alpha.11`），复用步骤 A 的证据 `identity-hkzdmoqj`（COMPATIBLE），这次不执行程序。
 - S5 依赖的协议事实，已在现有捕获上离线核对，11/11。
 
@@ -30,7 +36,7 @@
 |---|---|---|
 | 阶段 1：写入 | 进程 A（新启动） | `initialize → initialized → thread/start → turn/start`（写入暗号） |
 | 关闭 A | — | 只通过本次句柄关闭；记录退出码和后代进程名单 |
-| 检查 | — | 阶段 1 正常结束、没有工具活动、A 的退出码为 0，并且进程快照中 **A 的 PID 已不存在**；否则不进入阶段 2 |
+| 检查 | — | **阶段 1 完整健康检查**，与最终判定调用同一个函数 `plant_health`（详见下文），并且进程快照中 **A 的 PID 已不存在**；任何一项不满足都不进入阶段 2 |
 | 阶段 2：恢复与回忆 | 进程 B（A 退出之后才启动，PID 不同） | `initialize → initialized → thread/resume(threadId=阶段 1 的 thread) → turn/start`（询问暗号） |
 
 - **模型回合上限为 2**：每个阶段 1 个，客户端在写出之前强制检查，总数超过 2 判 FAIL。
@@ -55,15 +61,32 @@
 
 - 暗号只在内存中与回复比对。结果中只保存暗号的 SHA-256 与长度，以及两个布尔值：`contains`（回复中出现暗号，**参与判定**）和 `exact`（回复恰好等于暗号，只记录）。模型的原文一律不保存。
 
+## 阶段 1 的健康检查（启动 B 之前；2026-10-22 修正）
+
+旧版只看终态、工具、退出码和异常几项。现在，启动 B 之前调用 `plant_health(plant)`，它与最终判定使用**同一组函数**（`phase_fail_codes` 与 `phase_problems`）。所以门槛和结论不会不一致；最终判定还会复核一次，不一致时记 `plant_health_inconsistent`。以下任何一项命中，结果中记录 `plant_health.blockers`，**不启动进程 B**：
+
+- 协议矛盾，或探针拒绝过外发；
+- 运行时异常、读取线程异常；
+- 设置未核验；
+- 终态不匹配，或状态不是 `completed`；
+- `turn/started` 不是恰好一次；回合尝试不是恰好一次；
+- 工具活动或服务端请求；
+- `error` 通知等提示，例如 `plant:provider_error`；
+- 进程 A 未停止、退出码不为 0，或关闭出错（`plant:cleanup_error:<类型>`）；
+- 后代进程名单取不到，或关闭后仍有残留。
+
+后代进程的“残留”指：关闭后 3 秒宽限期结束时仍然存在。正在退出、宽限期内消失的进程不算残留。结果中记录 `grace_seconds` 和 `waited_seconds`。
+
 ## 判定规则
 
 **PASS** 需要同时满足：
 
-- **阶段 1**：设置已核验；只有一次 `turn/started`；匹配的 `turn/completed` 状态为 `completed`；没有工具活动；进程 A 退出码为 0；后代进程名单可以取得，关闭后没有残留。
+- **阶段 1**：`plant_health` 没有任何阻塞项（见上节）。
 - **进程关系**：A 已从进程表中消失之后才启动 B，且 B 的 PID 与 A 不同。
 - **恢复**：没有被拒绝；返回的 thread ID 与阶段 1 相同；设置已核验；`thread.turns` 中有阶段 1 的回合，状态为 completed，且其中有包含暗号的 userMessage。
 - **阶段 2**：只有一次 `turn/started`，turn ID 与阶段 1 不同；匹配的终态为 `completed`；没有工具活动；收到用量；**回复中出现暗号**；进程 B 退出码为 0；关闭后没有残留后代进程。
-- 两个阶段合计恰好 2 个回合；工作目录为空，并已删除。
+- 两个阶段合计恰好 2 个回合。
+- 工作目录为空，并且**确实已删除**。删除失败时判 INCONCLUSIVE，记 `workdir_cleanup_failed:<类型>`；目录为空但没有尝试删除（例如某个进程没有停止），记 `workdir_not_removed`；无法读取，记 `workdir_unreadable`。
 
 **FAIL**：协议矛盾或越界：
 
@@ -85,7 +108,9 @@
 | 某阶段的终态问题 | `<阶段>:terminal_not_matched`、`<阶段>:turn_status:<状态>`、`<阶段>:timeout` |
 | 工具活动：一出现就**立即停止**该阶段，因为工具可能直接从磁盘读到历史，回忆就不再可信 | `<阶段>:tool_activity_observed`、`<阶段>:server_request_unanswered:<方法>` |
 | 阶段 2 缺用量 | `recall:usage_missing` |
-| 本地清理 | `<阶段>:process_exit:<码>`、`<阶段>:descendants_survived_close`、`<阶段>:process_tree_unavailable` |
+| 本地清理 | `<阶段>:process_exit:<码>`、`<阶段>:cleanup_error:<类型>`、`<阶段>:descendants_survived_close`、`<阶段>:process_tree_unavailable` |
+| 阶段 1 不健康，没有启动 B | 阶段 1 的各项阻塞代码，加上 `resume_not_attempted`、`recall:not_run` |
+| 工作目录清理 | `workdir_cleanup_failed:<类型>`、`workdir_not_removed`、`workdir_unreadable` |
 
 ## 与既有契约的关系
 
@@ -126,9 +151,18 @@ COMPATIBLE 11/11：
 
 ## 网络与证书
 
-S5 的子进程环境与 S1–S4 相同：代理 `127.0.0.1:8090`，加上 `CODEX_CA_CERTIFICATE=<venv certifi>`。
+S5 的子进程环境与 S1–S4 相同：代理 `127.0.0.1:8090`，加上 `CODEX_CA_CERTIFICATE=<venv certifi>`，路径不变。但**证书包的内容已经不同**：
 
-`f4a2866` 复核了项目的 pip、certifi 和代理证书：代理不拦截 TLS，因此没有需要信任的私有代理 CA；两个 certifi 包都没有被改动。现在 venv 的 `pip.ini` 让 pip 走代理，验证保持开启。详见 `docs/codex-proxy-setup.md` 第 7 节。
+| | S1–S4 的运行 | S5（本申请） |
+|---|---|---|
+| certifi | 2024.08.30，`cacert.pem` SHA-256 `94edeb66…1b47` | **2026.10.19**，SHA-256 `50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785` |
+| pip | 23.2.1 | **26.2.2**（系统证书库加 certifi，验证开启） |
+
+- 用新证书包经代理访问 chatgpt.com，TLS 验证通过（Google Trust Services）。
+- 代理不拦截 TLS，没有需要信任的私有代理 CA。
+- 反向对照证实验证确实开启。
+- 详见 `docs/codex-proxy-setup.md` 第 7、7.1 节。
+- 运行时，预检仍会检查证书包是否可读；运行记录会登记当时证书包的哈希。
 
 ## 离线验证
 
@@ -155,10 +189,25 @@ S5 的子进程环境与 S1–S4 相同：代理 `127.0.0.1:8090`，加上 `CODE
 - **证据规则**：暗号的格式与随机性；对恢复响应只做结构检查；回复只在内存中比对；出现工具就立即停止；回合总数超过 2 判 FAIL。
 - **离线协议事实**：齐全与缺项两种情况。
 
+**2026-10-22 修正后新增**（S5 测试从 47 项增加到 63 项）：
+
+- 阶段 1 健康检查的反例：
+  - 桩场景 `plant-provider-error`、`plant-exit-nonzero`、`plant-tool`；
+  - 模拟后代进程残留、名单取不到、关闭出错；
+  - 逐项检查 `plant_health` 的阻塞代码：设置未核验、`turn/started` 不是一次、读取线程异常、回合尝试为 2。
+
+  以上每一种都**不启动 B**，并且门槛与最终判定一致。happy 场景的门槛为空，结论为 PASS。
+- 后代进程宽限期：宽限期内退出的不算残留，超过宽限期仍在的算残留。这项是在新门槛首次全量运行时发现的：桩的启动器子进程刚好处在退出过程中，被误记为残留。
+- 工作目录清理：模拟 `rmdir` 抛出 PermissionError，结论为 INCONCLUSIVE `workdir_cleanup_failed:PermissionError`，其余各项都通过。判定的单元测试覆盖了 `workdir_not_removed`、`workdir_unreadable` 和 `plant_health_inconsistent`。
+- `tests/test_pip_trust.py` 从 9 项增加到 13 项：单一 CA 证书包、pip 证书错误的识别。
+
 实际输出：
 
-- S5 测试：**47 passed in 42.70s**；
-- 全量：**781 passed in 118.72s**（另含 `tests/test_pip_trust.py` 9 项）；
+- 修正前：S5 测试 47 passed in 42.70s；全量 781 passed in 118.72s。
+- **修正后**：
+  - S5 加 pip_trust：76 passed；
+  - S5 单独重复两次：63 passed in 52.90s、63 passed in 52.94s；
+  - **全量 801 passed in 130.49s**。
 - 独立 CLI `--mode stub`：`S5 PASSED`（A 为 PID 18260，B 为 PID 18020）；
 - 不带确认参数的真实模式，退出码 2。
 

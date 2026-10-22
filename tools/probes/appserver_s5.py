@@ -25,16 +25,20 @@ import appserver_s2 as S2
 import appserver_s3 as S3
 import appserver_s4 as S4
 from agenthub_adapters.appserver_s5_evidence import (
-    PLANT_PROMPT, RECALL_PROMPT, TurnEvidence, digest, inspect_resume, judge, make_code_word)
+    PLANT_PROMPT, RECALL_PROMPT, TurnEvidence, digest, inspect_resume, judge, make_code_word, plant_health)
 
 A = S2.A
 S1 = S2.S1
 SCENARIOS = ("happy", "loose-recall", "forgetful", "no-history-returned", "history-without-message",
              "wrong-thread-resume", "resume-error", "resume-writable", "plant-failed", "plant-timeout",
-             "same-turn-id", "foreign-turn", "late-event", "recall-tool", "recall-approval", "recall-disconnect")
+             "same-turn-id", "foreign-turn", "late-event", "recall-tool", "recall-approval", "recall-disconnect",
+             # phase-1 health counterexamples: each must keep process B from starting
+             "plant-provider-error", "plant-exit-nonzero", "plant-tool")
 RUN_ROOT = S2.REPO / "var/appserver-s5"
 STUB = S2.REPO / "tools/demo/stub_appserver_s5.py"
 MAX_MODEL_TURNS = 2
+#: How long a descendant may take to exit after its parent was closed.
+CLOSE_GRACE_SECONDS = 3.0
 
 
 class S5Client(S2.S2Client):
@@ -181,21 +185,38 @@ class S5Client(S2.S2Client):
                 self.evidence.settings_verified = self.settings_verified
 
     def close(self):
-        """Close our own process; record its descendants before and after (never killed by name)."""
+        """Close our own process; record its descendants before and after (never killed by name).
+
+        A descendant counts as surviving only if it is still there after a
+        bounded grace period: a child that is merely mid-exit is not a survivor.
+        """
         root = getattr(self.transport, "pid", None)
         before_table = S4.process_table() if root else None
         before = S4.descendants(root, before_table) if before_table is not None else None
         try:
             super().close()
         finally:
-            after = S4.process_table() if before is not None else None
-            if before is None or after is None:
+            survivors, waited, available = [], 0.0, before is not None
+            if available and before:
+                start = time.monotonic()
+                while True:
+                    after = S4.process_table()
+                    if after is None:
+                        available = False
+                        break
+                    alive = {(pid, name) for pid, _, name in after}
+                    survivors = [n for p, n in before if (p, n) in alive]
+                    waited = time.monotonic() - start
+                    if not survivors or waited >= CLOSE_GRACE_SECONDS:
+                        break
+                    time.sleep(0.1)
+            if not available:
                 self.process_tree = {"available": False}
             else:
-                alive = {(pid, name) for pid, _, name in after}
-                self.process_tree = {"available": True,
+                self.process_tree = {"available": True, "grace_seconds": CLOSE_GRACE_SECONDS,
+                                     "waited_seconds": round(waited, 2),
                                      "descendants_before_close": sorted(n for _, n in before),
-                                     "descendants_after_close": sorted(n for p, n in before if (p, n) in alive)}
+                                     "descendants_after_close": sorted(survivors)}
 
 
 def pid_alive(pid):
@@ -272,11 +293,11 @@ def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home=
         plant = run_phase("plant", stderr_path=run_dir / "stderr-plant.log", **common)
         result["phases"]["plant"] = plant
         evidence = plant.get("evidence") or {}
-        ready = bool(evidence.get("terminal_confirmed") and evidence.get("status") == "completed"
-                     and not evidence.get("violation") and not evidence["tool_activity"]["seen"]
-                     and plant.get("process_stopped") and plant.get("exit_code") == 0
-                     and not plant.get("error_type") and not plant.get("client_violation"))
-        if ready:
+        # The SAME checks the final judgment applies to phase 1, before B may start:
+        # terminal and status, settings, one turn, tools, notes, own process,
+        # cleanup and descendant processes.
+        result["plant_health"] = health = plant_health(plant)
+        if health["healthy"]:
             alive = pid_alive(plant["pid"])
             relation = {"first_pid": plant["pid"], "first_process_alive_at_check": alive,
                         "first_process_exited_before_second": False}

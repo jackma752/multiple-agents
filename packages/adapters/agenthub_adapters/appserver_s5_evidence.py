@@ -223,6 +223,73 @@ class TurnEvidence(S2Evidence):
                 "event_counts": dict(Counter(e["method"] for e in self.audit if "method" in e))}
 
 
+FAIL_CLIENT_CODES = ("resume_thread_mismatch",)
+
+
+def phase_fail_codes(name, phase):
+    """Protocol contradictions or refused outgoing messages of one phase (FAIL-class)."""
+    evidence = phase.get("evidence") or {}
+    codes = [f"{name}:{c}" for c in evidence.get("reasons", [])]
+    codes += [f"{name}:{c}" for c in phase.get("client_reasons", [])
+              if c.startswith(("outgoing_", "server_request_before")) or c in FAIL_CLIENT_CODES]
+    return list(dict.fromkeys(codes))
+
+
+def phase_problems(name, phase, *, need_usage):
+    """Everything else that keeps one phase from being healthy (INCONCLUSIVE-class).
+
+    The probe calls this for phase 1 BEFORE it starts process B, and the final
+    judgment calls the same function, so the gate and the verdict cannot drift.
+    """
+    if not phase:
+        return [f"{name}:not_run"]
+    evidence = phase.get("evidence") or {}
+    fails = phase_fail_codes(name, phase)
+    out = [f"{name}:{c}" for c in phase.get("client_reasons", []) if f"{name}:{c}" not in fails]
+    if phase.get("error_type"):
+        out.append(f"{name}:" + {"AppServerTimeout": "timeout", "AppServerDisconnected": "disconnect",
+                                  "CheckFailed": "preflight_failed",
+                                  "AppServerResponseError": "request_rejected"}.get(phase["error_type"],
+                                                                                    f"error:{phase['error_type']}"))
+    if phase.get("reader_error_type") and not phase.get("error_type"):
+        out.append(f"{name}:reader_error:{phase['reader_error_type']}")
+    if not evidence.get("settings_verified"):
+        out.append(f"{name}:settings_not_verified")
+    if not evidence.get("matched"):
+        out.append(f"{name}:terminal_not_matched")
+    elif evidence.get("status") != "completed":
+        out.append(f"{name}:turn_status:{evidence.get('status')}")
+    if evidence and not evidence.get("one_turn_started"):
+        out.append(f"{name}:turn_not_started_once")
+    if (evidence.get("tool_activity") or {}).get("seen"):
+        out.append(f"{name}:tool_activity_observed")
+    out += [f"{name}:server_request_unanswered:{m}"
+            for m in dict.fromkeys((evidence.get("tool_activity") or {}).get("server_requests", []))]
+    out += [f"{name}:{c}" for c in evidence.get("notes", []) if c != "tool_activity_observed"]
+    if need_usage and evidence and not evidence.get("usage_received"):
+        out.append(f"{name}:usage_missing")
+    if not phase.get("process_stopped"):
+        out.append(f"{name}:process_not_stopped")
+    elif phase.get("exit_code") != 0:
+        out.append(f"{name}:process_exit:{phase.get('exit_code')}")
+    if phase.get("cleanup_error_type"):
+        out.append(f"{name}:cleanup_error:{phase['cleanup_error_type']}")
+    tree = phase.get("process_tree") or {}
+    if not tree.get("available"):
+        out.append(f"{name}:process_tree_unavailable")
+    elif tree.get("descendants_after_close"):
+        out.append(f"{name}:descendants_survived_close")
+    if phase.get("turn_attempts") != 1:
+        out.append(f"{name}:turn_attempts:{phase.get('turn_attempts')}")
+    return list(dict.fromkeys(out))
+
+
+def plant_health(plant):
+    """The full phase-1 check that must be clean before process B may start."""
+    blockers = phase_fail_codes("plant", plant) + phase_problems("plant", plant, need_usage=False)
+    return {"healthy": not blockers, "blockers": blockers}
+
+
 def judge(result):
     """PASS / FAIL / INCONCLUSIVE with reason codes, from both phases and the process relation."""
     plant = result.get("phases", {}).get("plant") or {}
@@ -232,57 +299,20 @@ def judge(result):
     fail, codes = [], []
 
     for name, phase in (("plant", plant), ("recall", recall)):
-        evidence = phase.get("evidence") or {}
-        fail += [f"{name}:{c}" for c in evidence.get("reasons", [])]
-        fail += [f"{name}:{c}" for c in phase.get("client_reasons", [])
-                 if c.startswith(("outgoing_", "server_request_before")) or c in ("resume_thread_mismatch",)]
+        fail += phase_fail_codes(name, phase)
     if plant.get("turn_id") and recall.get("turn_id") == plant.get("turn_id"):
         fail.append("recall_turn_reused")
     if result.get("workdir_empty") is False:
         fail.append("workdir_not_empty")
 
     def phase_codes(name, phase, *, need_usage):
-        out = []
-        if not phase:
-            return [f"{name}:not_run"]
-        evidence = phase.get("evidence") or {}
-        out += [f"{name}:{c}" for c in phase.get("client_reasons", []) if f"{name}:{c}" not in fail]
-        if phase.get("error_type"):
-            out.append(f"{name}:" + {"AppServerTimeout": "timeout", "AppServerDisconnected": "disconnect",
-                                      "CheckFailed": "preflight_failed",
-                                      "AppServerResponseError": "request_rejected"}.get(phase["error_type"],
-                                                                                        f"error:{phase['error_type']}"))
-        if phase.get("reader_error_type") and not phase.get("error_type"):
-            out.append(f"{name}:reader_error:{phase['reader_error_type']}")
-        if not evidence.get("settings_verified"):
-            out.append(f"{name}:settings_not_verified")
-        if not evidence.get("matched"):
-            out.append(f"{name}:terminal_not_matched")
-        elif evidence.get("status") != "completed":
-            out.append(f"{name}:turn_status:{evidence.get('status')}")
-        if evidence and not evidence.get("one_turn_started"):
-            out.append(f"{name}:turn_not_started_once")
-        if (evidence.get("tool_activity") or {}).get("seen"):
-            out.append(f"{name}:tool_activity_observed")
-        out += [f"{name}:server_request_unanswered:{m}"
-                for m in dict.fromkeys((evidence.get("tool_activity") or {}).get("server_requests", []))]
-        out += [f"{name}:{c}" for c in evidence.get("notes", []) if c != "tool_activity_observed"]
-        if need_usage and evidence and not evidence.get("usage_received"):
-            out.append(f"{name}:usage_missing")
-        if not phase.get("process_stopped"):
-            out.append(f"{name}:process_not_stopped")
-        elif phase.get("exit_code") != 0:
-            out.append(f"{name}:process_exit:{phase.get('exit_code')}")
-        tree = phase.get("process_tree") or {}
-        if not tree.get("available"):
-            out.append(f"{name}:process_tree_unavailable")
-        elif tree.get("descendants_after_close"):
-            out.append(f"{name}:descendants_survived_close")
-        if phase.get("turn_attempts") != 1:
-            out.append(f"{name}:turn_attempts:{phase.get('turn_attempts')}")
-        return out
+        return [c for c in phase_problems(name, phase, need_usage=need_usage) if c not in fail]
 
     codes += phase_codes("plant", plant, need_usage=False)
+    health = result.get("plant_health")
+    if health is not None and health.get("blockers") != phase_fail_codes("plant", plant) + phase_problems(
+            "plant", plant, need_usage=False):
+        codes.append("plant_health_inconsistent")  # the gate before B must equal the final rules
     if plant and not relation.get("first_process_exited_before_second"):
         codes.append("first_process_alive_before_resume" if relation else "resume_not_attempted")
     if relation.get("first_process_exited_before_second") and relation.get("same_pid"):
@@ -302,6 +332,10 @@ def judge(result):
             codes.append("context_not_recalled")
     if result.get("workdir_empty") is None:
         codes.append("workdir_unreadable")
+    elif result.get("workdir_empty") and not result.get("workdir_removed"):
+        # An empty work directory that could not be removed is a cleanup failure, not a pass.
+        codes.append(f"workdir_cleanup_failed:{result['cleanup_error_type']}" if result.get("cleanup_error_type")
+                     else "workdir_not_removed")
     total = sum(p.get("turn_attempts", 0) or 0 for p in (plant, recall))
     if total > 2:
         fail.append(f"turn_attempts_total:{total}")
