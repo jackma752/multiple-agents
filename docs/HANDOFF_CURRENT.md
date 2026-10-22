@@ -1,4 +1,22 @@
-# 当前交接：S4 第一次真实运行 PASS（只认定本次主回合中断通过，2026-10-22）
+# 当前交接：S5 冷恢复探针离线准备完成，等待单次真实授权（2026-10-22）
+
+- **S4 收口**：接受有限结论。输出进行中的中断、工具子进程的停止，保持未验证。
+- **pip、证书**：`fix/pip-proxy-trust` 的 `f4a2866`。
+  - 代理不拦截 TLS，没有需要信任的私有 CA；两个 certifi 包都没有被改动。
+  - venv 的 `pip.ini` 让 pip 走代理，验证保持开启。
+  - 新增 `tools/bootstrap/pip_trust.py` 用于检查。
+- **S5**：分支 `feat/appserver-s5-probe`，目录 `E:\plug\agent-hub\.worktrees\appserver-s5-probe`。
+  - 每次运行新建一个专用 thread。进程 A 写入随机暗号，A 退出后才启动进程 B；B 冷恢复同一 thread，再提出回忆问题。
+  - 最多 2 个模型回合。
+  - PASS 需要恢复响应中带着写入的回合和消息，并且回复中出现暗号；resume 成功本身不算。
+  - 不恢复 S2–S4 的 thread。
+  - 见 [S5 方案](appserver-s5-probe.md)。
+- **测试**：S5 47 passed，全量 781 passed；S5 协议事实离线核对 11/11。没有执行 Codex。
+- **下一步**：用户单独批准一次真实 S5（2 个回合）后，才执行方案中的固定命令。
+
+---
+
+# 历史交接：S4 第一次真实运行 PASS（只认定本次主回合中断通过，2026-10-22）
 
 - 在 `36766da` 上运行，程序版本 `codex-cli 0.163.0-alpha.11`，复用 `identity-hkzdmoqj`。
 - 过程：唯一一次绑定的 `turn/interrupt`，由 5 秒计时器触发 → 应答 `{}` → 本回合 `turn/completed(interrupted)`。
