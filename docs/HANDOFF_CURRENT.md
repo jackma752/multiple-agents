@@ -21,7 +21,8 @@
   - 源码差异：8 个提交，包括工具链、Windows MXC 沙箱迁移、requirements 注册表覆盖；S3 相关的源文件都没有变。
   - 详见 [Codex 运行时](codex-runtime.md) 第 7 节，标签 `evidence/codex-step-a-alpha11.2-pass`。
 - 已重新固定：`PINNED_APPSERVER` 指向 AgentHub 副本；受影响的离线测试 324 项全部通过。
-- 下一步：S6-2 冒烟申请，见 [Codex 运行时](codex-runtime.md) 第 8 节，**未执行**。通过后再分别申请 S6-4 和 S6-5。
+- S6-2 冒烟已于 2026-10-24 在 `e7237a3` 上经批准执行一次，**PASS**（只认定本次）：回复 `OK`，没有工具和子 Agent，进程确认退出，名额已释放。见 [S6-2 第二次实录](appserver-s6-2-2026-10-24-run2.md)，标签 `evidence/s6-2-real-run-2-pass`。
+- 下一步：S6-4（工具拒绝，网页路径）和 S6-5（中断）分别申请。
 
 ---
 
