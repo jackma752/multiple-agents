@@ -104,12 +104,14 @@ TOKEN_USAGE_UPDATED = "thread/tokenUsage/updated"
 #: The reviewed app-server identity (D7). Not shared with exec and never read
 #: from the environment; a change here is a code review decision and changes
 #: every new call's binding identity (D11). Re-pinning: plan §4.2.
+#: Re-pinned 2026-10-23 to the AgentHub-owned copy (docs/codex-runtime.md): the desktop
+#: updater removed the alpha.11 folder; Step A on this copy found the schema identical.
 PINNED_APPSERVER = {
     "path": os.path.join(os.environ.get("LOCALAPPDATA", ""),
-                         "OpenAI", "Codex", "bin", "6257d9e8f63c0f2b", "codex.exe"),
-    "sha256": "00c0f1e4099246fddcd67ec620ca8ed50827c7d70e113b7224f7a2933cf2d67c",
-    "size": 342187312,
-    "version": "codex-cli 0.163.0-alpha.11",
+                         "AgentHub", "runtimes", "codex", "sha256-c81ed464e5e7cafd", "codex.exe"),
+    "sha256": "c81ed464e5e7cafd09a5fa26af390c480bed8e9fab2a87a54b285fbd56e7122a",
+    "size": 336134960,
+    "version": "codex-cli 0.163.0-alpha.11.2",
 }
 #: The argv S3-S5 ran with. ``--disable multi_agent`` turns off Collab only and
 #: is not consulted when the model declares a multi-agent version (plan §2.1):

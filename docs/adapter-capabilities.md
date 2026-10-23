@@ -4,7 +4,7 @@
 
 | 能力 | 状态 |
 |---|---|
-| 准入 | 严格模式：真实 app-server 被拒（`appserver_real_unverified`）。监督模式：只有用代码常量构造的 `CodexAppServerFactory` 才放行（`user_supervised_boundary`），条件是固定身份为 alpha.11 `6257d9e8f63c0f2b`、没有环境变量覆盖、启动参数与验证时一致、代理和 CA 可读、时限不超过 600 秒；批准时仍需显式同意。离线桩为 simulation |
+| 准入 | 严格模式：真实 app-server 被拒（`appserver_real_unverified`）。监督模式：只有用代码常量构造的 `CodexAppServerFactory` 才放行（`user_supervised_boundary`），条件是固定身份为 AgentHub 副本 `runtimes\codex\sha256-c81ed464e5e7cafd`（`codex-cli 0.163.0-alpha.11.2`，2026-10-23 重新固定，见 [Codex 运行时](codex-runtime.md)；S6-2、S6-3 的验证是在 alpha.11 上做的）、没有环境变量覆盖、启动参数与验证时一致、代理和 CA 可读、时限不超过 600 秒；批准时仍需显式同意。离线桩为 simulation |
 | 经过 Hub 的最小回合 | **已验证一次（S6-2，只认定当次）**：进程内的 API、内核和适配器上走通一次 supervised 调用：设置核验、增量事件、结算 succeeded、名额释放、绑定身份一致（`evidence/s6-2-real-run-1-pass`）。网页点击路径、工具、中断、续接都不在其中 |
 | 经过 Hub 的原生续接 | **已验证一次（S6-3，只认定当次）**：两次各自审批的 supervised 调用；第二次通过 `native_resume` 冷恢复同一个 thread（新进程、同一工作目录），恢复结构包含上一回合，新 turn ID，在提示词不含暗号的情况下答出了暗号；重放用量单独记录（`evidence/s6-3-real-run-1-pass`）。长对话、多次恢复、换 cwd、网页路径都没有验证 |
 | 身份绑定 | 调用快照的 `adapter_version` 写入绑定身份。消费门禁之前做身份复核，比较双方（`"unknown"` 只等于 `"unknown"`，`"unavailable"` 永不放行），切换到 exec 等没有绑定接口的适配器也会被拒；不一致返回 409 `adapter_identity_changed`。启动前重新计算文件哈希。只在离线环境中验证 |

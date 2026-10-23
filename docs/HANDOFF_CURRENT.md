@@ -1,4 +1,21 @@
-# 当前交接：网页会话、重连、命令展示与监督模式修复（S6-4 前置，2026-10-23）
+# 当前交接：Codex 运行时另存与新步骤 A 申请（工作流 A，2026-10-23）
+
+- 起因：S6-4 已获批准，但在前置检查阶段停止，没有启动服务，也没有模型调用。原因是桌面更新在 18:20 删除了固定的 alpha.11（`bin\6257d9e8f63c0f2b`）。
+- 运行时改放在 AgentHub 自己的目录，按内容寻址：`%LOCALAPPDATA%\AgentHub\runtimes\codex\sha256-<前 16 位>\`。工具为 `tools/probes/codex_runtime_stage.py`：复制前后按登记哈希核对，不覆盖已有文件，并写 `provenance.json`。暂存了两份：
+  - `alpha.11.2`（推断版本，**未验证**），连同全部配套文件，作为运行时；
+  - alpha.11 的原二进制（在 `.codex\.sandbox-bin` 找到，逐字节相同），**只作存档**：同版本的沙箱安装程序和 code-mode host 已无法找回。
+- 新的零模型步骤 A（`tools/probes/codex_runtime_step_a.py`）已在 2026-10-23 23:35 经批准执行一次，结果 **IDENTICAL_SCHEMA**：
+  - 版本为 `codex-cli 0.163.0-alpha.11.2`；
+  - 71 项协议事实齐全，schema 与 alpha.11 逐字节相同；
+  - 模型回合为 0，没有残留进程。
+  - 源码差异：8 个提交，包括工具链、Windows MXC 沙箱迁移、requirements 注册表覆盖；S3 相关的源文件都没有变。
+  - 详见 [Codex 运行时](codex-runtime.md) 第 7 节，标签 `evidence/codex-step-a-alpha11.2-pass`。
+- 已重新固定：`PINNED_APPSERVER` 指向 AgentHub 副本；受影响的离线测试 324 项全部通过。
+- 下一步：S6-2 冒烟申请，见 [Codex 运行时](codex-runtime.md) 第 8 节，**未执行**。通过后再分别申请 S6-4 和 S6-5。
+
+---
+
+# 历史交接：网页会话、重连、命令展示与监督模式修复（S6-4 前置，2026-10-23）
 
 - 修复了演示中发现的两个页面缺陷，并补齐了网页的监督模式入口，说明见 [会话页面](chat-frontend.md) 末节：
   - **会话切换与事件流竞态**：引入视图代际 `S.viewGen`，旧会话的任何异步结果都不能再写入当前会话；普通重连保留状态，只有 409 才完整重放；

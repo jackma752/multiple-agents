@@ -221,11 +221,12 @@ def test_build_adapter_uses_the_constant_and_records_env_overrides(monkeypatch, 
     assert adapter.version == PINNED_APPSERVER["version"]
 
 
-def test_pinned_identity_is_alpha11_and_separate_from_exec():
-    assert PINNED_APPSERVER["version"] == "codex-cli 0.163.0-alpha.11"
-    assert PINNED_APPSERVER["path"].endswith(os.path.join("bin", "6257d9e8f63c0f2b", "codex.exe"))
-    assert PINNED_APPSERVER["sha256"] == "00c0f1e4099246fddcd67ec620ca8ed50827c7d70e113b7224f7a2933cf2d67c"
-    assert PINNED_APPSERVER["size"] == 342187312
+def test_pinned_identity_is_the_staged_alpha11_2_and_separate_from_exec():
+    assert PINNED_APPSERVER["version"] == "codex-cli 0.163.0-alpha.11.2"
+    assert PINNED_APPSERVER["path"].endswith(
+        os.path.join("AgentHub", "runtimes", "codex", "sha256-c81ed464e5e7cafd", "codex.exe"))
+    assert PINNED_APPSERVER["sha256"] == "c81ed464e5e7cafd09a5fa26af390c480bed8e9fab2a87a54b285fbd56e7122a"
+    assert PINNED_APPSERVER["size"] == 336134960
     assert config.PINNED_CODEX_VERSION != PINNED_APPSERVER["version"]  # exec is unchanged
 
 
@@ -742,7 +743,7 @@ def test_wording_claims_nothing_unverified(tmp_path, pinned_file):
     assert "只能拒绝" in SUPERVISED_REASON and "CLI" in SUPERVISED_REASON
     info = describe(adapter)
     assert info["subagents_disabled"] is False and info["subagent_disable_requested"] is True
-    assert info["binding_identity"].startswith("codex-app-server@codex-cli 0.163.0-alpha.11;sha256=")
+    assert info["binding_identity"].startswith("codex-app-server@codex-cli 0.163.0-alpha.11.2;sha256=")
 
 
 def test_chat_page_hides_approve_unless_accept_is_offered():
