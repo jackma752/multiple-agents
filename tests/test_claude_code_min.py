@@ -64,7 +64,8 @@ def test_real_steps_refuse_without_their_approvals(tmp_path, no_launch):
     assert no_launch == [] and not list(tmp_path.iterdir())
 
 
-def test_real_turn_refuses_while_identity_is_unrecorded(tmp_path, no_launch):
+def test_real_turn_refuses_while_identity_is_unrecorded(tmp_path, no_launch, monkeypatch):
+    monkeypatch.setattr("agenthub_adapters.claude_code.ZERO_MODEL_IDENTITY_REPORT", None)
     assert probe.run_turn(real=True, approved=True, acknowledged=True, run_root=tmp_path) == 1
     result = report(tmp_path)
     assert result["refused"] and "identity_report_recorded" in result["refused"]

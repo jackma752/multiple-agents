@@ -180,7 +180,8 @@ def test_strict_refuses_the_real_launcher_before_consuming(make, real, monkeypat
     assert launches == [] and adapter.start_count == 0 and held(client) == 0
 
 
-def test_supervised_real_is_refused_while_identity_is_unconfirmed(make, real):
+def test_supervised_real_is_refused_while_identity_is_unconfirmed(make, real, monkeypatch):
+    monkeypatch.setattr(cc, "ZERO_MODEL_IDENTITY_REPORT", None)
     adapter, launches = real
     client = make(adapter)
     _cid, turn = submit(client, "supervised")
@@ -265,6 +266,9 @@ def test_build_adapter_selects_stub_or_pinned_constant(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
     monkeypatch.setenv("AGENT_HUB_CLAUDE_CODE_WORKDIR", str(tmp_path / "runs"))
     monkeypatch.setenv("AGENT_HUB_CLAUDE_CODE_STUB", "success-usage")
+    # Machine-independent: with the identity report recorded, supervised
+    # admission would depend on this machine's files; without it, never.
+    monkeypatch.setattr(cc, "ZERO_MODEL_IDENTITY_REPORT", None)
     stub = build_adapter("claude-code")
     assert type(stub.launcher) is StubClaudeLauncher and stub.binding_identity() == "claude-code-stub:stdio"
     monkeypatch.delenv("AGENT_HUB_CLAUDE_CODE_STUB")

@@ -14,6 +14,10 @@
   - 固定参数中只有 `--max-turns` 不在 `--help` 中，其余 8 个都在；
   - 按申请停止，**没有记录 `ZERO_MODEL_IDENTITY_REPORT`**，没有进入步骤 L 和 B；
   - 是否保留 `--max-turns` 等用户决定，详见 [Claude Code 适配器](claude-code-adapter.md) 第 7 节，标签 `evidence/cc-identity-real-run-1-inconclusive`。
+- **2026-10-24**：用户选择 (a)，保留 `--max-turns`，`ZERO_MODEL_IDENTITY_REPORT` 已记录为 `b57a1d5f…`。下一步：
+  - 用户自己登录（步骤 L）；
+  - 申请最多一个模型回合（步骤 B）。
+  - 两项都见 [Claude Code 适配器](claude-code-adapter.md) 第 8 节，**未执行**。
 
 ---
 
