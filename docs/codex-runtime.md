@@ -37,9 +37,9 @@
 
 alpha.11 为什么只存档：它缺少同版本的沙箱安装程序和 code-mode host。在缺件的情况下，沙箱内命令会怎样执行无法确定，所以不拿它做运行时。保留这份副本，是为了让历史证据所对应的二进制有一份不会被更新删除的拷贝。
 
-## 4. 新的步骤 A 申请（零模型，未执行）
+## 4. 新的步骤 A 申请（零模型）
 
-**本节只是申请，不构成授权。** 用户批准后执行一次。
+**状态**：2026-10-23 经用户批准，在 `73da7dc` 上执行一次，结果 **IDENTICAL_SCHEMA**，版本为 `codex-cli 0.163.0-alpha.11.2`，与推断一致。实录见第 7 节。授权已用完。下文保留申请原文。
 
 - **被测提交**：`feat/codex-runtime` 上包含本节的提交。
 - **被测程序**：暂存的 `alpha.11.2`，即 `%LOCALAPPDATA%\AgentHub\runtimes\codex\sha256-c81ed464e5e7cafd\codex.exe`。
@@ -101,4 +101,74 @@ python tools\probes\codex_runtime_stage.py --list               # 两个候选 p
 | `sha256-00c0f1e4099246fd\provenance.json`（alpha.11 存档） | 2055 | `99255c25a6430859c817b05b714f53c5606bd26497d2456cea4312bc9744c333` |
 
 - 暂存的可执行文件都是只读的；`provenance.json` 本身没有设为只读，以上面登记的哈希为准。
-- 两份记录的 `version_verified` 都为 null，要等步骤 A 实测之后才有值。
+- 两份记录的 `version_verified` 都保持 null，不回写（回写会改变上面登记的哈希）。实测版本记在第 7 节和代码常量 `PINNED_APPSERVER` 中。
+
+## 7. 步骤 A 实录（2026-10-23 23:35，用户批准，执行一次）
+
+- **授权**（用户原话）：“批准按顺序执行两项零模型检查，各一次：先 Codex 新步骤 A（feat/codex-runtime 73da7dc，docs/codex-runtime.md 第 4 节）……模型回合为 0；任何异常立即停止，不重试，不进入模型回合。”
+- **执行前确认**：HEAD 为 `73da7dc`，工作树干净，进程环境中没有 `AGENT_HUB_*` 变量。
+- **命令**：第 4 节的命令，退出码 0，只执行一次。
+- **前置检查**：五个暂存文件的哈希与登记值一致，签名都是 `Valid`；基线清单未变。`problems` 为空。
+- **三条命令**都返回 0：`--version` 0.44 秒，`generate-json-schema --help` 0.02 秒，`generate-json-schema --experimental --out` 0.45 秒。
+  - stderr 只有一条已知警告：拒绝在临时目录下创建 PATH 别名，与 2026-10-22 的步骤 A 相同。
+- **版本**：`codex-cli 0.163.0-alpha.11.2`，`version_matches_inference: true`。
+- **协议**：
+  - 71 项事实全部存在（S3、S4、S5 和适配器）；
+  - schema 两边都是 452 个文件，没有新增、删除或变化；
+  - 捕获的清单哈希就是 `12c012a1…9ea6f`，与 alpha.11 基线逐字节相同。
+- **模型回合**：0。临时 `CODEX_HOME` 用后已删除。
+- **进程**：运行前后名称含 codex 的进程完全相同，都是桌面应用原有的 5 个进程，本次没有残留进程。
+
+| 证据（`var\codex-runtime\step-a-alpha.11.2-5t52dkuz\`，不入库） | 字节 | SHA-256 |
+|---|---|---|
+| `report.json` | 2456 | `f225e4199de57f26e01ab5a95deea5044da2bc6175d15c307ce762f5722a9944` |
+| `version.txt` | 326 | `892a681f4583e953bcbac2c24c3809a8baa08857b42cf4e52bf05a98fbd48f1a` |
+| `schema-help.txt` | 1398 | `75da31c8485ad36e3669ec3a31a8f9624529b8bdc7a54b1e311ebc67d65ea59e` |
+| `schema-generate.txt` | 296 | `f1aaca72138d8dd71160a8b084c75143ed0706d4252ff9d2c2de6315fc036856` |
+| `schema\`（452 个文件） | — | 清单哈希 `12c012a180048bbbff489295813f54c70130bf32edfe8394ffd3547b4e39ea6f` |
+
+### 7.1 源码差异审查（离线）
+
+方法：GitHub compare API 比较 `rust-v0.163.0-alpha.11...rust-v0.163.0-alpha.11.2`，一次读取；结果经网页抓取工具转述。两个标签已分叉，alpha.11.2 领先 8 个提交、落后 1 个。8 个提交是：
+
+- 工具链与依赖：rustls-webpki / webpki-roots 锁文件、Rust 1.99.1、发布 alpha.11.1、热修复工作区与锁文件、发布 alpha.11.2；
+- Windows MXC 沙箱迁移到 `mxc-sdk`（#55378），以及过滤无法检查的网络根目录（#54363）；
+- `requirements.toml` 支持 Windows 注册表覆盖（#55456）。
+
+结论：
+
+- 2026-10-22 核对过的 17 个 S3 相关源文件（shell 检测与包装、审批、unified exec、事件映射、session 等）**都不在变更列表里**。
+- 涉及 app-server 和执行策略的四个文件只是编译器升级后的写法调整，行为不变：`message_processor.rs` 的模式匹配写法、`exec_policy.rs` 的 `From` 实现、`executed_tool_calls.rs` 的 `fetch_update` 改为 `try_update`、`exec-server-protocol` 的闭包写法。
+- **Windows 沙箱实现变了**。本项目本来就不声称沙箱可控，这条边界不变；但这是在新运行时上做一次 S6-2 冒烟的具体理由。
+- 如果注册表覆盖改变了审批或沙箱策略，`thread/start` 之后的设置回读不符时，适配器不会开始回合（D2）。
+- 局限：这只说明源码的预期行为，不能证明本机二进制就是从该标签构建的；没有逐一阅读的文件仍可能间接影响行为。
+
+### 7.2 重新固定（离线，本提交）
+
+- `PINNED_APPSERVER` 指向暂存目录 `sha256-c81ed464e5e7cafd\codex.exe`，sha256、size、version 都改为实测值。新调用的绑定身份随之变为 `codex-app-server@codex-cli 0.163.0-alpha.11.2;…`。
+- S3、S4、S5 的探针保留 alpha.11 的历史固定值，不改。
+- 受影响的离线测试共 324 项，全部通过：S6 HTTP、S6-2、S6-3、S6-4 收集、会话页、S3 身份、S4、S5、运行时。
+
+## 8. S6-2 冒烟申请（新运行时，未执行）
+
+**本节只是申请，不构成授权。** 用户单独批准后执行一次。
+
+- **依据**：二进制和位置都变了，Windows 沙箱实现也变了（第 7.1 节）。S1–S6-3 的结论只属于 alpha.11，不整体重跑；S6-3 的续接逻辑与本次变化无关，不复测。
+- **被测提交**：`feat/codex-runtime` 上包含本节的提交。执行前确认 HEAD 和工作树都没有变化。
+- **固定程序**：`PINNED_APPSERVER`，即第 7.2 节的固定值。驱动执行前会再被动核验一次身份和大小。
+- **其余与 S6 规划第 10 节相同**：
+  - CODEX_HOME、证书包、执行前检查、路径（进程内 API → 审批并显式同意 → Worker → 适配器）；
+  - 固定提示词 `Reply with exactly: OK. …`；
+  - 1 个新 thread，最多 1 个模型回合，本地时限 300 秒；
+  - PASS 条件、停止规则和风险。
+- **命令**（一次）：
+
+  ```powershell
+  Set-Location E:\plug\agent-hub\.worktrees\codex-runtime
+  & 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools\probes\appserver_s6_2.py --mode real --approve-one-model-turn --acknowledge-supervised-boundary
+  ```
+
+- **只认定**：在 alpha.11.2 的 AgentHub 副本上，经过 Hub 的 supervised 最小回合可用一次。
+- **不认定**：工具审批（S6-4）、中断（S6-5）、续接、网页路径、子 Agent 控制、沙箱。
+- **证据**：登记 `var/appserver-s6-2/real-*/result.json`、stderr 日志和 rollout 的 SHA-256；打标签 `evidence/s6-2-real-run-2-<pass|fail|inconclusive>`。
+- 结果为 PASS 后，S6-4（S6 规划第 12 节，更新被测提交和固定值）和 S6-5 分别申请。

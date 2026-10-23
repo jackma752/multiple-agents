@@ -4,9 +4,14 @@
 - 运行时改放在 AgentHub 自己的目录，按内容寻址：`%LOCALAPPDATA%\AgentHub\runtimes\codex\sha256-<前 16 位>\`。工具为 `tools/probes/codex_runtime_stage.py`：复制前后按登记哈希核对，不覆盖已有文件，并写 `provenance.json`。暂存了两份：
   - `alpha.11.2`（推断版本，**未验证**），连同全部配套文件，作为运行时；
   - alpha.11 的原二进制（在 `.codex\.sandbox-bin` 找到，逐字节相同），**只作存档**：同版本的沙箱安装程序和 code-mode host 已无法找回。
-- 新的零模型步骤 A：`tools/probes/codex_runtime_step_a.py`。申请见 [Codex 运行时](codex-runtime.md) 第 4 节，**未执行**，需要用户批准。
-  - 与 alpha.11 基线比较 S3、S4、S5 和适配器依赖的全部协议事实，并列出 schema 差异。
-- 之后的顺序：审查差异 → 重新固定 `PINNED_APPSERVER` 并做离线回归 → S6-2 冒烟 → S6-4 → S6-5。每个真实步骤单独批准。
+- 新的零模型步骤 A（`tools/probes/codex_runtime_step_a.py`）已在 2026-10-23 23:35 经批准执行一次，结果 **IDENTICAL_SCHEMA**：
+  - 版本为 `codex-cli 0.163.0-alpha.11.2`；
+  - 71 项协议事实齐全，schema 与 alpha.11 逐字节相同；
+  - 模型回合为 0，没有残留进程。
+  - 源码差异：8 个提交，包括工具链、Windows MXC 沙箱迁移、requirements 注册表覆盖；S3 相关的源文件都没有变。
+  - 详见 [Codex 运行时](codex-runtime.md) 第 7 节，标签 `evidence/codex-step-a-alpha11.2-pass`。
+- 已重新固定：`PINNED_APPSERVER` 指向 AgentHub 副本；受影响的离线测试 324 项全部通过。
+- 下一步：S6-2 冒烟申请，见 [Codex 运行时](codex-runtime.md) 第 8 节，**未执行**。通过后再分别申请 S6-4 和 S6-5。
 
 ---
 

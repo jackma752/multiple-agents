@@ -60,9 +60,12 @@ def test_the_candidates_pin_the_reviewed_files():
                      "codex-code-mode-host.exe", "path/rg.exe"]
     assert runtime["files"][0][2:] == ("c81ed464e5e7cafd09a5fa26af390c480bed8e9fab2a87a54b285fbd56e7122a", 336134960)
     assert runtime["purpose"] == "runtime" and runtime["missing"] == []
-    # The archive is exactly the binary S3-S6-3 ran, and it says what it lacks.
+    # The adapter is pinned to the staged runtime, file for file.
+    assert PINNED_APPSERVER["path"] == str(STAGE.target_dir("alpha.11.2") / "codex.exe")
+    assert runtime["files"][0][2:] == (PINNED_APPSERVER["sha256"], PINNED_APPSERVER["size"])
+    # The archive is exactly the binary S3-S6-3 ran (the probes keep that historical pin), and it says what it lacks.
     path, digest, size = S3.S3_CODEX_IDENTITY
-    assert archive["files"][0][2:] == (digest, size) == (PINNED_APPSERVER["sha256"], PINNED_APPSERVER["size"])
+    assert archive["files"][0][2:] == (digest, size)
     assert archive["purpose"] == "archive"
     assert archive["missing"] == ["codex-windows-sandbox-setup.exe", "codex-code-mode-host.exe"]
     for label in STAGE.CANDIDATES:
