@@ -8,7 +8,11 @@
   - 经批准合并了两条记录分支：Codex S6-2 第二次运行 PASS；Claude Code 身份已记录，其第一次单回合 PASS。
   - 受影响的离线测试 279 项通过。
   - 新增只读判定脚本 `tools/probes/two_agent_collect.py`，离线测试 11 项。
-  - **双 Agent 真实网页对话申请**见 [多 Agent 对话](multi-agent.md) 第 5 节，未执行，需要单独批准。通过即达到 T 启动节点（只认定当次）。
+  - 双 Agent 真实网页对话已经批准执行一次，结果 **FAIL**：
+    - 启动配置没有传 `--codex-transport app-server`，`multi` 下的 Codex 走了 exec；exec 固定的旧程序已被删除，启动前就被拒绝；
+    - 没有进程，没有模型回合，没有调用 Claude Code；
+    - 见 [第一次实录](two-agent-2026-10-24-run1.md)。
+  - 下一步：离线修正四处（multi 下 Codex 固定用 app-server、启动信息按 Agent 打印、前置检查读取 `/api/adapter`、判定脚本对缺失记录判 INCONCLUSIVE），然后重新申请。
 
 ---
 

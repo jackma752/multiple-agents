@@ -70,9 +70,9 @@
 
 **2026-10-24 进展**：Codex 的 S6-2 第二次运行（`evidence/s6-2-real-run-2-pass`）和 Claude Code 的第一次单回合（`evidence/cc-turn-real-run-1-pass`）都已 PASS，记录已合并进本分支。只剩下第 5 节的双 Agent 真实对话。
 
-## 5. 双 Agent 真实网页对话申请（未执行）
+## 5. 双 Agent 真实网页对话申请
 
-**本节只是申请，不构成授权。** 用户单独批准后执行一次。
+**状态（2026-10-24）**：经批准在 `b6162e6` 上执行一次，结果 **FAIL**：`multi` 把 Codex 构造成了 exec 传输，启动前就被身份检查拒绝。没有启动进程，没有模型回合，没有调用 Claude Code。见 [第一次实录](two-agent-2026-10-24-run1.md)，标签 `evidence/two-agent-real-run-1-fail`。授权已用完；修正后需要重新申请。下文保留申请原文。
 
 - **目的**：在同一个 Hub 网页中：
   - 真实的 Codex 回复一个暗号；
