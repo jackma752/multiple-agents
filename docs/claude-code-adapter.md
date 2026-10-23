@@ -66,7 +66,9 @@
 
 桩的输出是**按文档手写的，不是捕获的**。
 
-## 6. 有界真实测试申请（未执行，需用户单独批准）
+## 6. 有界真实测试申请
+
+**状态（2026-10-23）**：用户批准只执行步骤 A，执行了一次，结果 **INCONCLUSIVE**（见第 7 节）。步骤 L 和步骤 B 没有执行。下文保留申请原文。
 
 驱动：`tools/probes/claude_code_min.py`。三步依次进行，每步之后停下核对；任何一步不是 PASS 就停止。
 
@@ -113,3 +115,30 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\claude_code_min.py --ste
 **不能确认的**：工具确实被关闭（模型没有尝试工具不等于不能用）；原生子 Agent 可控；取消或中断；流式；会话恢复；后代进程（本适配器不检查）；`~/.claude.json` 等文件是否被写入；长对话或其他提示词下的行为。
 
 **停止规则**：出现任何异常（退出码、超时、版本或哈希变化、预检失败、意外的工具或权限活动）立即停止并报告；不重试，不换模型，不放宽权限或参数，不去掉 `--safe-mode`/`--tools ""`；保留代理与 CA 设置，**不关闭证书验证**；不进入下一步。
+
+## 7. 步骤 A 实录（2026-10-23 23:35，用户批准，执行一次）
+
+- **授权**（用户原话）：“批准按顺序执行两项零模型检查，各一次：……再 Claude Code 身份核验（feat/claude-code-min 8ba6244，docs/claude-code-adapter.md 第 6 节步骤 A）。模型回合为 0；任何异常立即停止，不重试，不进入模型回合。”
+- **执行前确认**：HEAD 为 `8ba6244`，工作树干净；8090 在监听；certifi 哈希为 `50f79f98…0785`。
+- **命令**：第 6 节步骤 A 的命令，只执行一次，退出码 1（驱动在结果不是 PASS 时返回 1）。
+- **结果：INCONCLUSIVE**（`help_missing_flags`）：
+  - `--version` 与 `--help` 都返回 0，没有超时；
+  - 版本行为 `2.1.308 (Claude Code)`；
+  - 运行前后文件哈希都等于常量；
+  - 固定参数的 9 个标志中，`--help` 列出了 8 个，**只有 `--max-turns` 没有列出**。二进制字符串中能找到它（第 1 节，静态扫描），官方文档也列出了它（文档，未实测）。
+- **子进程环境**：
+  - 去掉了继承的 `ANTHROPIC_BASE_URL`、全部 `CLAUDE*` 会话变量和代理变量；
+  - 只设置了 `CLAUDE_CONFIG_DIR`、`DISABLE_AUTOUPDATER`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`；
+  - 运行后专用配置目录 `%LOCALAPPDATA%\AgentHub\claude-config` 仍不存在，说明这两条命令没有写配置。
+- **按申请停止**：
+  - 没有把报告哈希写入 `ZERO_MODEL_IDENTITY_REPORT`，所以真实启动仍一律被拒；
+  - 没有进入步骤 L（登录）和步骤 B（模型回合）；没有读取任何凭据。
+- **需要用户决定**：
+  - (a) 接受这个结果：记录报告哈希，`--max-turns` 继续保留。依据是文档说明无效参数会在开始前报错并以非 0 退出。在模型回合中如果这个标志被拒，会判 FAIL，不消耗模型回合，但会用掉那一次已批准的尝试。
+  - (b) 从固定参数中去掉 `--max-turns`：`--tools ""` 时没有工具循环，回合数由单条提示决定，预算仍由 `--max-budget-usd` 约束。需要改代码并做离线回归，不需要重做步骤 A，因为其余 8 个标志都已列出。
+
+| 证据（`var\claude-code-min\identity-real-v6v3sh1q\`，不入库） | 字节 | SHA-256 |
+|---|---|---|
+| `report.json` | 2105 | `b57a1d5f0d2a0bd1b7c35031c3fdafb74e2a763d82a12a1f40844b8b8cbd5089` |
+| `version.txt` | 22 | `b354fe63f3ea7b46441790aa41c704340be3e4722cd759d1b77da284764c82ef` |
+| `help.txt` | 22319 | `b10f5c36adfe3285f6c5a0d18284f466e6c4486499de56ef62745e13312a7fbc` |

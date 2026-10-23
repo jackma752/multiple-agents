@@ -9,6 +9,11 @@
 - **没有运行 Claude Code，没有模型回合，没有读取凭据。** 能力全部未验证，见 [Claude Code 适配器](claude-code-adapter.md) 与能力矩阵。
 - 剩余阻塞：独立 CLI 没有可用登录（默认配置目录无 `.credentials.json`，桌面会话的认证不可借用）。需要用户在专用配置目录自行登录，以及用户批准真实测试（申请见 [Claude Code 适配器](claude-code-adapter.md) 第 6 节：步骤 A 零模型身份核验 → 离线提交记录报告哈希 → 步骤 L 用户登录 → 步骤 B 最多一个模型回合）。
 - 另一个风险：固定文件是桌面应用管理的，桌面更新可能删除它，届时需要重新固定。
+- **2026-10-23 23:35 步骤 A 经批准执行一次，结果 INCONCLUSIVE**：
+  - 两条命令都返回 0，版本为 `2.1.308 (Claude Code)`，运行前后哈希一致，模型回合为 0；
+  - 固定参数中只有 `--max-turns` 不在 `--help` 中，其余 8 个都在；
+  - 按申请停止，**没有记录 `ZERO_MODEL_IDENTITY_REPORT`**，没有进入步骤 L 和 B；
+  - 是否保留 `--max-turns` 等用户决定，详见 [Claude Code 适配器](claude-code-adapter.md) 第 7 节，标签 `evidence/cc-identity-real-run-1-inconclusive`。
 
 ---
 
