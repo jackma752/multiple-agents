@@ -601,7 +601,8 @@ def test_snapshot_context_fields_are_validated_and_hash_compatible():
 
 def test_turn_request_hash_unchanged_for_independent_turns():
     turn = ConversationTurn(text="x", agent_id="codex", client_request_id="k")
-    legacy = {k: v for k, v in asdict(turn).items() if k != "context_mode"}
+    # The fields a turn had before context_mode (and later handoff_message_ids) existed.
+    legacy = {k: v for k, v in asdict(turn).items() if k not in ("context_mode", "handoff_message_ids")}
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, ensure_ascii=False)
                               .encode("utf-8")).hexdigest()
     assert turn.request_hash() == expected

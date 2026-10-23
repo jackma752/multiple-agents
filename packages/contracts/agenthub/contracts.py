@@ -156,10 +156,19 @@ class InvocationSnapshot:
     #: part of what the user approves.
     context_mode: str = "independent"
     resume_thread_id: Optional[str] = None
+    #: Earlier replies the user chose to hand to this agent. Their text is
+    #: already inside ``task_input``; each entry records where it came from
+    #: (``message_id``, ``agent_id``, ``sha256``, ``chars``), so the approval
+    #: shows and binds exactly which content is passed on.
+    handoff: tuple = ()
 
     def __post_init__(self) -> None:
         if self.execution_mode not in {"strict", "supervised"}:
             raise ValueError("execution_mode must be strict or supervised")
+        if isinstance(self.handoff, list):  # as stored by to_dict()
+            object.__setattr__(self, "handoff", tuple(self.handoff))
+        if not isinstance(self.handoff, tuple) or not all(isinstance(h, dict) for h in self.handoff):
+            raise ValueError("handoff must be a sequence of source records")
         if self.context_mode not in CONTEXT_MODES:
             raise ValueError("context_mode must be independent or native_resume")
         if self.context_mode == NATIVE_RESUME:
@@ -190,6 +199,8 @@ class InvocationSnapshot:
         if self.context_mode != INDEPENDENT:
             result["context_mode"] = self.context_mode
             result["resume_thread_id"] = self.resume_thread_id
+        if self.handoff:
+            result["handoff"] = [dict(h) for h in self.handoff]
         return result
 
 

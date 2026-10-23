@@ -1,3 +1,13 @@
+# 当前交接：多 Agent 路由与手动交接（P3，2026-10-24，分支 `feat/p3-two-agent`）
+
+- 经用户批准，从 `feat/appserver-s6` 新开本分支，用 `--no-ff` 合并了工作流 A（`feat/codex-runtime`）和工作流 B（`feat/claude-code-min`）。没有推送，没有合并到 main。
+- 新增 `RoutingAdapter`（`AGENT_HUB_ADAPTER=multi`）：每个调用都在自己 Agent 的适配器上检查和运行；路由器层面一律拒绝。
+- 新增手动交接：`handoff_message_ids`。组合后的输入由审批绑定，审批卡完整显示。
+- 说明见 [多 Agent 对话](multi-agent.md)。离线测试和浏览器桩验证都已完成。
+- 达到 T 启动节点还差的真实运行：Codex 的 S6-2 冒烟；Claude Code 的 `--max-turns` 决定、用户登录、一个回合；最后一次双 Agent 真实对话。每项都需要单独批准。
+
+---
+
 # 当前交接（工作流 A）：Codex 运行时另存与新步骤 A（2026-10-23）
 
 - 起因：S6-4 已获批准，但在前置检查阶段停止，没有启动服务，也没有模型调用。原因是桌面更新在 18:20 删除了固定的 alpha.11（`bin\6257d9e8f63c0f2b`）。

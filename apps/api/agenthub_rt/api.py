@@ -165,7 +165,7 @@ def create_app(
                     parent_task_id=str(child.parent_task_id),
                     depth=child.depth,
                     policy_version=child.policy_version,
-                    adapter_version=adapter_binding(app.state.adapter),
+                    adapter_version=adapter_binding(app.state.adapter, delegation.agent_id),
                 )
                 inv = svc.create_invocation(task_id=child.id, snapshot=snapshot)
                 approval = svc.create_approval(invocation_id=inv.id)
@@ -204,8 +204,8 @@ def create_app(
                     # consume-time policy check would (correctly) reject this
                     # invocation as approved under a stale policy.
                     policy_version=task.policy_version,
-                    # The approval binds the serving adapter's identity (D11).
-                    adapter_version=adapter_binding(app.state.adapter),
+                    # The approval binds the identity of the adapter serving this agent (D11).
+                    adapter_version=adapter_binding(app.state.adapter, body.agent_id),
                 )
                 inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
                 # Plan §5: "POST /api/invocations — 创建待审批调用". Creating the

@@ -70,6 +70,11 @@
   .banner { margin: 10px 16px 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--warn); color: var(--warn); }
   .consent { display: block; margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--warn); border-radius: 8px;
              color: #f3dca0; font-size: 12.5px; cursor: pointer; }
+  button.mini { padding: 1px 8px; font-size: 12px; margin-left: 6px; }
+  button.mini.on { border-color: var(--accent); color: var(--accent); }
+  details.sent { margin-top: 8px; font-size: 12.5px; }
+  details.sent pre { white-space: pre-wrap; max-height: 260px; overflow: auto; margin: 6px 0 0;
+                     padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
            background: #3a1f22; border: 1px solid var(--bad); color: #ffd6d7; display: none; white-space: pre-wrap; }
   @media (max-width: 760px) {
@@ -109,6 +114,7 @@
         <label title="把上一轮 Agent 回复所在的 provider thread 绑定进本次审批，续接其上下文">
           <input type="checkbox" id="resume" aria-label="续接上一轮（原生 thread）" /> 续接上一轮（原生 thread）
         </label>
+        <span id="handoffChips"></span>
         <span class="grow dim" id="composerNote"></span>
         <button type="submit" id="sendBtn" class="primary">发送（生成待审批调用）</button>
       </div>
@@ -144,6 +150,7 @@ const S = {
   calls: new Map(),   // invocation_id -> call model
   cards: new Map(),   // tool_approval_id -> card view
   consent: new Map(), // invocation_id -> boundary consent ticked for THIS call only
+  handoff: [],        // reply message_ids chosen to pass on with the NEXT call only
   busy: new Set(),    // actions in flight (keys), to disable double clicks
   viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
   createPromise: null, // the one conversation creation in flight, shared by every caller
@@ -210,6 +217,7 @@ function call(id) {
   if (!c) {
     c = { id, status: null, approval_id: null, approval_status: null, agent_id: null,
           execution_mode: "strict", context_mode: "independent", resume_thread_id: null,
+          handoff: [], sent_text: null,
           stream: "", gap: false, turn: null, ended: null, declined: [], cards: [], stop: null,
           interrupt: null, native: [] };
     S.calls.set(id, c);
@@ -234,6 +242,7 @@ function absorbMessage(m) {
       status: inv.status, approval_id: inv.approval_id, approval_status: inv.approval_status,
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
+      handoff: inv.handoff, sent_text: inv.sent_text,
     });
   }
 }
@@ -516,10 +525,12 @@ async function send(event) {
       text, agent_id: $("agent").value, execution_mode: mode,
       client_request_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())),
       context_mode: $("resume").checked ? "native_resume" : "independent",
+      handoff_message_ids: S.handoff.slice(),
     });
     if (current(gen)) patch(call(turn.invocation_id), turn);
     $("text").value = "";
     $("resume").checked = false;
+    S.handoff = [];  // a handoff belongs to one call; the next one chooses again
     $("mode").value = "";  // the next call needs its own explicit choice
     if (current(gen)) needMessages(gen);
   });
@@ -535,7 +546,7 @@ async function loadConvs() {
 
 function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
-  S.consent = new Map(); S.banner = "";
+  S.consent = new Map(); S.banner = ""; S.handoff = [];
 }
 
 /* The only way to create a conversation: concurrent callers share one creation. */
@@ -668,8 +679,10 @@ function renderCall(c) {
                                 onclick: () => stopLocal(c) }, "停止本地进程"));
   }
   const notes = [];
+  const handoff = c.handoff || [];
   if (c.status === "awaiting_approval")
-    notes.push(`同意后将调用 ${c.agent_id || "Agent"} 一次，发送本条消息原文` +
+    notes.push(`同意后将调用 ${c.agent_id || "Agent"} 一次，发送` +
+               (handoff.length ? `下面的完整内容（你的消息 + ${handoff.length} 段交接）` : "本条消息原文") +
                (c.context_mode === "native_resume" ? `，并续接 thread ${short(c.resume_thread_id)} 的上下文。` : "。"));
   if (c.turn) notes.push(c.turn.resumed ? `模型回合已开始（续接 thread ${short(c.turn.thread_id)}）` : "模型回合已开始");
   if (c.ended && c.ended.native_unfinished && c.ended.native_unfinished.length) {
@@ -710,15 +723,23 @@ function renderCall(c) {
   const consentBox = awaiting && supervised ? el("label", { class: "consent" },
     el("input", { type: "checkbox", "aria-label": "同意本次调用的监督边界", checked: consented ? "checked" : null,
                   onchange: (e) => { S.consent.set(c.id, e.target.checked === true); render(); } }),
-    " 我已了解并同意本次调用的用户监督边界：" + supervisedBoundaryText()) : null;
+    " 我已了解并同意本次调用的用户监督边界：" + supervisedBoundaryText(c.agent_id)) : null;
+  // A handoff sends more than the user's own text: the exact composed input is
+  // what the approval binds, so it is shown in full (open while awaiting).
+  const sent = handoff.length && c.sent_text ? el("details", { class: "sent", open: awaiting ? "open" : null },
+    el("summary", {}, "将发送的完整内容（" + c.sent_text.length + " 字）"),
+    el("pre", { class: "mono" }, c.sent_text)) : null;
   return el("div", { class: "call" },
     el("div", { class: "row" },
       chip(label, kind),
+      chip(c.agent_id || "Agent", "info"),
       chip(supervised ? "用户监督模式" : "严格模式", supervised ? "warn" : ""),
       c.approval_status ? chip("审批：" + c.approval_status, "") : null,
       c.context_mode === "native_resume" ? chip("续接 " + short(c.resume_thread_id), "info") : null,
+      ...handoff.map((h) => chip(`交接：${h.agent_id} #${h.message_id}（${h.chars} 字）`, "info")),
       el("span", { class: "grow" }), actions),
     consentBox,
+    sent,
     notes.map((n) => el("div", { class: "note" }, n)),
     c.cards.map(renderCard));
 }
@@ -726,11 +747,25 @@ function renderCall(c) {
 const SUPERVISED_BOUNDARY = "原生子 Agent 与不经审批的工具操作（可能包括启动其他 Agent 的 CLI）" +
   "不在 Hub 配额内、不能逐项拦截；停止只关闭本次入口进程，后代进程与远端停止不保证。";
 
-function supervisedBoundaryText() {
-  // The adapter's own boundary text when it really admits supervised mode;
-  // otherwise (an offline stub, a blocked adapter) the generic boundary.
-  const adm = (S.adapter || {}).supervised_admission || {};
+/* The summary of the adapter serving this agent (behind a router, its own entry). */
+function agentInfo(agent) {
+  const a = S.adapter || {};
+  return (a.agents && a.agents[agent]) || a;
+}
+
+function supervisedBoundaryText(agent) {
+  // The agent's adapter's own boundary text when it really admits supervised
+  // mode; otherwise (an offline stub, a blocked adapter) the generic boundary.
+  const adm = agentInfo(agent).supervised_admission || {};
   return adm.mode === "supervised" && adm.reason ? adm.reason : SUPERVISED_BOUNDARY;
+}
+
+function toggleHandoff(m) {
+  const i = S.handoff.indexOf(m.message_id);
+  if (i >= 0) S.handoff.splice(i, 1);
+  else if (S.handoff.length >= 3) { toast("一次最多交接 3 条回复"); return; }
+  else S.handoff.push(m.message_id);
+  render();
 }
 
 function short(id) { return id ? String(id).slice(0, 8) : "?"; }
@@ -789,10 +824,14 @@ function renderNow() {
       }
     } else {
       const meta = m.result || {};
+      const chosen = S.handoff.includes(m.message_id);
       tl.append(el("div", { class: "msg assistant" },
         el("div", { class: "who" }, (m.invocation && m.invocation.agent_id) || "Agent",
            meta.native_session ? chip("thread " + short(meta.native_session.thread_id), "") : null,
-           usageText(meta.usage) ? chip("用量 " + usageText(meta.usage), "") : null),
+           usageText(meta.usage) ? chip("用量 " + usageText(meta.usage), "") : null,
+           el("button", { class: "mini" + (chosen ? " on" : ""), "data-handoff": m.message_id,
+                          title: "把这条回复附在下一次调用里交给所选 Agent；发送前会在审批卡里完整显示",
+                          onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent")),
         el("div", { class: "bubble" }, m.text)));
     }
   }
@@ -833,6 +872,12 @@ function renderComposer() {
   resume.disabled = !thread || active;
   if (resume.disabled) resume.checked = false;
   const mode = $("mode").value;
+  // Chosen handoff replies that are still on screen (a stale id is dropped).
+  S.handoff = S.handoff.filter((id) => S.messages.some((m) => m.message_id === id && m.role === "assistant"));
+  const picks = S.handoff.map((id) => S.messages.find((m) => m.message_id === id));
+  $("handoffChips").replaceChildren(...picks.map((m) => el("span", { class: "chip info" },
+    `附带交接：${(m.invocation && m.invocation.agent_id) || "Agent"} #${m.message_id}（${m.text.length} 字）`,
+    el("button", { class: "mini", title: "移除", onclick: () => toggleHandoff(m) }, "×"))));
   $("composerNote").textContent = !S.token ? "请先连接"
     : !mode ? "请先选择执行模式"
     : active ? "有调用正在执行或状态未知，暂不能续接 thread"
@@ -842,10 +887,18 @@ function renderComposer() {
 }
 
 function renderAdapter() {
-  const a = S.adapter || {};
-  const adm = a.execution_admission || {};
-  const agents = a.agent_ids && a.agent_ids.length ? a.agent_ids : ["mock"];
+  const all = S.adapter || {};
+  const agents = all.agent_ids && all.agent_ids.length ? all.agent_ids : ["mock"];
+  const keep = $("agent").value;
   $("agent").replaceChildren(...agents.map((id) => el("option", { value: id }, id)));
+  if (agents.includes(keep)) $("agent").value = keep;
+  renderAgentPosture();
+}
+
+/* Admission labels for the agent selected now (behind a router each agent differs). */
+function renderAgentPosture() {
+  const a = agentInfo($("agent").value);
+  const adm = a.execution_admission || {};
   const chipEl = $("adapterChip");
   chipEl.textContent = `${a.name || "?"}${a.transport ? " · " + a.transport : ""} · ${adm.mode || "?"}`;
   chipEl.className = "chip " + (adm.mode === "simulation" ? "info" : adm.allowed ? "warn" : "bad");
@@ -886,7 +939,7 @@ $("composer").addEventListener("submit", send);
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();
 });
-$("agent").addEventListener("change", renderComposer);
+$("agent").addEventListener("change", () => { renderAgentPosture(); renderComposer(); });
 $("mode").addEventListener("change", renderComposer);
 window.addEventListener("hashchange", () => {
   const cid = location.hash.slice(1);

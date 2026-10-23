@@ -25,10 +25,10 @@ from typing import Any, Optional
 from sqlalchemy import select, text
 
 from agenthub.contracts import (
-    NATIVE_RESUME, AdapterContract, InvocationStatus, execution_admission,
+    NATIVE_RESUME, AdapterContract, AdapterStartResult, InvocationStatus, execution_admission,
 )
 from agenthub_kernel import config
-from agenthub_kernel.adapters import UNAVAILABLE_BINDING, adapter_binding
+from agenthub_kernel.adapters import UNAVAILABLE_BINDING, adapter_binding, adapter_for
 from agenthub_kernel.db import Database, EventRow, InvocationRow, TaskRow
 from agenthub_kernel.events import StreamSink
 from agenthub_kernel.service import PolicyService, QuotaError
@@ -39,6 +39,14 @@ from agenthub_kernel.tool_approvals import ToolGate, close_decisions, void_pendi
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
 MOCK_RUNNING_STATE = "running"
+
+
+class _NoAdapter:
+    """Stands in for an agent no adapter serves: every adapter method is absent,
+    so each caller takes its own "unsupported" path."""
+
+
+_NO_ADAPTER = _NoAdapter()
 
 
 @dataclass(frozen=True)
@@ -66,6 +74,15 @@ class Worker:
 
     def stop(self) -> None:
         self._stopped = True
+
+    def _adapter_of(self, invocation_id: str) -> Any:
+        """The adapter of the call's own agent: the single adapter, or the router's choice."""
+        if not callable(getattr(self.adapter, "for_agent", None)):
+            return self.adapter
+        with self.db.session() as session:
+            inv = session.get(InvocationRow, invocation_id)
+            agent_id = (inv.snapshot or {}).get("agent_id") if inv is not None else None
+        return adapter_for(self.adapter, agent_id) or _NO_ADAPTER
 
     # ------------------------------------------------------------------ #
     # Background execution
@@ -184,7 +201,7 @@ class Worker:
             session.add(EventRow(root_task_id=task.root_task_id,
                 seq=svc._next_seq(task.root_task_id), type="local_stop_requested",
                 payload={"invocation_id": invocation_id, "actor": requested_by}))
-        stop_fn = getattr(self.adapter, "stop_local_invocation", None)
+        stop_fn = getattr(self._adapter_of(invocation_id), "stop_local_invocation", None)
         try:
             result = stop_fn(invocation_id) if stop_fn else {"reason": "unsupported"}
         except Exception as exc:
@@ -236,7 +253,7 @@ class Worker:
                                           "blocked_decisions": len(closed["blocked_decisions"]),
                                           "in_flight": len(closed["in_flight"]),
                                           "already_sent": len(closed["already_sent"])}))
-        fn = getattr(self.adapter, "interrupt_invocation", None)
+        fn = getattr(self._adapter_of(invocation_id), "interrupt_invocation", None)
         if fn is None:
             result: dict[str, Any] = {"interrupt_requested": False, "interrupt_accepted": False,
                                       "reason": "unsupported"}
@@ -339,12 +356,13 @@ class Worker:
             pass
         with self._pool_lock:
             inflight = self._inflight.get(invocation_id)
-        if inflight is not None and callable(getattr(self.adapter, "interrupt_invocation", None)):
+        target = self._adapter_of(invocation_id)
+        if inflight is not None and callable(getattr(target, "interrupt_invocation", None)):
             # A live turn this process drives: ask the provider to interrupt and
             # let the background execution settle it from the turn's own
             # terminal event, so nothing is settled twice.
             try:
-                asked = self.adapter.interrupt_invocation(invocation_id)
+                asked = target.interrupt_invocation(invocation_id)
             except Exception as exc:  # noqa: BLE001
                 asked = {"interrupt_accepted": False, "reason": type(exc).__name__}
             if asked.get("interrupt_accepted"):
@@ -366,7 +384,7 @@ class Worker:
             return {"ok": False, "reason": asked.get("reason") or "interrupt_unconfirmed",
                     "remote_stop_confirmed": False}
 
-        cancel_fn = getattr(self.adapter, "cancel_invocation", None)
+        cancel_fn = getattr(target, "cancel_invocation", None)
         if cancel_fn is None:
             # An adapter that cannot cancel must say so, not pretend.
             result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
@@ -504,14 +522,15 @@ class Worker:
                     ever_started = bool(row.started_at) or bool(row.adapter_invocation_id)
 
         cancel_result: dict[str, Any] = {"ok": False, "reason": "unsupported"}
-        cancel_fn = getattr(self.adapter, "cancel_invocation", None)
+        target = self._adapter_of(invocation_id)
+        cancel_fn = getattr(target, "cancel_invocation", None)
         if cancel_fn is not None:
             try:
                 cancel_result = cancel_fn(invocation_id)
             except Exception as exc:  # noqa: BLE001
                 cancel_result = {"ok": False, "reason": f"error:{type(exc).__name__}"}
 
-        lookup = getattr(self.adapter, "lookup_by_invocation", None)
+        lookup = getattr(target, "lookup_by_invocation", None)
         if lookup is None:
             return False, "adapter cannot report execution status", cancel_result
         try:
@@ -567,7 +586,7 @@ class Worker:
         second call can never start on top of a possibly-still-running first.
         """
         evidence = None
-        lookup = getattr(self.adapter, "lookup_by_invocation", None)
+        lookup = getattr(self._adapter_of(invocation_id), "lookup_by_invocation", None)
         if lookup is not None:
             try:
                 evidence = lookup(invocation_id)
@@ -636,7 +655,7 @@ class Worker:
         for item in candidates:
             invocation_id = item["invocation_id"]
             record = None
-            lookup = getattr(self.adapter, "lookup_by_invocation", None)
+            lookup = getattr(self._adapter_of(invocation_id), "lookup_by_invocation", None)
             if lookup is not None:
                 try:
                     record = lookup(invocation_id)
@@ -758,11 +777,23 @@ class Worker:
                 return None
             invocation_id = inv.id
 
+            # Every check below is made on the adapter of the call's own agent
+            # (behind a router, each agent has its own). An agent no adapter
+            # serves is refused here, with the approval untouched.
+            target = adapter_for(self.adapter, inv.snapshot.get("agent_id"))
+            if target is None:
+                return {
+                    "invocation_id": invocation_id,
+                    "ok": False,
+                    "code": "agent_not_served",
+                    "error": "no adapter in this Hub serves the call's agent",
+                    "launch_attempted": False,
+                }
             # Eligibility precedes consumption: an approval cannot compensate
             # for an adapter that bypasses native-child approval/quota controls.
             # Keep the call queued and its approval untouched. This is NOT an
             # unknown execution: nothing has started or reserved a slot.
-            admission = execution_admission(self.adapter, inv.snapshot.get("execution_mode", "strict"))
+            admission = execution_admission(target, inv.snapshot.get("execution_mode", "strict"))
             if not admission.allowed:
                 return {
                     "invocation_id": invocation_id,
@@ -779,7 +810,7 @@ class Worker:
             # the call cannot run and its approval is left as it is.
             refusal = None
             recorded = inv.snapshot.get("adapter_version", "unknown")
-            current = adapter_binding(self.adapter)
+            current = adapter_binding(target)
             if recorded != current or current == UNAVAILABLE_BINDING:
                 refusal = ("adapter_identity_changed",
                            "the call was approved for another adapter identity; "
@@ -788,7 +819,7 @@ class Worker:
             # that would ignore resume_thread_id must not run the call as if
             # it were independent, and a thread that may be busy is not reused.
             if refusal is None and inv.snapshot.get("context_mode") == NATIVE_RESUME:
-                supports = getattr(self.adapter, "supports_native_resume", None)
+                supports = getattr(target, "supports_native_resume", None)
                 try:
                     resumable = bool(supports()) if callable(supports) else False
                 except Exception:  # noqa: BLE001
@@ -826,8 +857,9 @@ class Worker:
             # Any failure here propagates and the adapter is never started.
         return _Claim(invocation_id, snapshot_data, gate_token)
 
-    def _supports_tool_approval(self) -> bool:
-        supports = getattr(self.adapter, "supports_tool_approval", None)
+    @staticmethod
+    def _supports_tool_approval(adapter: Any) -> bool:
+        supports = getattr(adapter, "supports_tool_approval", None)
         try:
             return bool(supports()) if callable(supports) else False
         except Exception:  # noqa: BLE001
@@ -838,6 +870,11 @@ class Worker:
         invocation_id = claim.invocation_id
         snapshot_data = claim.snapshot
         gate_token = claim.gate_token
+        agent_id = snapshot_data.get("agent_id")
+        target = adapter_for(self.adapter, agent_id)
+        note_owner = getattr(self.adapter, "note_owner", None)
+        if target is not None and callable(note_owner):
+            note_owner(invocation_id, agent_id)
 
         # ---- Phase 2: only now start the adapter, outside that transaction ----
         # The gate token proves an approval was consumed and a slot reserved; an
@@ -846,13 +883,17 @@ class Worker:
         # conversation event stream while it runs; it settles nothing. One that
         # supports tool approval gets a gate: each tool request becomes a card
         # only a user can answer (approving the run approved no tools).
-        start_streaming = getattr(self.adapter, "start_streaming", None)
+        start_streaming = getattr(target, "start_streaming", None)
         sink = StreamSink(self.db, invocation_id) if callable(start_streaming) else None
         gate = (ToolGate(self.db, invocation_id, ttl_seconds=self.tool_approval_ttl,
                          before_open=sink.flush)
-                if sink is not None and self._supports_tool_approval() else None)
+                if sink is not None and self._supports_tool_approval(target) else None)
         try:
-            if sink is not None:
+            if target is None:
+                # Unreachable after the claim's own check; nothing is launched.
+                start = AdapterStartResult("", ok=False, terminal=True,
+                                           detail="refused: no adapter serves this agent")
+            elif sink is not None:
                 extra: dict[str, Any] = {"tool_gate": gate} if gate is not None else {}
                 start = start_streaming(
                     invocation_id,
@@ -862,7 +903,7 @@ class Worker:
                     **extra,
                 )
             else:
-                start = self.adapter.start(
+                start = target.start(
                     invocation_id,
                     _snapshot_from_dict(snapshot_data),
                     gate_token=gate_token,

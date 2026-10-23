@@ -14,10 +14,12 @@ CLI all agree:
   Strict is blocked; supervised admits only the pinned constant after its
   zero-model identity check is recorded. ``AGENT_HUB_CLAUDE_CODE_STUB`` selects
   the bundled offline stub (simulation).
+* ``multi`` - both of the above behind one Hub (``RoutingAdapter``); each call
+  is checked and run on the adapter of its own ``agent_id`` (:func:`adapter_for`).
 
 :func:`adapter_binding` is what a new call's snapshot binds to
 (``adapter_version``), so an approval given under one pinned identity can never
-run under another (D11).
+run under another (D11). Under a router it is the identity of the call's agent.
 """
 
 from __future__ import annotations
@@ -31,7 +33,8 @@ from agenthub_kernel import config
 MOCK = "mock"
 CODEX = "codex"
 CLAUDE_CODE = "claude-code"
-KNOWN = (MOCK, CODEX, CLAUDE_CODE)
+MULTI = "multi"
+KNOWN = (MOCK, CODEX, CLAUDE_CODE, MULTI)
 #: Adapter ``name`` -> kind, for adapters that launch a real process.
 REAL_KINDS = {CODEX: CODEX, CLAUDE_CODE: CLAUDE_CODE}
 
@@ -48,6 +51,13 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
     the environment happens to set ``AGENT_HUB_ADAPTER=codex``.
     """
     kind = MOCK if force_mock else (kind or adapter_kind())
+
+    if kind == MULTI:
+        from agenthub_adapters.routing import RoutingAdapter
+
+        # Same construction as each single kind, so nothing is trusted that
+        # would not be trusted on its own.
+        return RoutingAdapter({CODEX: build_adapter(CODEX), CLAUDE_CODE: build_adapter(CLAUDE_CODE)})
 
     if kind == CLAUDE_CODE:
         return _build_claude_code(config.claude_code_settings())
@@ -137,13 +147,28 @@ UNKNOWN_BINDING = "unknown"
 UNAVAILABLE_BINDING = "unavailable"
 
 
-def adapter_binding(adapter: Any) -> str:
+def adapter_for(adapter: Any, agent_id: Optional[str]) -> Optional[Any]:
+    """The adapter that serves ``agent_id``: the router's choice, or the single adapter.
+
+    ``None`` means no adapter behind this router serves that agent; callers
+    refuse such a call before any approval is consumed.
+    """
+    pick = getattr(adapter, "for_agent", None)
+    return pick(agent_id) if callable(pick) else adapter
+
+
+def adapter_binding(adapter: Any, agent_id: Optional[str] = None) -> str:
     """The identity a new call's snapshot binds to (``adapter_version``).
 
     ``unknown`` when the adapter declares none; ``unavailable`` when its
-    declaration fails. The Worker compares the recorded and the current value
-    on both sides and refuses ``unavailable`` outright.
+    declaration fails, or when a router serves no adapter for ``agent_id``.
+    The Worker compares the recorded and the current value on both sides and
+    refuses ``unavailable`` outright.
     """
+    if callable(getattr(adapter, "for_agent", None)):
+        adapter = adapter_for(adapter, agent_id)
+        if adapter is None:
+            return UNAVAILABLE_BINDING
     bind = getattr(adapter, "binding_identity", None)
     if not callable(bind):
         return UNKNOWN_BINDING
@@ -157,7 +182,23 @@ def adapter_binding(adapter: Any) -> str:
 
 
 def describe(adapter: Any) -> dict:
-    """Small, safe summary for the console header."""
+    """Small, safe summary for the console header.
+
+    For a router: the union of agents, and each agent's own summary under
+    ``agents``. Router-level admission is the router's fail-closed answer; the
+    page reads the selected agent's entry.
+    """
+    agents = getattr(adapter, "agents", None)
+    if callable(getattr(adapter, "for_agent", None)) and callable(agents):
+        per_agent = {agent_id: describe(child) for agent_id, child in agents().items()}
+        return {
+            "name": getattr(adapter, "name", "router"), "kind": MULTI,
+            "real_process": any(info["real_process"] for info in per_agent.values()),
+            "agent_ids": sorted(per_agent),
+            "execution_admission": execution_admission(adapter).to_dict(),
+            "supervised_admission": execution_admission(adapter, "supervised").to_dict(),
+            "native_resume": False, "agents": per_agent,
+        }
     # Which agent_id values this adapter will serve. The console uses this to
     # pre-fill its agent field: a call created for an agent the adapter does not
     # serve can never launch, so the UI must not silently hardcode one. An empty

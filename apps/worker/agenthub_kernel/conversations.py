@@ -1,15 +1,17 @@
 """Durable local chat history. No provider calls or implicit approvals here."""
 
+import hashlib
 from typing import Any, Optional
 
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
-from agenthub.chat import CONTEXT_MODE, ConversationTurn
+from agenthub.chat import CONTEXT_MODE, MAX_HANDOFF_CHARS, MAX_MESSAGE_CHARS, ConversationTurn
 from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
 
 #: Statuses in which a provider thread may still be executing a turn.
 THREAD_BUSY_STATUSES = ("starting", "running", "unknown")
+from agenthub_kernel.adapters import adapter_for
 from agenthub_kernel.db import (
     ApprovalRow, ChatMessageRow, ConversationRow, InvocationRow, TaskRow,
 )
@@ -47,7 +49,40 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "agent_id": inv.snapshot["agent_id"],
         "context_mode": inv.snapshot.get("context_mode", CONTEXT_MODE),
         "resume_thread_id": inv.snapshot.get("resume_thread_id"),
+        "handoff": inv.snapshot.get("handoff") or [],
+        # With a handoff, what is sent differs from the user's own text: show it all.
+        "sent_text": inv.snapshot["task_input"] if inv.snapshot.get("handoff") else None,
     }
+
+
+def handoff_block(source: ChatMessageRow, agent_id: str) -> str:
+    """How one handed-over reply is framed in the next call's input (fixed format)."""
+    return (f"--- Handoff: reply of {agent_id} (Hub message {source.id}) ---\n"
+            f"{source.text}\n"
+            f"--- End of handoff ---")
+
+
+def build_handoff(session: Session, cid: str, message_ids: tuple) -> tuple[list[str], tuple]:
+    """Blocks and source records for the chosen replies, or QuotaError.
+
+    Only assistant replies of this same conversation can be handed on - a
+    message id from another conversation is "not found", never read.
+    """
+    blocks, records, total = [], [], 0
+    for message_id in message_ids:
+        source = session.get(ChatMessageRow, message_id)
+        if source is None or source.conversation_id != cid or source.role != "assistant":
+            raise QuotaError("handoff_not_found", "handoff source must be a reply in this conversation")
+        inv = session.get(InvocationRow, source.invocation_id)
+        source_agent = (inv.snapshot or {}).get("agent_id", "unknown") if inv is not None else "unknown"
+        total += len(source.text)
+        if total > MAX_HANDOFF_CHARS:
+            raise QuotaError("handoff_too_large",
+                             f"handed-over text exceeds {MAX_HANDOFF_CHARS} characters")
+        blocks.append(handoff_block(source, source_agent))
+        records.append({"message_id": source.id, "agent_id": source_agent, "chars": len(source.text),
+                        "sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest()})
+    return blocks, tuple(records)
 
 
 def native_thread_for(session: Session, cid: str, agent_id: str) -> Optional[str]:
@@ -141,11 +176,21 @@ def submit_turn(
             raise QuotaError("native_session_busy",
                              "another call in this conversation is active or unknown")
 
+    # A manual handoff: the chosen replies are appended to the user's text in a
+    # fixed frame. The composed text is what the agent receives and what the
+    # approval binds; the user's message keeps only what the user typed.
+    task_input, handoff = request.text, ()
+    if request.handoff_message_ids:
+        blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
+        task_input = "\n\n".join([request.text, *blocks])
+        if len(task_input) > MAX_MESSAGE_CHARS:
+            raise QuotaError("handoff_too_large", "message with handoff exceeds the size limit")
+
     snapshot = InvocationSnapshot(
-        agent_id=request.agent_id, task_input=request.text, parent_task_id=None,
+        agent_id=request.agent_id, task_input=task_input, parent_task_id=None,
         depth=0, policy_version=root.policy_version, execution_mode=request.execution_mode,
         context_mode=request.context_mode, resume_thread_id=resume_thread_id,
-        adapter_version=adapter_version,
+        adapter_version=adapter_version, handoff=handoff,
     )
     inv = svc.create_invocation(task_id=root.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)
@@ -175,6 +220,8 @@ def capture_reply(session: Session, adapter: Any, invocation_id: str) -> bool:
         ChatMessageRow.invocation_id == invocation_id, ChatMessageRow.role == "assistant",
     )) is not None:
         return False
+    # Behind a router, the reply lives in the store of the call's own agent.
+    adapter = adapter_for(adapter, inv.snapshot.get("agent_id"))
     last = getattr(adapter, "last_result", None)
     if not callable(last):
         return False  # An inert Mock's state is not a model reply.

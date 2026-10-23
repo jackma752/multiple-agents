@@ -55,6 +55,8 @@ class TurnIn(MessageIn):
     # native_resume continues the provider thread of this agent's latest reply;
     # the thread id is bound into the approved snapshot.
     context_mode: Literal["independent", "native_resume"] = "independent"
+    # Manual handoff: replies of this conversation the user chose to pass on.
+    handoff_message_ids: list[int] = Field(default_factory=list, max_length=3)
 
     @field_validator("agent_id", "client_request_id")
     @classmethod
@@ -230,15 +232,22 @@ def register_conversations(app, db) -> None:
     @app.post("/api/conversations/{cid}/invocations")
     def create_turn(cid: str, body: TurnIn, principal: Principal = Depends(authenticate)):
         require_approver(principal)
-        request = ConversationTurn(**body.model_dump())
+        data = body.model_dump()
+        try:
+            request = ConversationTurn(**{**data, "handoff_message_ids": tuple(data["handoff_message_ids"])})
+        except ValueError as exc:
+            raise HTTPException(422, detail={"code": "invalid_turn", "message": str(exc)})
         with db.session() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             try:
+                # The identity of the adapter serving THIS agent (behind a router,
+                # each agent has its own); "unavailable" for an unserved agent.
                 return submit_turn(session, cid, principal.identity, request,
-                                   adapter_version=adapter_binding(app.state.worker.adapter))
+                                   adapter_version=adapter_binding(app.state.worker.adapter,
+                                                                   request.agent_id))
             except QuotaError as exc:
                 raise HTTPException(
-                    404 if exc.code == "no_conversation" else 409,
+                    404 if exc.code in ("no_conversation", "handoff_not_found") else 409,
                     detail={"code": exc.code, "message": exc.message},
                 )
 

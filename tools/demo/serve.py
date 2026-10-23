@@ -75,11 +75,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--adapter",
-        choices=["mock", "codex"],
+        choices=["mock", "codex", "claude-code", "multi"],
         default=None,
         help="adapter to serve with: 'mock' is inert (default); 'codex' exposes "
              "records and capabilities; real launches require explicit per-call "
-             "supervised consent while strict controls remain unverified",
+             "supervised consent while strict controls remain unverified; "
+             "'multi' serves codex and claude-code side by side, each call on "
+             "the adapter of its own agent",
+    )
+    parser.add_argument(
+        "--claude-code-stub",
+        metavar="SCENARIO",
+        default=None,
+        help="serve Claude Code against the bundled OFFLINE stub with this "
+             "scenario (e.g. 'success'); no Claude Code, no model",
     )
     parser.add_argument(
         "--appserver-stub",
@@ -107,9 +116,11 @@ def main() -> None:
     if args.data_dir:
         os.environ["AGENT_HUB_DATA_DIR"] = os.path.abspath(args.data_dir)
     if args.appserver_stub:
-        os.environ["AGENT_HUB_ADAPTER"] = "codex"
+        os.environ["AGENT_HUB_ADAPTER"] = "multi" if args.adapter == "multi" else "codex"
         os.environ["AGENT_HUB_CODEX_TRANSPORT"] = "app-server"
         os.environ["AGENT_HUB_APPSERVER_STUB"] = args.appserver_stub
+    if args.claude_code_stub:
+        os.environ["AGENT_HUB_CLAUDE_CODE_STUB"] = args.claude_code_stub
 
     import uvicorn
 
@@ -125,7 +136,11 @@ def main() -> None:
     kind = adapter_kind()
 
     print("=" * 72)
-    if args.appserver_stub:
+    if kind == "multi":
+        print("Agent Hub - codex + claude-code side by side (each call checked and run on its own agent's adapter)")
+        print(f"  codex      : {'OFFLINE STUB ' + args.appserver_stub if args.appserver_stub else 'real (supervised only)'}")
+        print(f"  claude-code: {'OFFLINE STUB ' + args.claude_code_stub if args.claude_code_stub else 'real (refused until identity recorded)'}")
+    elif args.appserver_stub:
         print("Agent Hub - app-server transport against the OFFLINE STUB (no Codex, no model)")
     elif kind == "codex":
         print("Agent Hub - Codex adapter (strict blocked; explicit supervised approval available)")

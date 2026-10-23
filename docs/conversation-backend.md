@@ -1,5 +1,11 @@
 # 会话后端（2026-10-21）
 
+**2026-10-24 契约补充**（详见[多 Agent 对话](multi-agent.md)）：
+- `ConversationTurn` 新增 `handoff_message_ids`：只接受同一会话中的 Agent 回复，最多 3 条。
+- `InvocationSnapshot` 新增 `handoff`：记录每段来源，被交接的文本已写入 `task_input`；没有交接时哈希不变。
+- 回合视图新增 `handoff` 和 `sent_text`；有交接时，`sent_text` 是完整的发送内容。
+- `adapter_binding(adapter, agent_id)` 在路由器下取该 Agent 适配器的身份。
+
 本轮只实现后端，前端最后再接。会话和消息写入运行数据库，不能把运行库打进源码发布包。无需读取凭据或发起模型调用。
 
 ## HTTP 契约
