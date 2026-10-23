@@ -1,3 +1,17 @@
+# 当前交接（工作流 B）：Claude Code 最小接入，离线（2026-10-23，分支 `feat/claude-code-min`）
+
+本节自成一体；同日另一分支也在修改本文件，合并时两节并列保留即可。
+
+- 基于 `feat/appserver-s6` 的 `2ccae55`。提交号见本分支 `git log -1`（提交说明含本轮验证输出）。
+- 新增 `ClaudeCodeAdapter`（`packages/adapters/agenthub_adapters/claude_code.py`），`AGENT_HUB_ADAPTER=claude-code` 选用；离线桩 `tools/demo/stub_claude_code.py`（按文档手写，不是捕获）；真实测试驱动 `tools/probes/claude_code_min.py`（默认桩模式）。
+- 路径：Hub 调用 → 用户审批（监督模式需本次显式同意）→ Worker 消费审批并预留名额 → 一个 `claude -p` 进程（固定参数、提示词走 stdin、无工具、`--max-turns 1`、仓库外空工作目录）→ 解析 JSON result → 按现有规则结算。没有新增审批或配额机制。
+- 准入：严格模式拒绝；监督模式只认代码常量中的 2.1.308（静态核对：路径、大小、SHA-256、签名），并且要求 `ZERO_MODEL_IDENTITY_REPORT` 已记录。当前为 `None`，**真实启动一律被拒**。
+- **没有运行 Claude Code，没有模型回合，没有读取凭据。** 能力全部未验证，见 [Claude Code 适配器](claude-code-adapter.md) 与能力矩阵。
+- 剩余阻塞：独立 CLI 没有可用登录（默认配置目录无 `.credentials.json`，桌面会话的认证不可借用）。需要用户在专用配置目录自行登录，以及用户批准真实测试（申请见 [Claude Code 适配器](claude-code-adapter.md) 第 6 节：步骤 A 零模型身份核验 → 离线提交记录报告哈希 → 步骤 L 用户登录 → 步骤 B 最多一个模型回合）。
+- 另一个风险：固定文件是桌面应用管理的，桌面更新可能删除它，届时需要重新固定。
+
+---
+
 # 当前交接：网页会话、重连、命令展示与监督模式修复（S6-4 前置，2026-10-23）
 
 - 修复了演示中发现的两个页面缺陷，并补齐了网页的监督模式入口，说明见 [会话页面](chat-frontend.md) 末节：

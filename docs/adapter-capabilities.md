@@ -1,5 +1,20 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-23 Claude Code 最小接入**（离线，分支 `feat/claude-code-min`；见 [Claude Code 适配器](claude-code-adapter.md)）。下表描述本仓库自己的 CC 适配器；表 B 的 CC 一行（经 AionUi 接入时的观察）保留为历史。**没有运行过 Claude Code**，所以没有任何一项是“已验证”。
+
+| 能力 | 状态 |
+|---|---|
+| 准入 | 严格模式拒绝（`claude_code_controls_unverified`）。监督模式只认代码常量 `PINNED_CLAUDE_CODE`（2.1.308，静态核对）且要求零模型身份核验已记录；当前未记录，真实启动一律被拒（`identity_unconfirmed`）。离线桩为 simulation |
+| 发消息 / 最终回复 | 已实现（`claude -p`，提示词走 stdin，`--output-format json` 的 `result`）。**未验证** |
+| 真实用量 | 已实现：result 带 `usage`/`total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**未验证** |
+| 流式 | 未实现（不用 `stream-json`） |
+| 恢复会话 | 未实现（`--no-session-persistence`），不报告 `native_session` |
+| 取消 | `unsupported`；本地停止只结束本次入口进程，远端未确认停止时保留名额 |
+| 限制目录 | 未知。每次调用一个仓库外的空工作目录，不等于沙箱 |
+| 拦截工具 | 不能。`--tools ""`、`--permission-mode dontAsk` 只是请求，**未验证** |
+| 控制内部子 Agent | 不能。`--tools ""` 不提供 Agent 工具只是请求；不能声称已禁用子 Agent |
+| 宿主配置隔离 | 请求：`--safe-mode`、`--strict-mcp-config`、`--disable-slash-commands`、专用 `CLAUDE_CONFIG_DIR`、剥离继承的 `CLAUDE*`/`ANTHROPIC*` 变量。**未验证** |
+
 **2026-10-23 S6-1 app-server 加固**（离线；见 [S6 规划](appserver-s6-plan.md)和[会话后端契约](conversation-backend.md)末节）。下面这张表取代 2026-10-21 那张表中 app-server 的各行；那张表保留在后面，作为历史记录。
 
 | 能力 | 状态 |
