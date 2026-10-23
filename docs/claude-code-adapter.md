@@ -172,7 +172,9 @@ $env:NODE_EXTRA_CA_CERTS = "E:\plug\agent-hub\.venv\Lib\site-packages\certifi\ca
 - `--help` 列出了 `auth`（Manage authentication）。如果 `auth login` 不可用，先运行 `... claude.exe auth --help` 查看子命令；不要改用其他登录方式，换方式需要另行评审。
 - 登录完成后告诉我。我只检查 `%LOCALAPPDATA%\AgentHub\claude-config\.credentials.json` 是否存在，不打开。
 
-### 8.3 步骤 B：最多一个模型回合（未执行，需单独批准）
+### 8.3 步骤 B：最多一个模型回合
+
+**状态（2026-10-24）**：用户登录后，经批准在 `c554fd1` 上执行一次，结果 **PASS**，只认定本次。见 [单回合实录](claude-code-turn-2026-10-24-run1.md)，标签 `evidence/cc-turn-real-run-1-pass`。授权已用完。下文保留申请原文。
 
 - **被测提交**：`feat/claude-code-min` 上包含本节的提交。执行前确认 HEAD 和工作树都没有变化。
 - **前置**：

@@ -17,7 +17,13 @@
 - **2026-10-24**：用户选择 (a)，保留 `--max-turns`，`ZERO_MODEL_IDENTITY_REPORT` 已记录为 `b57a1d5f…`。下一步：
   - 用户自己登录（步骤 L）；
   - 申请最多一个模型回合（步骤 B）。
-  - 两项都见 [Claude Code 适配器](claude-code-adapter.md) 第 8 节，**未执行**。
+  - 两项都见 [Claude Code 适配器](claude-code-adapter.md) 第 8 节。
+- **2026-10-24 用户已登录；步骤 B 经批准执行一次，PASS**（只认定本次）：
+  - 回复 `OK`，`num_turns=1`，有用量；
+  - 全部固定参数被接受，包括 `--max-turns`；
+  - 名额已释放，stderr 为空。
+  - 见 [单回合实录](claude-code-turn-2026-10-24-run1.md)，标签 `evidence/cc-turn-real-run-1-pass`。
+- 下一步：把本分支和 `feat/codex-runtime` 的记录合并进 `feat/p3-two-agent`（需批准），再申请一次双 Agent 真实对话。
 
 ---
 
