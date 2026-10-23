@@ -12,7 +12,12 @@
     - 启动配置没有传 `--codex-transport app-server`，`multi` 下的 Codex 走了 exec；exec 固定的旧程序已被删除，启动前就被拒绝；
     - 没有进程，没有模型回合，没有调用 Claude Code；
     - 见 [第一次实录](two-agent-2026-10-24-run1.md)。
-  - 下一步：离线修正四处（multi 下 Codex 固定用 app-server、启动信息按 Agent 打印、前置检查读取 `/api/adapter`、判定脚本对缺失记录判 INCONCLUSIVE），然后重新申请。
+  - 四处离线修正已完成：
+    - multi 下 Codex 固定用 app-server；
+    - 启动信息按 Agent 打印；
+    - 新增 `--preflight` 检查 `/api/adapter`；
+    - 判定脚本对缺失记录判 INCONCLUSIVE。
+  - 第二次申请见 [多 Agent 对话](multi-agent.md) 第 6 节，未执行。
 
 ---
 

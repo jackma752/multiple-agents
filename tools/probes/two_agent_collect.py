@@ -122,6 +122,7 @@ def collect(data_dir: Path, *, code: str, codex_binding: str = CODEX_BINDING,
         "codex_native_agents": len(c1.get("native_agents") or []),
         "codex_event_anomalies": (c1.get("foreign_events") or 0) + (c1.get("late_events") or 0)
         + (c1.get("usage_anomalies") or 0),
+        "codex_record_present": bool(c1),
         "codex_exit_confirmed": c1.get("local_process_exit_confirmed") is True,
         # Checked (both lists recorded) and nothing left after the grace period.
         "codex_descendants_clean": isinstance(descendants, dict) and isinstance(descendants.get("before_close"), list)
@@ -137,6 +138,7 @@ def collect(data_dir: Path, *, code: str, codex_binding: str = CODEX_BINDING,
         "code_in_user_text": bool(code) and code in user_text,
         "claude_reply_exact": claude_reply.get("text", "").strip() == code,
         "claude_reply_contains": code in claude_reply.get("text", ""),
+        "claude_record_present": bool(c2),
         "claude_usage_present": bool(c2.get("usage")),
         "claude_num_turns": c2.get("num_turns"),
         "claude_permission_denials": c2.get("permission_denials_count"),
@@ -162,10 +164,15 @@ def judge(f: dict) -> tuple[list, list]:
         fail.append("claude_binding_mismatch")
     if f["accept_sent"]:
         fail.append("accept_path_reached")
-    if f["invocations"] >= 1 and not f["codex_workdir_empty"]:
-        fail.append("codex_execution_evidence")
-    if f["invocations"] >= 2 and not f["claude_workdir_empty"]:
-        fail.append("claude_execution_evidence")
+    # A workdir is judged only when the adapter recorded the call: no record
+    # means nothing was launched, which is "not shown", never execution evidence.
+    for agent, needed in (("codex", 1), ("claude", 2)):
+        if f["invocations"] < needed:
+            continue
+        if not f[f"{agent}_record_present"]:
+            inconclusive.append(f"{agent}_record_missing")
+        elif not f[f"{agent}_workdir_empty"]:
+            fail.append(f"{agent}_execution_evidence")
     if f["handoff_records"] and not f["handoff_points_at_codex_reply"]:
         fail.append("handoff_source_mismatch")
     if f["handoff_records"] and not f["sent_input_is_text_plus_frame"]:
@@ -210,12 +217,68 @@ def judge(f: dict) -> tuple[list, list]:
     return fail, inconclusive
 
 
+def check_adapter_info(info: dict, *, codex_binding: str = CODEX_BINDING,
+                       claude_binding: str = CLAUDE_BINDING) -> list[str]:
+    """Problems with a running Hub's ``/api/adapter`` answer; empty = it serves what was approved.
+
+    Checked after the service starts and before any call: run 1 failed because
+    Codex was silently built on the exec transport.
+    """
+    problems = []
+    if info.get("kind") != "multi":
+        problems.append("not_multi")
+    agents = info.get("agents") or {}
+    codex, claude = agents.get("codex") or {}, agents.get("claude-code") or {}
+    if codex.get("transport") != "app-server":
+        problems.append("codex_transport_not_app_server")
+    if codex.get("binding_identity") != codex_binding:
+        problems.append("codex_binding_not_pinned")
+    if claude.get("binding_identity") != claude_binding:
+        problems.append("claude_binding_not_pinned")
+    for name, a in (("codex", codex), ("claude", claude)):
+        sup = a.get("supervised_admission") or {}
+        if not (sup.get("allowed") is True and sup.get("mode") == "supervised"):
+            problems.append(f"{name}_supervised_not_admitted")
+        if (a.get("execution_admission") or {}).get("allowed") is not False:
+            problems.append(f"{name}_strict_not_blocked")
+        if a.get("identity_ok") is not True:
+            problems.append(f"{name}_identity_not_ok")
+    return problems
+
+
+def preflight(url: str, token: str) -> dict:
+    """GET /api/adapter of the local Hub (no proxy) and check it. Reads nothing else."""
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # localhost, never via a proxy
+    request = urllib.request.Request(url.rstrip("/") + "/api/adapter", headers={"Authorization": f"Bearer {token}"})
+    with opener.open(request, timeout=120) as response:
+        info = json.loads(response.read().decode("utf-8"))
+    summary = {agent: {"transport": a.get("transport"), "binding_identity": a.get("binding_identity"),
+                       "identity_ok": a.get("identity_ok"),
+                       "supervised": (a.get("supervised_admission") or {}).get("mode"),
+                       "strict_allowed": (a.get("execution_admission") or {}).get("allowed")}
+               for agent, a in (info.get("agents") or {}).items()}
+    return {"kind": info.get("kind"), "agents": summary, "problems": check_adapter_info(info)}
+
+
 def main() -> int:
+    import os
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data-dir", required=True)
-    parser.add_argument("--code", required=True, help="the run's code word (only its SHA-256 is written)")
+    parser.add_argument("--preflight", metavar="URL", help="check the running Hub's /api/adapter, then exit")
+    parser.add_argument("--data-dir")
+    parser.add_argument("--code", help="the run's code word (only its SHA-256 is written)")
     parser.add_argument("--label", default="real")
     args = parser.parse_args()
+    if args.preflight:
+        # The token is the page's built-in development default unless one is configured; never printed.
+        result = preflight(args.preflight, os.environ.get("AGENT_HUB_USER_TOKEN") or "dev-user-token")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print("PREFLIGHT " + ("PASS" if not result["problems"] else "STOP " + str(result["problems"])))
+        return 0 if not result["problems"] else 1
+    if not (args.data_dir and args.code):
+        parser.error("--data-dir and --code are required to judge a run")
     data_dir = Path(args.data_dir)
     facts = collect(data_dir, code=args.code)
     facts["data_dir"] = str(data_dir)

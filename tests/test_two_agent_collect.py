@@ -128,6 +128,61 @@ def test_the_real_bindings_are_the_pinned_constants(tmp_path):
     assert TA.CLAUDE_BINDING.startswith("claude-code@2.1.308;sha256=c9796ba2")
 
 
+def test_a_call_with_no_adapter_record_is_not_shown_rather_than_execution_evidence(tmp_path):
+    # Run 1: the call was refused before launch, so no record and no workdir existed.
+    import sqlite3
+
+    data_dir = web_run(tmp_path)
+    conn = sqlite3.connect(data_dir / "appserver-executions.db")
+    conn.execute("delete from appserver_executions")
+    conn.commit()
+    conn.close()
+    facts = TA.collect(data_dir, code=CODE, **BINDINGS)
+    assert "codex_record_missing" in facts["reason_codes"]
+    assert "codex_execution_evidence" not in facts["reason_codes"] and facts["verdict"] == "INCONCLUSIVE"
+
+
+def adapter_info(**changes):
+    """A /api/adapter answer for the real pinned pair, as describe() renders it."""
+    agent = lambda binding, transport: {"transport": transport, "binding_identity": binding, "identity_ok": True,
+                                        "supervised_admission": {"allowed": True, "mode": "supervised"},
+                                        "execution_admission": {"allowed": False, "mode": "blocked"}}
+    info = {"kind": "multi", "agents": {"codex": agent(TA.CODEX_BINDING, "app-server"),
+                                        "claude-code": agent(TA.CLAUDE_BINDING, "claude-code-cli")}}
+    for path, value in changes.items():
+        agent_id, key = path.split(".")
+        info["agents"][agent_id][key] = value
+    return info
+
+
+def test_preflight_accepts_only_the_pinned_pair_on_app_server():
+    assert TA.check_adapter_info(adapter_info()) == []
+    assert TA.check_adapter_info(adapter_info(**{"codex.transport": "exec"})) == ["codex_transport_not_app_server"]
+    assert "claude_binding_not_pinned" in TA.check_adapter_info(adapter_info(**{"claude-code.binding_identity": "x"}))
+    assert "codex_supervised_not_admitted" in TA.check_adapter_info(
+        adapter_info(**{"codex.supervised_admission": {"allowed": False, "mode": "blocked"}}))
+    assert "claude_strict_not_blocked" in TA.check_adapter_info(
+        adapter_info(**{"claude-code.execution_admission": {"allowed": True, "mode": "simulation"}}))
+    assert "codex_identity_not_ok" in TA.check_adapter_info(adapter_info(**{"codex.identity_ok": False}))
+    assert TA.check_adapter_info({"kind": "codex"})[0] == "not_multi"
+
+
+def test_preflight_refuses_the_offline_stub_pair(tmp_path):
+    from agenthub_kernel.adapters import describe
+
+    router = RoutingAdapter({
+        "codex": AppServerCodexAdapter(transport_factory=StdioStubFactory("happy"),
+                                       workdir_root=str(tmp_path / "c"),
+                                       store=ExecutionStore(str(tmp_path / "a.db"), table="appserver_executions")),
+        "claude-code": ClaudeCodeAdapter(launcher=StubClaudeLauncher("success-usage"),
+                                         workdir_root=str(tmp_path / "cc"),
+                                         store=ExecutionStore(str(tmp_path / "b.db"), table="claude_code_executions"),
+                                         runner=FakeClaudeRunner(code_from_handoff))})
+    problems = TA.check_adapter_info(describe(router))
+    assert {"codex_binding_not_pinned", "claude_binding_not_pinned",
+            "codex_supervised_not_admitted", "claude_supervised_not_admitted"} <= set(problems)
+
+
 @pytest.mark.parametrize("change, code", [
     ({"invocations": 3}, "budget_exceeded"),
     ({"accept_sent": True}, "accept_path_reached"),

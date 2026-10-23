@@ -55,9 +55,13 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
     if kind == MULTI:
         from agenthub_adapters.routing import RoutingAdapter
 
-        # Same construction as each single kind, so nothing is trusted that
-        # would not be trusted on its own.
-        return RoutingAdapter({CODEX: build_adapter(CODEX), CLAUDE_CODE: build_adapter(CLAUDE_CODE)})
+        # Codex always on the app-server transport here, whatever
+        # AGENT_HUB_CODEX_TRANSPORT says: exec is the blocked legacy path, and a
+        # run that silently fell back to it failed (docs/two-agent-2026-10-24-run1.md).
+        # Otherwise the same construction as each single kind, so nothing is
+        # trusted that would not be trusted on its own.
+        codex = _build_appserver({**config.codex_settings(), "transport": "app-server"})
+        return RoutingAdapter({CODEX: codex, CLAUDE_CODE: build_adapter(CLAUDE_CODE)})
 
     if kind == CLAUDE_CODE:
         return _build_claude_code(config.claude_code_settings())

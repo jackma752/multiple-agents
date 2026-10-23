@@ -143,3 +143,42 @@
   - Claude Code 可能多说话；
   - Codex 的 stderr 很可能出现已知的 skills ERROR；
   - 桌面更新可能删除 Claude Code 的固定文件，届时身份核验失败，调用被拒（一律关闭）。
+
+## 6. 双 Agent 真实网页对话：第二次申请（修正后，未执行）
+
+**本节只是申请，不构成授权。** 用户单独批准后执行一次。第一次运行 FAIL 的原因和修正见 [第一次实录](two-agent-2026-10-24-run1.md)。
+
+### 6.1 已做的修正（离线，本提交）
+
+1. `build_adapter("multi")` 中，Codex 一律用 app-server 传输，`AGENT_HUB_CODEX_TRANSPORT` 无论设为什么都不能让它退回 exec。测试覆盖了未设置和设为 `exec` 两种情况，结果都是常量构造的 `CodexAppServerFactory`。
+2. `serve.py --adapter multi` 先构造一次适配器并交给应用，启动信息逐个 Agent 打印 `transport`、`supervised` 状态和 `binding`。用离线桩启动核对过：codex 为 `transport=app-server`。
+3. 新增前置检查 `two_agent_collect.py --preflight <url>`：只读 `/api/adapter`，不经代理。必须同时满足：
+   - kind 为 multi；
+   - codex 的 transport 为 app-server；
+   - 两个 Agent 的 binding 都等于固定常量；
+   - 监督准入都放行，严格准入都阻止，身份核对都通过。
+
+   用离线桩服务测试，正确返回 STOP。
+4. 判定脚本：没有执行记录时判 INCONCLUSIVE（`*_record_missing`），不再算作执行证据。
+
+### 6.2 申请
+
+- **被测提交**：`feat/p3-two-agent` 上包含本节的提交。执行前确认 HEAD 和工作树都没有变化。
+- **前置**：与第 5 节相同（固定程序和登录文件只做被动核验）。数据目录换成新的 `%TEMP%\agenthub-two-agent-run2`，执行前确认它不存在。
+- **启动**：`.claude/launch.json` 的 `p3-two-agent-real`，已加上 `--codex-transport app-server`，并改用新的数据目录。启动信息必须显示：
+  - codex 为 `transport=app-server supervised=supervised`，binding 为固定的 alpha.11.2 身份；
+  - claude-code 为 `supervised=supervised`，binding 为固定的 2.1.308 身份。
+
+  任何一项不符就停止。
+- **新增：调用前的前置检查**。服务启动后、打开网页之前运行一次：
+
+  ```powershell
+  Set-Location E:\plug\agent-hub\.worktrees\p3-two-agent
+  & 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools\probes\two_agent_collect.py --preflight http://127.0.0.1:8174
+  ```
+
+  必须输出 `PREFLIGHT PASS`，否则停止服务，不做任何调用。网页连接后再核对页头标签：选 codex 时应显示 `app-server`。
+- **暗号**：重新即时生成，不复用第一次的。
+- **网页操作、预算、判定、只认定 / 不认定、停止规则、证据、风险**：与第 5 节相同。
+  - 判定命令中的数据目录换成 run2；
+  - 证据标签为 `evidence/two-agent-real-run-2-<pass|fail|inconclusive>`。

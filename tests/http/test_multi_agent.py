@@ -208,6 +208,27 @@ def test_build_adapter_multi_builds_each_agent_like_its_single_kind(monkeypatch,
         assert execution_admission(router.for_agent(agent)).mode == "simulation"
 
 
+@pytest.mark.parametrize("transport", [None, "exec"])
+def test_multi_always_builds_codex_on_the_app_server_transport(monkeypatch, tmp_path, transport):
+    # Run 1 of the two-agent real conversation failed because multi built Codex
+    # on the default exec transport. Under multi the env setting cannot pick exec.
+    from agenthub_adapters.appserver_adapter import PINNED_APPSERVER, CodexAppServerFactory
+
+    monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("AGENT_HUB_APPSERVER_STUB", raising=False)
+    monkeypatch.setenv("AGENT_HUB_CLAUDE_CODE_STUB", "success-usage")
+    monkeypatch.setenv("AGENT_HUB_CLAUDE_CODE_WORKDIR", str(tmp_path / "cc-runs"))
+    if transport is None:
+        monkeypatch.delenv("AGENT_HUB_CODEX_TRANSPORT", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_HUB_CODEX_TRANSPORT", transport)
+    codex_adapter = build_adapter("multi").for_agent("codex")
+    assert type(codex_adapter).__name__ == "AppServerCodexAdapter" and codex_adapter.transport == "app-server"
+    factory = codex_adapter.transport_factory
+    assert type(factory) is CodexAppServerFactory and factory.codex_path == PINNED_APPSERVER["path"]
+    assert describe(codex_adapter)["transport"] == "app-server"
+
+
 # ---------------------------------------------------------------- handoff
 
 

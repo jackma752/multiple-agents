@@ -134,12 +134,21 @@ def main() -> None:
     from agenthub_kernel.adapters import adapter_kind
 
     kind = adapter_kind()
+    adapter = None
 
     print("=" * 72)
     if kind == "multi":
+        from agenthub_kernel.adapters import build_adapter, describe
+
+        # Built once here and handed to the app, so the banner shows exactly
+        # what will serve each agent (transport, bound identity, admission).
+        adapter = build_adapter(kind)
         print("Agent Hub - codex + claude-code side by side (each call checked and run on its own agent's adapter)")
-        print(f"  codex      : {'OFFLINE STUB ' + args.appserver_stub if args.appserver_stub else 'real (supervised only)'}")
-        print(f"  claude-code: {'OFFLINE STUB ' + args.claude_code_stub if args.claude_code_stub else 'real (supervised only)'}")
+        for agent_id, info in describe(adapter)["agents"].items():
+            sup = info.get("supervised_admission") or {}
+            print(f"  {agent_id:<11}: transport={info.get('transport')}  supervised={sup.get('mode')}"
+                  f"{'' if sup.get('allowed') else ' (REFUSED: ' + str(sup.get('code')) + ')'}")
+            print(f"  {'':<11}  binding={info.get('binding_identity')}")
     elif args.appserver_stub:
         print("Agent Hub - app-server transport against the OFFLINE STUB (no Codex, no model)")
     elif kind == "codex":
@@ -208,7 +217,7 @@ def main() -> None:
 
     from agenthub_rt.api import create_app
 
-    app = create_app(adapter_kind=kind)
+    app = create_app(adapter=adapter) if adapter is not None else create_app(adapter_kind=kind)
     config_ = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config_)
 
