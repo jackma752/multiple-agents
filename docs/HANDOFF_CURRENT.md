@@ -1,4 +1,18 @@
-# 当前交接：多 Agent 路由与手动交接（P3，2026-10-24，分支 `feat/p3-two-agent`）
+# 当前交接：双 Agent 真实网页对话 PASS，达到阶段 T 的启动节点（2026-10-24，分支 `feat/p3-two-agent`）
+
+- 经批准在 `5a2f55a` 上执行第二次双 Agent 真实网页对话：
+  - `--preflight` PASS；
+  - Codex 回复暗号；会话切换后历史保持；经批准的交接让 Claude Code 答出同一暗号；
+  - 判定 **PASS**（只认定本次）。
+  - 见 [第二次实录](two-agent-2026-10-24-run2.md)，标签 `evidence/two-agent-real-run-2-pass`。
+- 按 `AGENT_HUB_TOKEN_SAVING_REQUIREMENTS.md` 第 6 节，下一项工作是 T-0（适配器可见的用量、历史、缓存和压缩能力盘点与基线），然后是 T-1（用量预算 + `@` 文件片段）。
+- 未做：
+  - 合并到 main，需要用户批准（见 `plan/branch-consolidation` 的方案）；
+  - Codex 的 S6-4 和 S6-5，属于加固，不是 T 的前提。
+
+---
+
+# 历史交接：多 Agent 路由与手动交接（P3，2026-10-24，分支 `feat/p3-two-agent`）
 
 - 经用户批准，从 `feat/appserver-s6` 新开本分支，用 `--no-ff` 合并了工作流 A（`feat/codex-runtime`）和工作流 B（`feat/claude-code-min`）。没有推送，没有合并到 main。
 - 新增 `RoutingAdapter`（`AGENT_HUB_ADAPTER=multi`）：每个调用都在自己 Agent 的适配器上检查和运行；路由器层面一律拒绝。
