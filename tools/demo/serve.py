@@ -89,6 +89,14 @@ def main() -> None:
              "OFFLINE stub with this scenario (e.g. 'demo'); no Codex, no model",
     )
     parser.add_argument(
+        "--codex-transport",
+        choices=["exec", "app-server"],
+        default=None,
+        help="with --adapter codex: the Codex transport. 'app-server' uses the pinned "
+             "identity in code (never the AGENT_HUB_CODEX_* variables) and is admitted "
+             "in supervised mode only",
+    )
+    parser.add_argument(
         "--data-dir",
         default=None,
         help="runtime data directory (database, run dirs); default var/",
@@ -109,6 +117,8 @@ def main() -> None:
 
     if args.adapter and not args.appserver_stub:
         os.environ["AGENT_HUB_ADAPTER"] = args.adapter
+    if args.codex_transport and not args.appserver_stub:
+        os.environ["AGENT_HUB_CODEX_TRANSPORT"] = args.codex_transport
 
     from agenthub_kernel.adapters import adapter_kind
 
@@ -130,6 +140,21 @@ def main() -> None:
     print(f"  Data dir : {config.DATA_DIR}")
     if args.appserver_stub:
         print(f"  stub     : tools/demo/stub_appserver.py --scenario {args.appserver_stub}")
+    elif kind == "codex" and config.codex_transport() == "app-server":
+        from agenthub_adapters.appserver_adapter import PINNED_APPSERVER
+
+        s = config.codex_settings()
+        print("  transport: app-server (strict blocked; supervised only, per-call consent)")
+        print(f"  codex    : {PINNED_APPSERVER['path']}  (pinned in code)")
+        print(f"  version  : {PINNED_APPSERVER['version']}")
+        print(f"  sha256   : {PINNED_APPSERVER['sha256']}  size {PINNED_APPSERVER['size']}")
+        overrides = s.get("identity_env_overrides") or ()
+        print("  overrides: " + (", ".join(overrides) + "  -> supervised admission refused"
+                                 if overrides else "none"))
+        print(f"  CODEX_HOME: {s['codex_home']}")
+        print(f"  proxy    : {s['proxy'] or '(none)'}")
+        print(f"  ca bundle: {s['ca_bundle'] or '(none)'}")
+        print(f"  work dirs: {s['workdir_root']}")
     elif kind == "codex":
         s = config.codex_settings()
         print(f"  codex    : {s['codex_path']}")

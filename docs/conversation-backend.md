@@ -366,7 +366,7 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
   - 工具决定关闭之后什么都不发；
   - 过期卡在工具决定未关闭时发一次 `decline`。
 - 卡片详情新增：
-  - `command_view`：把 `command` 按 argv 拆开，PowerShell 或 cmd 包装显示为外层程序加内层命令。只用于展示，不作为安全依据。
+  - `command_view`：把 `command` 按 argv 拆开，PowerShell 或 cmd 包装显示为外层程序加内层命令。只用于展示，不作为安全依据。2026-10-23 修订：改为只接受 `shlex_join` 会产生的形式的严格拆分（`split_quoted_argv`）。未加引号的反斜杠、shell 语法或非 ASCII 字符、引号不配对，都判为 `parsed: false`，页面只显示原文（见 [会话页面](chat-frontend.md)）。
   - `reason_source: "model"`：页面把理由标为“模型提供的说明”。
 
 ### 工具活动（D4）、中断（D5）、事件绑定（D8）、后代进程（D10）

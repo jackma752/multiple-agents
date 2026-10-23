@@ -475,6 +475,18 @@ def test_fit_decision_never_produces_cancel(decision, offered, sent):
      {"inner_command": "Get-Date", "shell_flags": ["-NoProfile", "-Command"]}),
     ("cmd.exe /c 'echo hi'", {"inner_command": "echo hi", "shell_flags": ["/c"]}),
     ("git status", {"argv": ["git", "status"]}),
+    # Windows paths keep every backslash, in either quote style; spaces stay inside one word.
+    ("'C:\\Program Files\\PowerShell\\7\\pwsh.exe' -Command 'Get-ChildItem C:\\stub'",
+     {"shell": "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "inner_command": "Get-ChildItem C:\\stub"}),
+    ('"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'Get-ChildItem -Name\'',
+     {"shell": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "inner_command": "Get-ChildItem -Name"}),
+    # Quotes inside quotes: the shlex_join encodings are decoded exactly.
+    ("\"C:\\\\tools\\\\run.exe\" 'it'\"'\"'s' \"say \\\"hi\\\"\"",
+     {"argv": ["C:\\tools\\run.exe", "it's", 'say "hi"']}),
+    ("'C:\\Windows\\System32\\cmd.exe' /c 'type \"C:\\a b\\c.txt\"'",
+     {"inner_command": 'type "C:\\a b\\c.txt"'}),
+    ("echo '中文 路径'", {"argv": ["echo", "中文 路径"]}),
 ])
 def test_command_view_splits_the_wrapper(text, expected):
     view = command_view(text)
@@ -482,9 +494,27 @@ def test_command_view_splits_the_wrapper(text, expected):
     assert {k: view[k] for k in expected} == expected
 
 
-@pytest.mark.parametrize("text", ["", None, "'unterminated", "a\0b"])
+@pytest.mark.parametrize("text", [
+    "", None, "'unterminated", "a\0b", '"open',
+    "dir C:\\stub",              # unquoted backslash: escape or path separator? not guessed
+    "echo hi | more",            # unquoted shell syntax is not shlex_join output
+    "echo $HOME", 'echo "$HOME"', "echo 中文",
+    "line one\nline two",
+])
 def test_command_view_marks_unparseable(text):
+    """Review finding: an unreliable split is never shown; the original stays the only text."""
     assert command_view(text) == {"parsed": False}
+
+
+def test_s3_scope_check_is_untouched_by_the_display_split():
+    from agenthub_adapters.appserver_s3_evidence import classify_command
+
+    shell = ("powershell", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+    from agenthub_adapters.appserver_s3_evidence import COMMAND
+
+    wrapped = f'"{shell[1]}" -Command \'{COMMAND}\''
+    assert classify_command(wrapped, shell) == ("powershell_command", "match")
+    assert classify_command(COMMAND, shell) == (None, "unwrapped_fixed_command")
 
 
 # --------------------------------------------------------------------------- #

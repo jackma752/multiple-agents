@@ -68,6 +68,8 @@
   #composer .grow { flex: 1; }
   .dim { color: var(--dim); font-size: 12.5px; }
   .banner { margin: 10px 16px 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--warn); color: var(--warn); }
+  .consent { display: block; margin-top: 8px; padding: 8px 10px; border: 1px dashed var(--warn); border-radius: 8px;
+             color: #f3dca0; font-size: 12.5px; cursor: pointer; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
            background: #3a1f22; border: 1px solid var(--bad); color: #ffd6d7; display: none; white-space: pre-wrap; }
   @media (max-width: 760px) {
@@ -97,6 +99,13 @@
       <textarea id="text" placeholder="输入消息（Ctrl+Enter 发送）"></textarea>
       <div class="row">
         <label>Agent <select id="agent"></select></label>
+        <label title="每次创建调用都要明确选择；不会沿用上一次的选择">执行模式
+          <select id="mode" aria-label="执行模式">
+            <option value="" selected>请选择</option>
+            <option value="strict">严格模式</option>
+            <option value="supervised">用户监督模式</option>
+          </select>
+        </label>
         <label title="把上一轮 Agent 回复所在的 provider thread 绑定进本次审批，续接其上下文">
           <input type="checkbox" id="resume" aria-label="续接上一轮（原生 thread）" /> 续接上一轮（原生 thread）
         </label>
@@ -117,8 +126,16 @@
  * are applied once each, by seq; on reconnect the page resumes from the last
  * seq it applied (Last-Event-ID), so nothing is lost or shown twice.
  *
+ * One conversation is shown at a time, and every select() opens a new view
+ * generation (S.viewGen). Each async result - messages, cards, stream frames,
+ * a resync - carries the generation it was started under and is dropped when
+ * the view has moved on, so an old conversation can never write into the
+ * current one. A plain reconnect keeps the state; a resync (409) rebuilds it
+ * completely by replaying the stream from seq 0.
+ *
  * The page never approves on its own: every approval is a click on a specific
- * call or tool card. All text is inserted with textContent.
+ * call or tool card; a supervised call additionally needs its own, unticked
+ * boundary consent. All text is inserted with textContent.
  */
 
 const S = {
@@ -126,8 +143,11 @@ const S = {
   lastSeq: 0, lastMsgId: 0, messages: [],
   calls: new Map(),   // invocation_id -> call model
   cards: new Map(),   // tool_approval_id -> card view
+  consent: new Map(), // invocation_id -> boundary consent ticked for THIS call only
   busy: new Set(),    // actions in flight (keys), to disable double clicks
-  streamGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
+  viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
+  createPromise: null, // the one conversation creation in flight, shared by every caller
+  stats: { reconnects: 0, resyncs: 0, created: 0 }, // diagnostics (exposed as data-* on <main>)
   pointerDown: false,
 };
 
@@ -189,13 +209,16 @@ function call(id) {
   let c = S.calls.get(id);
   if (!c) {
     c = { id, status: null, approval_id: null, approval_status: null, agent_id: null,
-          context_mode: "independent", resume_thread_id: null, stream: "", gap: false,
-          turn: null, ended: null, declined: [], cards: [], stop: null,
+          execution_mode: "strict", context_mode: "independent", resume_thread_id: null,
+          stream: "", gap: false, turn: null, ended: null, declined: [], cards: [], stop: null,
           interrupt: null, native: [] };
     S.calls.set(id, c);
   }
   return c;
 }
+
+/* Is this async result still for the conversation on screen? */
+function current(gen) { return gen === S.viewGen; }
 
 function patch(target, fields) {
   for (const [k, v] of Object.entries(fields)) if (v !== undefined && v !== null) target[k] = v;
@@ -209,39 +232,44 @@ function absorbMessage(m) {
   if (inv) {
     patch(call(inv.invocation_id), {
       status: inv.status, approval_id: inv.approval_id, approval_status: inv.approval_status,
-      agent_id: inv.agent_id, context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
+      agent_id: inv.agent_id, execution_mode: inv.execution_mode,
+      context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
     });
   }
 }
 
-async function loadMessages() {
-  if (!S.cid) return;
+async function loadMessages(gen = S.viewGen) {
+  if (!S.cid || !current(gen)) return;
   const cid = S.cid;
   for (;;) {
     const page = await api("GET", `/api/conversations/${enc(cid)}/messages`, undefined,
                            { after_id: S.lastMsgId, limit: 200 });
-    if (cid !== S.cid) return;
+    if (!current(gen) || cid !== S.cid) return;  // the view moved on while we waited
     page.messages.forEach(absorbMessage);
     if (!page.has_more) break;
   }
   render();
 }
 
-function needMessages() {
+function needMessages(gen = S.viewGen) {
   clearTimeout(S.msgTimer);
-  S.msgTimer = setTimeout(() => loadMessages().catch((e) => toast("读取消息失败：" + e.message)), 60);
+  S.msgTimer = setTimeout(() => loadMessages(gen).catch((e) => {
+    if (current(gen)) toast("读取消息失败：" + e.message);
+  }), 60);
 }
 
-async function fetchCard(id) {
+async function fetchCard(id, gen = S.viewGen) {
   try {
     const card = await api("GET", `/api/tool-approvals/${enc(id)}`);
+    if (!current(gen)) return;
     S.cards.set(id, card);
     render();
-  } catch (e) { toast("读取工具审批卡失败：" + e.message); }
+  } catch (e) { if (current(gen)) toast("读取工具审批卡失败：" + e.message); }
 }
 
-/* Apply one stored event exactly once, in seq order. */
-function apply(ev) {
+/* Apply one stored event exactly once, in seq order, if it belongs to the view on screen. */
+function apply(ev, gen = S.viewGen) {
+  if (!current(gen)) return;
   if (typeof ev.seq !== "number" || ev.seq <= S.lastSeq) return;
   S.lastSeq = ev.seq;
   const p = ev.payload || {};
@@ -251,7 +279,7 @@ function apply(ev) {
         patch(call(p.invocation_id), { status: p.invocation_status, approval_id: p.approval_id,
                                        approval_status: p.approval_status });
       }
-      needMessages();
+      needMessages(gen);
       break;
     case "approval.status":
       patch(call(p.invocation_id), { approval_id: p.approval_id, approval_status: p.to });
@@ -295,7 +323,7 @@ function apply(ev) {
       const c = call(p.invocation_id);
       if (!c.cards.includes(p.tool_approval_id)) c.cards.push(p.tool_approval_id);
       if (!S.cards.has(p.tool_approval_id)) S.cards.set(p.tool_approval_id, { ...p, loading: true });
-      fetchCard(p.tool_approval_id);
+      fetchCard(p.tool_approval_id, gen);
       break;
     }
     case "tool_approval.status":
@@ -305,7 +333,7 @@ function apply(ev) {
         if (ev.type === "tool_approval.status") card.status = p.to;
         else { card.delivery = p.delivery; card.decision_sent = p.decision_sent; }
       }
-      fetchCard(p.tool_approval_id);
+      fetchCard(p.tool_approval_id, gen);
       break;
     }
     default:
@@ -328,7 +356,7 @@ function setConn(kind, text) {
   chip.textContent = text;
 }
 
-function parseBlock(block) {
+function parseBlock(block, gen) {
   let data = null;
   for (const line of block.split("\n")) {
     if (!line || line.startsWith(":")) continue;
@@ -339,33 +367,44 @@ function parseBlock(block) {
     if (key === "data") data = data === null ? value : data + "\n" + value;
   }
   if (data === null) return;
-  try { apply(JSON.parse(data)); } catch (_) { /* malformed frame: ignored, seq unchanged */ }
+  let ev;
+  try { ev = JSON.parse(data); } catch (_) { return; /* malformed frame: ignored, seq unchanged */ }
+  apply(ev, gen);
 }
 
 function stopStream() {
-  S.streamGen += 1;
   if (S.streamCtrl) S.streamCtrl.abort();
   S.streamCtrl = null;
 }
 
-async function resync() {
+async function resync(gen) {
   // The stored stream no longer matches our cursor (e.g. database replaced).
+  // Rebuild completely: clear, reload messages, and let the caller reconnect
+  // from seq 0 so text, turn state and tool cards are replayed in order.
+  if (!current(gen)) return;
+  S.stats.resyncs += 1;
+  exposeStats();
   resetConversationState();
-  await loadMessages();
+  render();
+  await loadMessages(gen);
 }
 
 async function follow(gen, cid) {
   let backoff = 500;
-  while (gen === S.streamGen) {
+  let first = true;
+  while (current(gen)) {
     const ctrl = new AbortController();
     S.streamCtrl = ctrl;
     try {
+      if (!first) { S.stats.reconnects += 1; exposeStats(); }
+      first = false;
       const r = await fetch(`/api/conversations/${enc(cid)}/events/stream?timeout=25`, {
         headers: { "Authorization": "Bearer " + S.token, "Accept": "text/event-stream",
                    "Last-Event-ID": String(S.lastSeq) },
         signal: ctrl.signal,
       });
-      if (r.status === 409) { await resync(); continue; }
+      if (!current(gen)) { ctrl.abort(); return; }
+      if (r.status === 409) { await resync(gen); continue; }
       if (r.status === 401 || r.status === 403 || r.status === 404) {
         setConn("error", r.status === 404 ? "会话不存在" : "token 无效");
         return;
@@ -378,17 +417,19 @@ async function follow(gen, cid) {
       let buf = "";
       for (;;) {
         const { value, done } = await reader.read();
+        if (!current(gen)) { ctrl.abort(); return; }
         if (done) break;
         buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
         let cut;
         while ((cut = buf.indexOf("\n\n")) >= 0) {
-          parseBlock(buf.slice(0, cut));
+          parseBlock(buf.slice(0, cut), gen);
           buf = buf.slice(cut + 2);
         }
       }
-      // A clean end is the server's timeout: reconnect from the last seq.
+      // A clean end is the server's timeout: reconnect from the last seq,
+      // keeping everything already shown.
     } catch (e) {
-      if (gen !== S.streamGen) return;
+      if (!current(gen)) return;
       setConn("retry", "重连中…");
       await sleep(backoff);
       backoff = Math.min(backoff * 2, 5000);
@@ -406,7 +447,17 @@ async function guarded(key, fn) {
 
 function approveAndRun(c) {
   return guarded("run:" + c.id, async () => {
-    if (c.approval_status === "pending") await api("POST", `/api/approvals/${enc(c.approval_id)}/approve`);
+    try {
+      if (c.approval_status === "pending") {
+        // A supervised call is approved only with ITS OWN ticked consent;
+        // the server checks it again (boundary_consent_required).
+        const body = c.execution_mode === "supervised"
+          ? { accept_unmanaged_native_agents: S.consent.get(c.id) === true } : undefined;
+        await api("POST", `/api/approvals/${enc(c.approval_id)}/approve`, body);
+      }
+    } finally {
+      S.consent.delete(c.id);  // never carried over, not even to a retry of this call
+    }
     const res = await api("POST", `/api/invocations/${enc(c.id)}/run`);
     patch(c, { status: res.status });
   });
@@ -440,32 +491,37 @@ function interruptCall(c) {
 }
 
 function answerCard(card, decision) {
+  const gen = S.viewGen;
   return guarded("card:" + card.tool_approval_id, async () => {
     const body = decision === "approve" ? { card_hash: card.card_hash } : undefined;
     const updated = await api("POST", `/api/tool-approvals/${enc(card.tool_approval_id)}/${decision}`, body);
-    S.cards.set(updated.tool_approval_id, updated);
+    if (current(gen)) S.cards.set(updated.tool_approval_id, updated);
   });
 }
 
 async function send(event) {
   event.preventDefault();
   const text = $("text").value;
+  const mode = $("mode").value;
   if (!text.trim()) return;
+  if (mode !== "strict" && mode !== "supervised") { toast("请先选择执行模式（严格或用户监督）"); return; }
   await guarded("send", async () => {
-    if (!S.cid) {
-      const conv = await api("POST", "/api/conversations", { title: text.trim().slice(0, 40) });
-      await loadConvs();
-      await select(conv.conversation_id);
-    }
-    const turn = await api("POST", `/api/conversations/${enc(S.cid)}/invocations`, {
-      text, agent_id: $("agent").value,
+    // A creation already in flight (e.g. "+ 新会话" just clicked) is the one
+    // this message goes to; otherwise create one. Never a second conversation.
+    if (S.createPromise) await S.createPromise;
+    if (!S.cid) await createConversation(text.trim().slice(0, 40));
+    const cid = S.cid;
+    const gen = S.viewGen;
+    const turn = await api("POST", `/api/conversations/${enc(cid)}/invocations`, {
+      text, agent_id: $("agent").value, execution_mode: mode,
       client_request_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())),
       context_mode: $("resume").checked ? "native_resume" : "independent",
     });
-    patch(call(turn.invocation_id), turn);
+    if (current(gen)) patch(call(turn.invocation_id), turn);
     $("text").value = "";
     $("resume").checked = false;
-    needMessages();
+    $("mode").value = "";  // the next call needs its own explicit choice
+    if (current(gen)) needMessages(gen);
   });
 }
 
@@ -479,17 +535,39 @@ async function loadConvs() {
 
 function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
-  S.banner = "";
+  S.consent = new Map(); S.banner = "";
+}
+
+/* The only way to create a conversation: concurrent callers share one creation. */
+function createConversation(title) {
+  if (!S.createPromise) {
+    S.createPromise = (async () => {
+      const conv = await api("POST", "/api/conversations", { title });
+      S.stats.created += 1;
+      await loadConvs();
+      await select(conv.conversation_id);
+      return conv.conversation_id;
+    })().finally(() => { S.createPromise = null; render(); });
+    render();
+  }
+  return S.createPromise;
 }
 
 async function select(cid) {
+  // A new view generation first: from here on, results of the previous view
+  // (messages, cards, its stream, a resync it started) are ignored.
+  const gen = ++S.viewGen;
   stopStream();
   S.cid = cid;
   resetConversationState();
   if (location.hash.slice(1) !== cid) history.replaceState(null, "", "#" + cid);
   renderConvs(); render();
-  await loadMessages();
-  const gen = S.streamGen;
+  try {
+    await loadMessages(gen);
+  } catch (e) {
+    if (current(gen)) toast("读取消息失败：" + e.message);
+  }
+  if (!current(gen)) return;  // another select() won while messages loaded
   follow(gen, cid);
 }
 
@@ -516,7 +594,7 @@ const DETAIL_LABEL = { command: "命令（原文）", command_view: "命令（�
   provider_available_decisions: "provider 提供的选项" };
 
 function commandView(v) {
-  if (!v || !v.parsed) return "无法拆开，以原文为准";
+  if (!v || !v.parsed) return "无法可靠拆分，只看上面的原文（不显示改写后的命令）";
   if (v.inner_command !== undefined)
     return `外层程序：${v.shell} ${(v.shell_flags || []).join(" ")}\n内层命令：${v.inner_command}`;
   return (v.argv || []).join(" ‖ ");
@@ -572,8 +650,13 @@ function renderCall(c) {
   const [label, kind] = CALL_LABEL[c.status] || [c.status || "…", ""];
   const busyRun = S.busy.has("run:" + c.id);
   const actions = [];
-  if (c.status === "awaiting_approval" && c.approval_status === "pending") {
-    actions.push(el("button", { class: "primary", disabled: busyRun, onclick: () => approveAndRun(c) }, "同意并调用"),
+  const supervised = c.execution_mode === "supervised";
+  const awaiting = c.status === "awaiting_approval" && c.approval_status === "pending";
+  const consented = S.consent.get(c.id) === true;
+  if (awaiting) {
+    actions.push(el("button", { class: "primary", disabled: busyRun || (supervised && !consented),
+                                title: supervised && !consented ? "先勾选本次调用的监督边界同意" : null,
+                                onclick: () => approveAndRun(c) }, "同意并调用"),
                  el("button", { disabled: busyRun, onclick: () => rejectCall(c) }, "拒绝"));
   } else if (c.status === "queued" && c.approval_status === "approved") {
     actions.push(el("button", { class: "primary", disabled: busyRun, onclick: () => runApproved(c) }, "执行"));
@@ -622,14 +705,32 @@ function renderCall(c) {
                (n.child_thread_ids && n.child_thread_ids.length ? ` → thread ${n.child_thread_ids.map(short).join(", ")}` : "") +
                "。它不在 Hub 的审批与配额内，Hub 只能观测、不能控制。");
   }
+  // Supervised: this call's own boundary consent, unticked until the user
+  // ticks it, never pre-filled from an earlier call.
+  const consentBox = awaiting && supervised ? el("label", { class: "consent" },
+    el("input", { type: "checkbox", "aria-label": "同意本次调用的监督边界", checked: consented ? "checked" : null,
+                  onchange: (e) => { S.consent.set(c.id, e.target.checked === true); render(); } }),
+    " 我已了解并同意本次调用的用户监督边界：" + supervisedBoundaryText()) : null;
   return el("div", { class: "call" },
     el("div", { class: "row" },
       chip(label, kind),
+      chip(supervised ? "用户监督模式" : "严格模式", supervised ? "warn" : ""),
       c.approval_status ? chip("审批：" + c.approval_status, "") : null,
       c.context_mode === "native_resume" ? chip("续接 " + short(c.resume_thread_id), "info") : null,
       el("span", { class: "grow" }), actions),
+    consentBox,
     notes.map((n) => el("div", { class: "note" }, n)),
     c.cards.map(renderCard));
+}
+
+const SUPERVISED_BOUNDARY = "原生子 Agent 与不经审批的工具操作（可能包括启动其他 Agent 的 CLI）" +
+  "不在 Hub 配额内、不能逐项拦截；停止只关闭本次入口进程，后代进程与远端停止不保证。";
+
+function supervisedBoundaryText() {
+  // The adapter's own boundary text when it really admits supervised mode;
+  // otherwise (an offline stub, a blocked adapter) the generic boundary.
+  const adm = (S.adapter || {}).supervised_admission || {};
+  return adm.mode === "supervised" && adm.reason ? adm.reason : SUPERVISED_BOUNDARY;
 }
 
 function short(id) { return id ? String(id).slice(0, 8) : "?"; }
@@ -696,7 +797,15 @@ function renderNow() {
     }
   }
   if (nearBottom) tl.scrollTop = tl.scrollHeight;
+  exposeStats();
   renderComposer();
+}
+
+function exposeStats() {
+  const main = document.querySelector("main");
+  main.dataset.reconnects = S.stats.reconnects;
+  main.dataset.resyncs = S.stats.resyncs;
+  main.dataset.created = S.stats.created;
 }
 
 function renderConvs() {
@@ -723,10 +832,13 @@ function renderComposer() {
   const resume = $("resume");
   resume.disabled = !thread || active;
   if (resume.disabled) resume.checked = false;
+  const mode = $("mode").value;
   $("composerNote").textContent = !S.token ? "请先连接"
+    : !mode ? "请先选择执行模式"
     : active ? "有调用正在执行或状态未知，暂不能续接 thread"
     : thread ? `可续接 thread ${short(thread)}` : "";
-  $("sendBtn").disabled = S.busy.has("send") || !S.token;
+  $("sendBtn").disabled = S.busy.has("send") || !S.token || !mode;
+  $("newConvBtn").disabled = !!S.createPromise || !S.token;
 }
 
 function renderAdapter() {
@@ -738,6 +850,14 @@ function renderAdapter() {
   chipEl.textContent = `${a.name || "?"}${a.transport ? " · " + a.transport : ""} · ${adm.mode || "?"}`;
   chipEl.className = "chip " + (adm.mode === "simulation" ? "info" : adm.allowed ? "warn" : "bad");
   chipEl.title = adm.reason || "";
+  // Mode options say what the adapter admits; the server decides regardless.
+  const label = (x) => !x ? "" : x.mode === "simulation" ? "（离线模拟）"
+    : x.allowed ? "" : "（当前适配器不放行）";
+  const options = $("mode").options;
+  options[1].textContent = "严格模式" + label(a.execution_admission);
+  options[2].textContent = "用户监督模式" + label(a.supervised_admission);
+  options[1].title = (a.execution_admission || {}).reason || "";
+  options[2].title = (a.supervised_admission || {}).reason || "";
 }
 
 /* ------------------------------------------------------------- boot --- */
@@ -760,16 +880,14 @@ async function connect() {
 }
 
 $("connectBtn").addEventListener("click", connect);
-$("newConvBtn").addEventListener("click", () => guarded("newconv", async () => {
-  const conv = await api("POST", "/api/conversations", { title: "新会话 " + new Date().toLocaleTimeString() });
-  await loadConvs();
-  await select(conv.conversation_id);
-}));
+$("newConvBtn").addEventListener("click", () => guarded("newconv",
+  () => createConversation("新会话 " + new Date().toLocaleTimeString())));
 $("composer").addEventListener("submit", send);
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();
 });
 $("agent").addEventListener("change", renderComposer);
+$("mode").addEventListener("change", renderComposer);
 window.addEventListener("hashchange", () => {
   const cid = location.hash.slice(1);
   if (cid && cid !== S.cid) select(cid);

@@ -55,7 +55,6 @@ import json
 import math
 import ntpath
 import os
-import shlex
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -201,19 +200,77 @@ def settings_problems(result: dict, cwd: str) -> list[str]:
     return problems
 
 
+#: Characters a shell quoter leaves unquoted (Python's shlex.quote safe set, ASCII).
+_UNQUOTED_SAFE = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-")
+
+
+def split_quoted_argv(text: str) -> Optional[list[str]]:
+    """Exact POSIX word splitting of a ``shlex_join`` string, or None if not reliable.
+
+    Only what a shell quoter produces is accepted: bare words of safe
+    characters, '...' and "..." (where only \\ \" \\$ \\` escape). Anything
+    else - an unquoted backslash (a POSIX escape, but a Windows path
+    separator), unquoted shell syntax or non-ASCII, an unbalanced quote - has
+    two plausible readings, so no split is offered and the original is shown.
+    """
+    words: list[str] = []
+    word: list[str] = []
+    in_word = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in " \t":
+            if in_word:
+                words.append("".join(word))
+                word, in_word = [], False
+            i += 1
+            continue
+        in_word = True
+        if c == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                return None
+            word.append(text[i + 1:end])
+            i = end + 1
+        elif c == '"':
+            i += 1
+            while True:
+                if i >= n:
+                    return None
+                c = text[i]
+                if c == '"':
+                    i += 1
+                    break
+                if c == "\\" and i + 1 < n and text[i + 1] in '\\"$`':
+                    word.append(text[i + 1])
+                    i += 2
+                    continue
+                if c in "$`":
+                    return None  # expansion inside double quotes: not a literal
+                word.append(c)
+                i += 1
+        elif c in _UNQUOTED_SAFE:
+            word.append(c)
+            i += 1
+        else:
+            return None
+    if in_word:
+        words.append("".join(word))
+    return words
+
+
 def command_view(text: Any) -> dict:
     """The reported ``command`` split back into argv, for display only (D3).
 
     ``command`` is ``shlex_join`` of the shell's argv (S3); a PowerShell or cmd
-    wrapper is shown as the shell plus the inner command. This is a reading
-    aid: it is never a safety decision.
+    wrapper is shown as the shell plus the inner command. When the string
+    cannot be split without guessing (see :func:`split_quoted_argv`), nothing
+    rewritten is offered: the page shows the original only. This is a reading
+    aid, never a safety decision (the S3 scope check is separate and strict).
     """
-    if not isinstance(text, str) or not text or "\0" in text:
+    if not isinstance(text, str) or not text or "\0" in text or "\n" in text:
         return {"parsed": False}
-    try:
-        argv = shlex.split(text, posix=True)
-    except ValueError:
-        return {"parsed": False}
+    argv = split_quoted_argv(text)
     if not argv:
         return {"parsed": False}
     name = ntpath.basename(argv[0]).lower()

@@ -58,7 +58,7 @@ def test_every_api_call_in_the_page_matches_a_route(make_client):
     calls = page_calls()
     # Guard the extraction itself: the loop's essential calls must be found.
     wanted = {
-        ("POST", "/api/conversations/${enc(S.cid)}/invocations"),
+        ("POST", "/api/conversations/${enc(cid)}/invocations"),
         ("POST", "/api/approvals/${enc(c.approval_id)}/approve"),
         ("POST", "/api/invocations/${enc(c.id)}/run"),
         ("GET", "/api/tool-approvals/${enc(id)}"),
@@ -77,6 +77,29 @@ def test_every_api_call_in_the_page_matches_a_route(make_client):
         for s in samples:
             scope = {"type": "http", "path": s, "method": method}
             assert any(route.matches(scope)[0] == Match.FULL for route in client.app.routes), (method, s)
+
+
+def test_page_has_one_creation_path_and_view_generation_guards():
+    """Pinned review fixes (the behaviour itself is checked in the browser, docs/chat-frontend.md)."""
+    src = page_source()
+    # One place creates conversations; the button and send() share its in-flight promise.
+    assert src.count('api("POST", "/api/conversations"') == 1
+    assert "function createConversation(" in src and "if (S.createPromise) await S.createPromise;" in src
+    # Every async result is tied to the view generation it started in.
+    assert "const gen = ++S.viewGen;" in src and "function current(gen)" in src
+    for guard in ("async function loadMessages(gen", "async function fetchCard(id, gen",
+                  "function apply(ev, gen", "async function resync(gen", "parseBlock(buf.slice(0, cut), gen)"):
+        assert guard in src, guard
+    assert "streamGen" not in src  # the old shared counter that a stale select() could reuse
+
+
+def test_page_needs_an_explicit_mode_and_a_fresh_consent_per_call():
+    src = page_source()
+    assert '<option value="" selected>请选择</option>' in src  # no default mode
+    assert "execution_mode: mode" in src and '$("mode").value = "";' in src
+    assert "accept_unmanaged_native_agents: S.consent.get(c.id) === true" in src
+    assert "S.consent.delete(c.id);" in src  # consent never carried over
+    assert "S.consent = new Map();" in src   # nor across conversations
 
 
 @pytest.fixture
