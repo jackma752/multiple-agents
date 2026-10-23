@@ -298,6 +298,51 @@ def codex_settings() -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Claude Code adapter settings
+# --------------------------------------------------------------------------- #
+#
+# The executable identity is a reviewed code constant
+# (``agenthub_adapters.claude_code.PINNED_CLAUDE_CODE``); no variable overrides it.
+
+#: DEV/TEST ONLY: run against tools/demo/stub_claude_code.py with this scenario.
+ENV_CLAUDE_CODE_STUB = "AGENT_HUB_CLAUDE_CODE_STUB"
+ENV_CLAUDE_CODE_TIMEOUT = "AGENT_HUB_CLAUDE_CODE_TIMEOUT"
+#: Dedicated CLAUDE_CONFIG_DIR for the child (its own login; never the user's ~/.claude).
+ENV_CLAUDE_CONFIG_DIR = "AGENT_HUB_CLAUDE_CONFIG_DIR"
+ENV_CLAUDE_CODE_WORKDIR = "AGENT_HUB_CLAUDE_CODE_WORKDIR"
+
+
+def _local_base() -> str:
+    return os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+
+
+def claude_config_dir() -> str:
+    """Pure path resolution (no side effects), outside the repository by default.
+
+    The user logs in there once in their own terminal; the Hub only checks that
+    the login file is present and never reads it.
+    """
+    return os.environ.get(ENV_CLAUDE_CONFIG_DIR) or os.path.join(_local_base(), "AgentHub", "claude-config")
+
+
+def claude_code_workdir_root() -> str:
+    """Per-call empty work directories, outside the repository by default."""
+    return os.environ.get(ENV_CLAUDE_CODE_WORKDIR) or os.path.join(_local_base(), "AgentHub", "claude-code-runs")
+
+
+def claude_code_settings() -> dict:
+    return {
+        "stub": (os.environ.get(ENV_CLAUDE_CODE_STUB) or "").strip(),
+        "config_dir": claude_config_dir(),
+        "workdir_root": claude_code_workdir_root(),
+        "store_path": os.path.join(DATA_DIR, "claude-code-executions.db"),
+        "proxy": os.environ.get(ENV_PROXY) or "http://127.0.0.1:8090",
+        "ca_bundle": os.environ.get(ENV_CA_BUNDLE) or _default_ca_bundle(),
+        "timeout_seconds": _bounded_number(ENV_CLAUDE_CODE_TIMEOUT, 180, 1, 3600),
+    }
+
+
 def _command_prefix() -> list:
     """DEV/TEST ONLY argv prefix (JSON array). Empty unless explicitly set."""
     raw = os.environ.get(ENV_CODEX_PREFIX)

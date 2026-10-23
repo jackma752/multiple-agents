@@ -10,6 +10,10 @@ CLI all agree:
   transport: the bundled offline stub (simulation), or the real app-server
   pinned by code constant, admitted in supervised mode only
   (docs/appserver-s6-plan.md §4.1).
+* ``claude-code`` - one ``claude -p`` process per call (docs/claude-code-adapter.md).
+  Strict is blocked; supervised admits only the pinned constant after its
+  zero-model identity check is recorded. ``AGENT_HUB_CLAUDE_CODE_STUB`` selects
+  the bundled offline stub (simulation).
 
 :func:`adapter_binding` is what a new call's snapshot binds to
 (``adapter_version``), so an approval given under one pinned identity can never
@@ -26,7 +30,10 @@ from agenthub_kernel import config
 
 MOCK = "mock"
 CODEX = "codex"
-KNOWN = (MOCK, CODEX)
+CLAUDE_CODE = "claude-code"
+KNOWN = (MOCK, CODEX, CLAUDE_CODE)
+#: Adapter ``name`` -> kind, for adapters that launch a real process.
+REAL_KINDS = {CODEX: CODEX, CLAUDE_CODE: CLAUDE_CODE}
 
 
 def adapter_kind() -> str:
@@ -41,6 +48,9 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
     the environment happens to set ``AGENT_HUB_ADAPTER=codex``.
     """
     kind = MOCK if force_mock else (kind or adapter_kind())
+
+    if kind == CLAUDE_CODE:
+        return _build_claude_code(config.claude_code_settings())
 
     if kind == CODEX:
         from agenthub_adapters.codex import CodexAdapter, StubCodexRunner, is_bundled_stub_command
@@ -104,6 +114,23 @@ def _build_appserver(s: dict) -> Any:
     )
 
 
+def _build_claude_code(s: dict) -> Any:
+    from agenthub_adapters.claude_code import (
+        STUB_SCENARIOS, ClaudeCodeAdapter, ClaudeCodeLauncher, StubClaudeLauncher,
+    )
+    from agenthub_adapters.store import ExecutionStore, ensure_parent
+
+    if s.get("stub") in STUB_SCENARIOS:
+        launcher: Any = StubClaudeLauncher(s["stub"])
+    else:
+        # Identity from the reviewed constant only; supervised admission decides.
+        launcher = ClaudeCodeLauncher.pinned(config_dir=s["config_dir"], proxy=s["proxy"] or None,
+                                             ca_bundle=s["ca_bundle"] or None)
+    store = ExecutionStore(path=ensure_parent(s["store_path"]), table="claude_code_executions")
+    return ClaudeCodeAdapter(launcher=launcher, workdir_root=s["workdir_root"], store=store,
+                             timeout_seconds=s["timeout_seconds"])
+
+
 #: Binding of an adapter that declares no identity (exec, Mock): equal only to itself.
 UNKNOWN_BINDING = "unknown"
 #: A declaration that failed or returned nothing: it never matches anything.
@@ -135,17 +162,18 @@ def describe(adapter: Any) -> dict:
     # pre-fill its agent field: a call created for an agent the adapter does not
     # serve can never launch, so the UI must not silently hardcode one. An empty
     # list means "no declared restriction" (the inert Mock adapter).
+    name = getattr(adapter, "name", "")
     info = {
         "name": getattr(adapter, "name", type(adapter).__name__),
-        "kind": CODEX if getattr(adapter, "name", "") == "codex" else MOCK,
-        "real_process": getattr(adapter, "name", "") == "codex",
+        "kind": REAL_KINDS.get(name, MOCK),
+        "real_process": name in REAL_KINDS,
         "agent_ids": sorted(getattr(adapter, "AGENT_IDS", ()) or ()),
     }
     admission = execution_admission(adapter)
     info["execution_admission"] = admission.to_dict()
     info["supervised_admission"] = execution_admission(adapter, "supervised").to_dict()
     info["real_process"] = info["real_process"] and admission.mode != "simulation"
-    if info["kind"] == CODEX:
+    if info["kind"] in (CODEX, CLAUDE_CODE):
         ok, why = adapter.identity_matches()
         info["identity_ok"] = ok
         info["identity_detail"] = why
