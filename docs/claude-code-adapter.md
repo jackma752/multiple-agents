@@ -68,7 +68,10 @@
 
 ## 6. 有界真实测试申请
 
-**状态（2026-10-23）**：用户批准只执行步骤 A，执行了一次，结果 **INCONCLUSIVE**（见第 7 节）。步骤 L 和步骤 B 没有执行。下文保留申请原文。
+**状态（2026-10-24）**：
+- 步骤 A 执行了一次，结果 **INCONCLUSIVE**（见第 7 节）。
+- 用户选择 (a)：保留 `--max-turns`，报告哈希已记录为 `ZERO_MODEL_IDENTITY_REPORT`。
+- 步骤 L 和步骤 B 的最新申请见第 8 节，**未执行**。下文保留申请原文。
 
 驱动：`tools/probes/claude_code_min.py`。三步依次进行，每步之后停下核对；任何一步不是 PASS 就停止。
 
@@ -142,3 +145,70 @@ E:\plug\agent-hub\.venv\Scripts\python.exe tools\probes\claude_code_min.py --ste
 | `report.json` | 2105 | `b57a1d5f0d2a0bd1b7c35031c3fdafb74e2a763d82a12a1f40844b8b8cbd5089` |
 | `version.txt` | 22 | `b354fe63f3ea7b46441790aa41c704340be3e4722cd759d1b77da284764c82ef` |
 | `help.txt` | 22319 | `b10f5c36adfe3285f6c5a0d18284f466e6c4486499de56ef62745e13312a7fbc` |
+
+## 8. 记录身份核验，以及步骤 L、步骤 B 的申请（2026-10-24）
+
+### 8.1 已做（离线）
+
+- 按用户决定 (a)，`ZERO_MODEL_IDENTITY_REPORT` 改为第 7 节 `report.json` 的 SHA-256：`b57a1d5f…5089`。`--max-turns` 保留。
+- 影响：
+  - 监督准入不再因 `identity_unconfirmed` 拒绝；其余条件照旧，包括固定身份、参数、仓库外目录、代理、CA 和时限；
+  - 严格模式仍然拒绝；每次调用仍需审批，以及本次的显式同意；
+  - 绑定身份不变。
+- 测试：原来依赖“常量为空”的测试改为在测试内把常量设为空，拒绝路径仍有覆盖；另加一项测试，固定常量等于已登记的报告哈希。
+
+### 8.2 步骤 L：用户自己登录专用配置目录（未执行，助手不参与）
+
+由你在自己的终端里操作。助手不运行这些命令，不查看浏览器授权页面，不读取任何凭据。
+
+```powershell
+$env:CLAUDE_CONFIG_DIR = "$env:LOCALAPPDATA\AgentHub\claude-config"
+$env:HTTPS_PROXY = "http://127.0.0.1:8090"; $env:HTTP_PROXY = $env:HTTPS_PROXY
+$env:NODE_EXTRA_CA_CERTS = "E:\plug\agent-hub\.venv\Lib\site-packages\certifi\cacert.pem"
+& "$env:LOCALAPPDATA\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude-code\2.1.308\c17a819afb40\claude.exe" auth login
+```
+
+- 代理和 CA 与适配器给子进程设置的相同；`NODE_EXTRA_CA_CERTS` 是追加证书，不关闭验证。不加代理也能登录的话，可以省略这两行。
+- `--help` 列出了 `auth`（Manage authentication）。如果 `auth login` 不可用，先运行 `... claude.exe auth --help` 查看子命令；不要改用其他登录方式，换方式需要另行评审。
+- 登录完成后告诉我。我只检查 `%LOCALAPPDATA%\AgentHub\claude-config\.credentials.json` 是否存在，不打开。
+
+### 8.3 步骤 B：最多一个模型回合
+
+**状态（2026-10-24）**：用户登录后，经批准在 `c554fd1` 上执行一次，结果 **PASS**，只认定本次。见 [单回合实录](claude-code-turn-2026-10-24-run1.md)，标签 `evidence/cc-turn-real-run-1-pass`。授权已用完。下文保留申请原文。
+
+- **被测提交**：`feat/claude-code-min` 上包含本节的提交。执行前确认 HEAD 和工作树都没有变化。
+- **前置**：
+  - 固定文件的大小和 SHA-256 仍等于常量；
+  - 8090 在监听；venv 的 certifi 哈希为 `50f79f98…0785`；
+  - 专用配置目录中有登录文件（只检查是否存在）。
+- **命令**（一次）：
+
+  ```powershell
+  Set-Location E:\plug\agent-hub\.worktrees\claude-code-min
+  & 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools\probes\claude_code_min.py --step turn --mode real --approve-one-model-turn --acknowledge-supervised-boundary
+  ```
+
+- **驱动的预检**（任何一项不满足就不启动）：
+  - 身份报告已记录、固定身份匹配；
+  - 配置目录在仓库外且有登录文件；工作目录在仓库外；
+  - CA 哈希一致；
+  - 监督准入通过，严格准入仍被拒。
+- **路径**：进程内 API → 审批并给出本次同意 → Worker 消费审批并预留名额 → 适配器启动一个 `claude -p` 进程 → 结算。
+- **提示词与参数**：固定提示词 `Reply with exactly: OK. Do not use tools, create subagents, or modify any files.`；`--tools ""`、`--max-turns 1`、`--safe-mode`、`--no-session-persistence`。
+- **上限**：
+  - 1 次调用，不重试，不发第二个回合；
+  - `--max-budget-usd 1.00`（客户端估算，实际花费可能超出）；
+  - 本地时限 180 秒。
+- **判定**：
+  - **PASS**：succeeded；启动 1 次；名额已释放；绑定身份一致；回复恰好为 `OK`；有用量；`num_turns=1`；`permission_denials` 为 0；工作目录为空。
+  - **INCONCLUSIVE**：调用 succeeded，但回复不完全是 `OK`、没有用量、回合数不是 1、出现权限拒绝或工作目录不空。
+  - **FAIL**：没有 succeeded（failed 或 unknown）；启动次数不是 1；名额未释放；绑定身份不一致；超时；CLI 拒绝了某个固定参数（例如 `--max-turns`），这种情况在开始前退出，不消耗模型回合，但会用掉这次批准。
+- **只认定**：固定版本能用这组参数非交互运行一次；stdin 传入提示词可用；JSON result 的实际形状；回复和用量能经过 Hub 结算并写入会话；代理路径可用。
+- **不认定**：
+  - 工具确实被关闭：模型没有尝试使用工具，不等于不能用；
+  - 原生子 Agent 可控；取消或中断；流式；会话恢复；后代进程；
+  - 配置目录之外的文件是否被写入；
+  - 长对话或其他提示词下的行为。
+- **停止规则**：任何异常立即停止，不重试，不换模型，不放宽权限或参数，不去掉 `--safe-mode` 和 `--tools ""`；保留代理与 CA，**不关闭证书验证**。
+- **证据**：登记 `var/claude-code-min/turn-real-*/report.json` 和 stderr 日志的 SHA-256；打标签 `evidence/cc-turn-real-run-1-<pass|fail|inconclusive>`。
+- **之后**：通过后，Codex 和 Claude Code 都已各有一次真实运行。再申请在 `feat/p3-two-agent` 上做一次有界的双 Agent 真实对话（含一次经批准的交接）。为此需要先把本分支和 `feat/codex-runtime` 的记录提交合并进 `feat/p3-two-agent`，合并需要你另行批准。

@@ -1,12 +1,12 @@
 # 适配器能力矩阵（P0）
 
-**2026-10-23 Claude Code 最小接入**（离线，分支 `feat/claude-code-min`；见 [Claude Code 适配器](claude-code-adapter.md)）。下表描述本仓库自己的 CC 适配器；表 B 的 CC 一行（经 AionUi 接入时的观察）保留为历史。**没有运行过 Claude Code**，所以没有任何一项是“已验证”。
+**2026-10-23 Claude Code 最小接入**（离线，分支 `feat/claude-code-min`；见 [Claude Code 适配器](claude-code-adapter.md)）。下表描述本仓库自己的 CC 适配器；表 B 的 CC 一行（经 AionUi 接入时的观察）保留为历史。**2026-10-24 更新**：做过一次零模型身份核验（INCONCLUSIVE，用户决定记录）和一次真实单回合（PASS，只认定当次，见 [单回合实录](claude-code-turn-2026-10-24-run1.md)）；下表其余项仍未验证。
 
 | 能力 | 状态 |
 |---|---|
-| 准入 | 严格模式拒绝（`claude_code_controls_unverified`）。监督模式只认代码常量 `PINNED_CLAUDE_CODE`（2.1.308，静态核对）且要求零模型身份核验已记录；当前未记录，真实启动一律被拒（`identity_unconfirmed`）。离线桩为 simulation |
-| 发消息 / 最终回复 | 已实现（`claude -p`，提示词走 stdin，`--output-format json` 的 `result`）。**未验证** |
-| 真实用量 | 已实现：result 带 `usage`/`total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**未验证** |
+| 准入 | 严格模式拒绝（`claude_code_controls_unverified`）。监督模式只认代码常量 `PINNED_CLAUDE_CODE`（2.1.308，静态核对），并要求零模型身份核验已记录；2026-10-24 已记录（`b57a1d5f…`）。离线桩为 simulation |
+| 发消息 / 最终回复 | 已实现（`claude -p`，提示词走 stdin，取 `--output-format json` 的 `result`）。**已验证一次（只认定当次，`evidence/cc-turn-real-run-1-pass`）**：经过 Hub，监督模式，固定提示词，回复恰好为 `OK`，`num_turns=1` |
+| 真实用量 | 已实现：result 带 `usage` / `total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**已验证一次**：当次返回 input 2、cache write 1750、cache read 0、output 4，估算 $0.014088 |
 | 流式 | 未实现（不用 `stream-json`） |
 | 恢复会话 | 未实现（`--no-session-persistence`），不报告 `native_session` |
 | 取消 | `unsupported`；本地停止只结束本次入口进程，远端未确认停止时保留名额 |

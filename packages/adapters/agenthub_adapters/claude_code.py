@@ -86,7 +86,11 @@ PINNED_CLAUDE_CODE = {
 #: SHA-256 of the reviewed zero-model identity report (real-test Step A:
 #: ``--version`` / ``--help`` only). ``None`` = not run, and supervised
 #: admission refuses the real launcher.
-ZERO_MODEL_IDENTITY_REPORT: Optional[str] = None
+#: Recorded 2026-10-24 by the user's decision (a): the run of 2026-10-23 was
+#: INCONCLUSIVE only because ``--max-turns`` is not listed in ``--help``
+#: (version 2.1.308, both commands exit 0, hash unchanged; evidence tag
+#: evidence/cc-identity-real-run-1-inconclusive). The flag is kept.
+ZERO_MODEL_IDENTITY_REPORT: Optional[str] = "b57a1d5f0d2a0bd1b7c35031c3fdafb74e2a763d82a12a1f40844b8b8cbd5089"
 
 #: The fixed argv after the executable. The prompt is sent on stdin. Every flag
 #: is documented; none has been observed on this machine.

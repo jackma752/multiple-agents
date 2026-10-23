@@ -328,11 +328,17 @@ def test_strict_never_admits_the_real_launcher(tmp_path, pinned_file, confirmed)
     assert execution_admission(adapter, "supervised").mode == "supervised"
 
 
-def test_supervised_stays_refused_until_the_zero_model_check_is_recorded(tmp_path, pinned_file):
+def test_supervised_stays_refused_until_the_zero_model_check_is_recorded(tmp_path, pinned_file, monkeypatch):
+    monkeypatch.setattr(cc, "ZERO_MODEL_IDENTITY_REPORT", None)
     adapter = real_adapter(tmp_path, pinned_file[1])
     admission = execution_admission(adapter, "supervised")
     assert not admission.allowed and "identity_unconfirmed" in admission.reason
-    assert cc.ZERO_MODEL_IDENTITY_REPORT is None  # the shipped constant: real test not run
+
+
+def test_the_shipped_constant_is_the_reviewed_identity_report():
+    # report.json of the 2026-10-23 run (evidence/cc-identity-real-run-1-inconclusive),
+    # recorded by the user's decision to keep --max-turns.
+    assert cc.ZERO_MODEL_IDENTITY_REPORT == "b57a1d5f0d2a0bd1b7c35031c3fdafb74e2a763d82a12a1f40844b8b8cbd5089"
 
 
 @pytest.mark.parametrize("change, problem", [
