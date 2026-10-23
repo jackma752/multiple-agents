@@ -67,3 +67,79 @@
 - **双 Agent**：两项都通过后，申请一次有界的真实对话：同一会话中 Codex 一个回合、Claude Code 一个回合，加一次经批准的交接。
 
 未验证：真实 Agent 之间的交接效果；接收方如何理解交接内容；交接对用量的影响（属于阶段 T）。
+
+**2026-10-24 进展**：Codex 的 S6-2 第二次运行（`evidence/s6-2-real-run-2-pass`）和 Claude Code 的第一次单回合（`evidence/cc-turn-real-run-1-pass`）都已 PASS，记录已合并进本分支。只剩下第 5 节的双 Agent 真实对话。
+
+## 5. 双 Agent 真实网页对话申请（未执行）
+
+**本节只是申请，不构成授权。** 用户单独批准后执行一次。
+
+- **目的**：在同一个 Hub 网页中：
+  - 真实的 Codex 回复一个暗号；
+  - 切换到另一个会话再切回；
+  - 用户把这条回复交给真实的 Claude Code；
+  - Claude Code 只能从交接内容里得到暗号，并原样答出。
+
+  这一次即满足阶段 T 的启动节点（只认定当次）。
+- **被测提交**：`feat/p3-two-agent` 上包含本节的提交。执行前确认 HEAD 和工作树都没有变化。
+- **固定程序**（执行前被动核验）：
+  - Codex：AgentHub 副本 `runtimes\codex\sha256-c81ed464e5e7cafd\codex.exe`（alpha.11.2），五个暂存文件的哈希与登记值一致；
+  - Claude Code：`claude.exe` 2.1.308，297,376,928 字节，`c9796ba2…ea53`；
+  - certifi `50f79f98…0785`；8090 在监听；
+  - CODEX_HOME 有登录文件，Claude Code 专用配置目录有登录文件（都只检查是否存在）；
+  - 没有 `AGENT_HUB_*` 变量；端口 8174 空闲。
+- **启动**：用预览工具启动 `.claude/launch.json` 中的 `p3-two-agent-real`，等价于：
+
+  ```
+  E:\plug\agent-hub\.venv\Scripts\python.exe E:\plug\agent-hub\.worktrees\p3-two-agent\tools\demo\serve.py --port 8174 --adapter multi --data-dir C:\Users\Administrator\AppData\Local\Temp\agenthub-two-agent-run1 --no-pid-file
+  ```
+
+  数据目录必须是新的，执行前确认不存在。启动信息必须显示两个 Agent 都是 real：codex 为 `real (supervised only)`，claude-code 为 `real`。否则停止。
+- **暗号**：执行前即时生成，格式为 `HANDOFF-` 加 6 位随机大写字母和数字。只在本次两条提示词里使用，结果文件只记录它的 SHA-256。
+- **网页操作**（每一步只做一次）：
+  1. 打开 `http://localhost:8174/chat`，点“连接”。分别选 codex 和 claude-code，确认两者的“用户监督模式”都没有标“离线模拟”或“不放行”。
+  2. 点“+ 新会话”（会话 A）。Agent 选 codex，模式选“用户监督模式”，输入：`Reply with exactly: <暗号>. Do not use tools, create subagents, or modify any files.`，发送。在调用卡上勾选本次监督边界同意，点“同意并调用”。等待回复，时限 300 秒。
+  3. 点“+ 新会话”（会话 B，不发消息）；再点会话列表中的 A 切回，确认历史完整。
+  4. 在 Codex 的回复上点“交给其他 Agent”。Agent 选 claude-code，模式选“用户监督模式”，输入：`Reply with exactly the code that appears in the handoff below, and nothing else. Do not use tools.`（不含暗号），发送。确认审批卡显示“交接：codex #…”，并且完整内容中暗号只出现在交接框内。勾选本次同意，点“同意并调用”。等待回复，时限 180 秒。
+  5. 截图（交接审批卡、最终会话），停止服务。
+  - 如果出现工具卡，点“拒绝”，本次判 INCONCLUSIVE。不发第三条消息，不重试。
+- **预算**：2 个会话，2 次 supervised 调用，最多 2 个模型回合（Codex 1 个、Claude Code 1 个）。Claude Code 的 `--max-budget-usd 1.00` 是客户端估算。
+- **判定**：服务停止后运行 `tools\probes\two_agent_collect.py --data-dir <上述目录> --code <暗号>`。脚本只读，结果写到 `var/two-agent/real-*/result.json`。
+  - **FAIL**（越过边界）：
+    - 超出预算；
+    - 有调用不是监督模式；
+    - 任一绑定身份不符；
+    - 发出过 accept；
+    - 任一工作目录非空；
+    - 交接来源不是 Codex 的那条回复，或发送内容不等于“用户原文 + 固定交接框”；
+    - 用户原文中含暗号。
+  - **INCONCLUSIVE**（没有展示出来）：
+    - 调用顺序或会话数不符，或交接跨了会话、缺少交接；
+    - 有调用没有 succeeded，或审批未消费，或名额未释放；
+    - Codex 回复不是恰好暗号，或回合未完成，或有工具或子 Agent 活动，或有事件或用量异常，或清理未确认；
+    - Claude Code 回复不是恰好暗号，或回合数不是 1，或有权限拒绝，或退出码非 0，或超时，或没有用量。
+  - **PASS**：以上都没有。
+  - 网页层面由我如实记录：两个 Agent 的状态显示、会话切换、交接审批卡的内容、两条回复的显示。
+- **只认定**：
+  - 两个真实 Agent 经过同一个 Hub 网页各完成一次 supervised 调用；
+  - 会话切换后历史保持；
+  - 一次经用户批准的交接把 Codex 的回复送到了 Claude Code，Claude Code 用它答出了暗号。
+- **不认定**：
+  - 工具或子 Agent 控制、取消或中断、Claude Code 流式、会话恢复；
+  - 长对话或复杂交接的质量；
+  - 用量与预算（阶段 T）；
+  - 其他版本或模型。
+- **停止规则**：任何检查失败或异常立即停止，不重试，不换模型，不放宽权限或参数；保留代理与 CA，不关闭证书验证。运行结束后停止服务。
+- **证据**（原文件都不入库，只登记 SHA-256）：
+  - result.json；
+  - Codex 的 stderr 日志和 rollout；
+  - Claude Code 的 stderr 日志；
+  - 截图。
+
+  数据目录中的数据库含提示词和回复，留在仓库外。写运行记录，打 `evidence/two-agent-real-run-1-<pass|fail|inconclusive>` 标签。
+- **风险**：
+  - 两个 Agent 各消耗一个回合的额度；
+  - Codex 可能尝试工具（只读沙箱，判 INCONCLUSIVE），或给暗号加上标点；
+  - Claude Code 可能多说话；
+  - Codex 的 stderr 很可能出现已知的 skills ERROR；
+  - 桌面更新可能删除 Claude Code 的固定文件，届时身份核验失败，调用被拒（一律关闭）。

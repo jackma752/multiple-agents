@@ -139,7 +139,7 @@ def main() -> None:
     if kind == "multi":
         print("Agent Hub - codex + claude-code side by side (each call checked and run on its own agent's adapter)")
         print(f"  codex      : {'OFFLINE STUB ' + args.appserver_stub if args.appserver_stub else 'real (supervised only)'}")
-        print(f"  claude-code: {'OFFLINE STUB ' + args.claude_code_stub if args.claude_code_stub else 'real (refused until identity recorded)'}")
+        print(f"  claude-code: {'OFFLINE STUB ' + args.claude_code_stub if args.claude_code_stub else 'real (supervised only)'}")
     elif args.appserver_stub:
         print("Agent Hub - app-server transport against the OFFLINE STUB (no Codex, no model)")
     elif kind == "codex":

@@ -4,7 +4,11 @@
 - 新增 `RoutingAdapter`（`AGENT_HUB_ADAPTER=multi`）：每个调用都在自己 Agent 的适配器上检查和运行；路由器层面一律拒绝。
 - 新增手动交接：`handoff_message_ids`。组合后的输入由审批绑定，审批卡完整显示。
 - 说明见 [多 Agent 对话](multi-agent.md)。离线测试和浏览器桩验证都已完成。
-- 达到 T 启动节点还差的真实运行：Codex 的 S6-2 冒烟；Claude Code 的 `--max-turns` 决定、用户登录、一个回合；最后一次双 Agent 真实对话。每项都需要单独批准。
+- 2026-10-24 进展：
+  - 经批准合并了两条记录分支：Codex S6-2 第二次运行 PASS；Claude Code 身份已记录，其第一次单回合 PASS。
+  - 受影响的离线测试 279 项通过。
+  - 新增只读判定脚本 `tools/probes/two_agent_collect.py`，离线测试 11 项。
+  - **双 Agent 真实网页对话申请**见 [多 Agent 对话](multi-agent.md) 第 5 节，未执行，需要单独批准。通过即达到 T 启动节点（只认定当次）。
 
 ---
 
