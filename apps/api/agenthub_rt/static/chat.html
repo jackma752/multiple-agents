@@ -75,6 +75,13 @@
   details.sent { margin-top: 8px; font-size: 12.5px; }
   details.sent pre { white-space: pre-wrap; max-height: 260px; overflow: auto; margin: 6px 0 0;
                      padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+  .usage-bar { margin: 10px 16px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px;
+               font-size: 12.5px; color: var(--dim); }
+  .usage-bar strong { color: var(--fg); font-weight: 600; }
+  .usage-panel { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px;
+                 color: var(--dim); }
+  .usage-panel h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--fg); }
+  .usage-line { margin: 2px 0; word-break: break-word; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
            background: #3a1f22; border: 1px solid var(--bad); color: #ffd6d7; display: none; white-space: pre-wrap; }
   @media (max-width: 760px) {
@@ -96,9 +103,11 @@
   <aside>
     <button id="newConvBtn" class="primary" style="width:100%">+ 新会话</button>
     <ul id="convList"></ul>
+    <div id="usageAll" class="usage-panel" hidden></div>
   </aside>
   <main>
     <div id="banner" class="banner" hidden></div>
+    <div id="usageConv" class="usage-bar" hidden></div>
     <div id="timeline"><div class="empty">选择或新建一个会话。发送消息只会生成待审批调用，不会直接调用 Agent。</div></div>
     <form id="composer" autocomplete="off">
       <textarea id="text" placeholder="输入消息（Ctrl+Enter 发送）"></textarea>
@@ -247,14 +256,21 @@ function absorbMessage(m) {
   }
 }
 
-/* Ledger rows of this conversation's calls (normalized; unknown is never 0). */
+/* Ledger views (normalized; unknown is never 0): this conversation's calls and
+   root task, and this user's whole instance over the last 7 UTC days. */
 async function loadUsage(gen = S.viewGen) {
-  if (!S.cid || !current(gen)) return;
-  const cid = S.cid;
-  const page = await api("GET", `/api/conversations/${enc(cid)}/usage`);
-  if (!current(gen) || cid !== S.cid) return;
-  for (const u of page.calls || []) call(u.invocation_id).usage = u;
-  S.usageTotal = page.total || null;
+  if (!S.token || !current(gen)) return;
+  const since = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+  const all = await api("GET", "/api/usage/summary", undefined, { since });
+  if (!current(gen)) return;
+  S.usageAll = all;
+  if (S.cid) {
+    const cid = S.cid;
+    const page = await api("GET", `/api/conversations/${enc(cid)}/usage`);
+    if (!current(gen) || cid !== S.cid) return;
+    for (const u of page.calls || []) call(u.invocation_id).usage = u;
+    S.usageConv = page;
+  }
   render();
 }
 
@@ -563,11 +579,12 @@ async function loadConvs() {
   const data = await api("GET", "/api/conversations", undefined, { limit: 100 });
   S.convs = data.conversations;
   renderConvs();
+  needUsage();
 }
 
 function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
-  S.consent = new Map(); S.banner = ""; S.handoff = [];
+  S.consent = new Map(); S.banner = ""; S.handoff = []; S.usageConv = null;
 }
 
 /* The only way to create a conversation: concurrent callers share one creation. */
@@ -826,6 +843,57 @@ function usageText(u) {
   return text;
 }
 
+/* A ledger summary: known sums only, and how many calls are partial / unknown. */
+function summaryText(t) {
+  if (!t || !t.calls) return "暂无已结算的调用";
+  const k = t.known, cache = [];
+  if (k.cache_read) cache.push("缓存读 " + fmtN(k.cache_read));
+  if (k.cache_write) cache.push("写 " + fmtN(k.cache_write));
+  const text = `已知 输入 ${fmtN(k.input_total)}${cache.length ? "（" + cache.join(" / ") + "）" : ""}` +
+               ` / 输出 ${fmtN(k.output_total)} · ${t.calls} 次调用`;
+  const extra = [];
+  if (t.partial_calls) extra.push(`${t.partial_calls} 次不完整`);
+  if (t.unknown_calls) extra.push(`另有 ${t.unknown_calls} 次未知`);
+  const gap = (t.calls_missing.input_total || 0) - t.unknown_calls;
+  if (gap > 0) extra.push(`${gap} 次缺少输入数`);
+  return extra.length ? `${text}（${extra.join("，")}）` : text;
+}
+
+function agentLines(groups) {
+  return Object.entries(groups || {}).map(([agent, t]) =>
+    el("div", { class: "usage-line" }, el("span", { class: "chip" }, agent), " ", summaryText(t)));
+}
+
+/* Conversation total (with its root task when sub-tasks spent too) and the
+   instance panel; both are views over the ledger, never a second booking. */
+function renderUsage() {
+  const bar = $("usageConv");
+  const u = S.usageConv;
+  bar.hidden = !S.cid || !u || !u.total.calls;
+  if (!bar.hidden) {
+    const root = u.root_task && u.root_task.total;
+    // replaceChildren() would print a null as text: only real nodes go in.
+    bar.replaceChildren(...[
+      el("div", { class: "usage-line" }, el("strong", {}, "本会话用量 "), summaryText(u.total)),
+      ...(Object.keys(u.by_agent || {}).length > 1 ? agentLines(u.by_agent) : []),
+      root && root.calls !== u.total.calls
+        ? el("div", { class: "usage-line" }, "根任务（含子任务调用）：" + summaryText(root)) : null,
+    ].filter(Boolean));
+    bar.title = u.mapping_note || "";
+  }
+  const all = S.usageAll;
+  const panel = $("usageAll");
+  panel.hidden = !all;
+  if (all) {
+    panel.replaceChildren(
+      el("h4", {}, "全部会话 · 近 7 天"),
+      el("div", { class: "usage-line" }, summaryText(all.total)),
+      ...agentLines(all.by_agent),
+      el("div", { class: "dim" }, `本 Hub 实例，未区分项目；按 ${all.day_basis || "UTC"}`));
+    panel.title = all.scope_note || "";
+  }
+}
+
 function render() {
   // A timer, not requestAnimationFrame: rAF is paused while the page is not
   // painted (background tab, covered window), which froze the view while
@@ -884,6 +952,7 @@ function renderNow() {
   }
   if (nearBottom) tl.scrollTop = tl.scrollHeight;
   exposeStats();
+  renderUsage();
   renderComposer();
 }
 

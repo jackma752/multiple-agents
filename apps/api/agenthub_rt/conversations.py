@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from datetime import date
 from typing import Literal, Optional
 
 from fastapi import Depends, Header, HTTPException, Query, Request
@@ -17,7 +18,7 @@ from agenthub_kernel.conversations import (
     conversation_view, owned_conversation, submit_turn, turn_view,
 )
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
-from agenthub_kernel.usage_ledger import conversation_usage
+from agenthub_kernel.usage_ledger import conversation_usage, instance_usage
 
 SSE_RETRY_MS = 3000
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -147,6 +148,22 @@ def register_conversations(app, db) -> None:
         with db.session() as session:
             require_conversation(session, cid, principal)
             return conversation_usage(session, cid)
+
+    @app.get("/api/usage/summary")
+    def get_usage_summary(
+        since: Optional[date] = Query(None), until: Optional[date] = Query(None),
+        principal: Principal = Depends(authenticate),
+    ):
+        """This user's calls across all their conversations here, by agent / day / conversation.
+
+        The project-level view until projects exist (T-1b): only the caller's
+        own conversations are read. ``since`` / ``until`` are inclusive UTC days.
+        """
+        require_approver(principal)
+        if since and until and since > until:
+            raise HTTPException(422, detail="since must not be after until")
+        with db.session() as session:
+            return instance_usage(session, principal.identity, since=since, until=until)
 
     def read_page(session, cid, after: int, limit: int):
         """Stored events (IDs/statuses only) plus server-attached chunk text.
