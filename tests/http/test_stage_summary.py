@@ -9,8 +9,12 @@ Drafting is an ordinary call carrying recent history, so it waits for approval.
 from sqlalchemy import func, select
 
 from agenthub.context import part_texts
+from agenthub_adapters.appserver_stub import InMemoryStubFactory
 from agenthub_kernel.db import ChatMessageRow
 from tests.http import test_multi_agent as multi
+from tests.http.test_budget_admission import (
+    S3_TOKENS, counters, item, ledger_matches_counters, refused, root_of, set_budget, spend,
+)
 from tests.http.test_conversation_stream import make_client, submit, turn_and_run  # noqa: F401  (fixture)
 from tests.http.test_conversations import USER, approve, conversation, run
 from tests.http.test_file_refs import files, hub, invocations, sent_to_codex  # noqa: F401  (fixtures)
@@ -123,6 +127,53 @@ def test_drafting_is_an_ordinary_call_with_history_and_its_reply_reads_back(hub)
     assert (draft["goal"], draft["next_steps"], draft["file_refs"]) == ("Fix it", "Rerun", ["src/app.py:L1-2"])
     saved = save(client, cid, **{k: draft[k] for k in SUMMARY}, from_message_id=reply_id)
     assert saved["source"] == f"draft:{reply_id}" and saved["goal"] == "Fix it"
+
+
+def compress_to(client, cid, summary):
+    r = client.post(f"/api/conversations/{cid}/compress", headers=USER, json={"summary_id": summary["summary_id"]})
+    assert r.status_code == 200, r.text
+    return r.json()["conversation_id"]
+
+
+def test_a_budget_refusal_survives_compress_and_continue(make_client):
+    client = make_client(InMemoryStubFactory("usage-multi-request"))
+    cid = conversation(client)
+    turn_and_run(client, cid, "a", text=EARLIER)  # S3_TOKENS spent
+    root = root_of(client, cid)
+    set_budget(client, root, total=40000, per_call=20000)
+    refused(client, cid, "b", "token_budget_exceeded", previewed=True)  # 30,618 + 20,000 > 40,000
+    new = compress_to(client, cid, save(client, cid, file_refs=[]))
+    # Same task tree: the policy, the spend and the refusal carry over; nothing resets.
+    assert root_of(client, new) == root
+    assert spend(client, new) == (S3_TOKENS, 0, 0, 0)
+    refused(client, new, "c", "token_budget_exceeded", previewed=True)
+    # A new conversation and new provider threads: nothing of the source can be resumed.
+    r = client.post(f"/api/conversations/{new}/invocations", headers=USER, json={
+        "text": "x", "agent_id": "codex", "client_request_id": "r", "context_mode": "native_resume"})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "no_native_session"
+
+
+def test_calls_after_compress_go_to_the_same_task_ledger(make_client):
+    client = make_client(InMemoryStubFactory("usage-multi-request"))
+    cid = conversation(client)
+    turn_and_run(client, cid, "a", text=EARLIER)
+    root = root_of(client, cid)
+    set_budget(client, root, total=200000, per_call=60000)
+    summary = save(client, cid, file_refs=[])
+    new = compress_to(client, cid, summary)
+    turn = submit(client, new, key="n", text="Go on.", summary_id=summary["summary_id"])
+    approve(client, turn)
+    assert run(client, turn).json()["status"] == "succeeded"
+    assert item(client, turn["invocation_id"])["reservation"] == 60000  # admitted under the source's policy
+    usage = client.get(f"/api/conversations/{new}/usage", headers=USER).json()
+    assert usage["total"]["calls"] == 1  # this conversation's own call
+    assert usage["root_task"]["root_task_id"] == root and usage["root_task"]["total"]["calls"] == 2
+    assert counters(client, cid) == counters(client, new) == (2 * S3_TOKENS, 0, 0, 0)
+    ledger_matches_counters(client, cid)
+    # A policy change of the tree reaches the continued conversation too.
+    set_budget(client, root, total=300000, per_call=60000)
+    events = client.get(f"/api/conversations/{new}/events", headers=USER).json()["events"]
+    assert any(e["type"] == "task.policy_updated" for e in events)
 
 
 def test_another_agent_gets_the_summary_not_the_history(two_agents):

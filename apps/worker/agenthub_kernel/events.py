@@ -91,6 +91,19 @@ def _changed_status(obj: Any) -> tuple[str | None, str | None] | None:
     return before, after
 
 
+def _continuations(conn: Connection, cid: str) -> list[str]:
+    """``cid`` and the conversations continued from it by "compress and continue"."""
+    from agenthub_kernel.db import ConversationLinkRow
+
+    found, frontier = [cid], [cid]
+    while frontier:
+        children = conn.execute(select(ConversationLinkRow.conversation_id).where(
+            ConversationLinkRow.parent_conversation_id.in_(frontier))).scalars().all()
+        frontier = [c for c in children if c not in found]
+        found += frontier
+    return found
+
+
 def _conversation_of_invocation(conn: Connection, invocation_id: str) -> str | None:
     from agenthub_kernel.db import ChatMessageRow
 
@@ -231,7 +244,9 @@ def _after_flush(session: Session, _ctx: Any) -> None:
         if cid:
             source = ev.payload or {}
             payload = {k: source[k] for k in TREE_PAYLOAD_KEYS if k in source}
-            out.append((cid, f"task.{ev.type}", {"root_task_id": ev.root_task_id, **payload}))
+            # The tree's owner and every conversation continued from it (T-2).
+            for target in _continuations(conn, cid):
+                out.append((target, f"task.{ev.type}", {"root_task_id": ev.root_task_id, **payload}))
 
     for msg in (m for m in msgs if m.role != "user"):
         out.append((msg.conversation_id, "message.created", {

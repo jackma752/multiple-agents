@@ -184,8 +184,10 @@ def conversation_usage(session: Session, conversation_id: str) -> dict[str, Any]
         .order_by(ChatMessageRow.id)
     ).all()
     calls = [v for v in (usage_view(session, inv) for inv in invs) if v is not None]
-    conversation = session.get(ConversationRow, conversation_id)
-    root = conversation.root_task_id if conversation is not None else None
+    # A continued conversation reports the task tree it runs in (T-2).
+    from agenthub_kernel.summaries import root_task_of
+
+    root = root_task_of(session, conversation_id) if session.get(ConversationRow, conversation_id) else None
     return {"conversation_id": conversation_id, "mapping_note": MAPPING_NOTE,
             "calls": calls, "total": summarize(calls), "by_agent": by_agent(calls),
             "root_task": root_task_usage(session, root) if root else None,

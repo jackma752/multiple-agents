@@ -19,7 +19,9 @@ from agenthub_kernel.db import (
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.budget import budget_view
 from agenthub_kernel.file_refs import FileRefError, file_segments
-from agenthub_kernel.summaries import history_segments, link_view, summary_segments, usable_summary
+from agenthub_kernel.summaries import (
+    history_segments, link_view, summary_segments, tree_owner, usable_summary,
+)
 from agenthub_kernel.usage_ledger import usage_view
 
 
@@ -252,11 +254,15 @@ def submit_turn(
         return {**turn_view(session, previous), "replayed": True}
 
     svc = PolicyService(session)
-    if conversation.root_task_id is None:
+    # A continued conversation runs in its source's task tree (T-2): same
+    # policy, budget counters, reservations and ledger; only the conversation
+    # and the provider threads are new.
+    owner = tree_owner(session, cid)
+    if owner.root_task_id is None:
         root = svc.create_task(agent_id=request.agent_id, goal=request.text)
-        conversation.root_task_id = root.id
+        owner.root_task_id = root.id
     else:
-        root = session.get(TaskRow, conversation.root_task_id)
+        root = session.get(TaskRow, owner.root_task_id)
         if svc._tree_stopped(root.id):
             raise QuotaError("tree_stopped", "conversation task tree is stopped")
 

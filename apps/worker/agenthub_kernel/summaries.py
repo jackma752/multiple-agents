@@ -53,6 +53,32 @@ def link_of(session: Session, cid: str) -> Optional[ConversationLinkRow]:
     return session.get(ConversationLinkRow, cid)
 
 
+def tree_owner(session: Session, cid: str) -> ConversationRow:
+    """The conversation whose root task this one runs in.
+
+    A conversation continued by "compress and continue" keeps its source's
+    task tree - policy, budget counters, reservations, unsettled items and
+    ledger - so compressing never resets spend. ``conversations.root_task_id``
+    is unique, so the tree stays recorded on the first conversation of the
+    chain and the continued ones resolve to it. Only the conversation and the
+    provider threads are new.
+    """
+    row = session.get(ConversationRow, cid)
+    seen = {cid}
+    while row is not None and row.root_task_id is None:
+        link = link_of(session, row.id)
+        if link is None or link.parent_conversation_id in seen:
+            break
+        seen.add(link.parent_conversation_id)
+        row = session.get(ConversationRow, link.parent_conversation_id)
+    return row
+
+
+def root_task_of(session: Session, cid: str) -> Optional[str]:
+    owner = tree_owner(session, cid)
+    return owner.root_task_id if owner is not None else None
+
+
 def link_view(link: Optional[ConversationLinkRow]) -> dict[str, Any]:
     if link is None:
         return {"parent_conversation_id": None, "continued_from_summary_id": None}
@@ -112,7 +138,12 @@ def history_segments(session: Session, cid: str) -> list[tuple]:
 
 
 def compress(session: Session, cid: str, user_id: str, summary_id: int, title: str = "") -> ConversationRow:
-    """Open a new conversation that continues ``cid`` from ``summary_id``."""
+    """Open a new conversation that continues ``cid`` from ``summary_id``.
+
+    New conversation, new provider threads (its calls cannot resume the
+    source's threads); same task tree (:func:`tree_owner`), so policy, spend,
+    reservations and unsettled items carry on.
+    """
     source = session.get(ConversationRow, cid)
     summary = usable_summary(session, cid, summary_id)
     row = ConversationRow(id=new_id("conv"), user_id=user_id,

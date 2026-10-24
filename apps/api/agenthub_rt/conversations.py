@@ -23,7 +23,7 @@ from agenthub_kernel.conversations import (
 from agenthub_kernel.file_refs import FileRefError, list_files
 from agenthub_kernel.file_suggest import suggest
 from agenthub_kernel.summaries import (
-    available_summaries, compress, link_of, link_view, save_summary, summary_view,
+    available_summaries, compress, link_of, link_view, root_task_of, save_summary, summary_view,
 )
 from agenthub.summary import SUMMARY_INSTRUCTION, StageSummary, parse_summary_text
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
@@ -209,7 +209,9 @@ def register_conversations(app, db) -> None:
                     "result": row.result_metadata,
                 })
             return {
-                **conversation_view(conversation, link_of(session, cid)), "messages": messages,
+                **conversation_view(conversation, link_of(session, cid)),
+                "root_task_id": root_task_of(session, cid),  # a continuation's is its source's tree
+                "messages": messages,
                 "has_more": len(rows) > limit,
                 "next_after_id": messages[-1]["message_id"] if messages else after_id,
             }
@@ -378,7 +380,7 @@ def register_conversations(app, db) -> None:
             except QuotaError as exc:
                 raise _http_error(exc)
             # Over the budget: the page asks to narrow the references (never trims).
-            budget = estimate_check(session, conversation.root_task_id if conversation else None,
+            budget = estimate_check(session, root_task_of(session, conversation.id) if conversation else None,
                                     preview["estimate"])
         return {"sent_text": sent, "context_preview": preview, "budget": budget}
 
