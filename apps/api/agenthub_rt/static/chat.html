@@ -1700,11 +1700,12 @@ $("panelToggle").addEventListener("click", () => $("sidePanel").classList.toggle
 for (const btn of document.querySelectorAll("[data-close]")) {
   btn.addEventListener("click", () => $(btn.dataset.close).classList.remove("open"));
 }
-// Which side sections are folded is a per-browser convenience only.
+// Which side sections are folded is remembered for this tab only, like the token
+// (the page keeps nothing in persistent browser storage).
 for (const sec of document.querySelectorAll("details.sec")) {
-  try { if (localStorage.getItem("agenthub.sec." + sec.dataset.key) === "0") sec.open = false; } catch (_) { /* storage blocked */ }
+  try { if (sessionStorage.getItem("agenthub.sec." + sec.dataset.key) === "0") sec.open = false; } catch (_) { /* storage blocked */ }
   sec.addEventListener("toggle", () => {
-    try { localStorage.setItem("agenthub.sec." + sec.dataset.key, sec.open ? "1" : "0"); } catch (_) { /* storage blocked */ }
+    try { sessionStorage.setItem("agenthub.sec." + sec.dataset.key, sec.open ? "1" : "0"); } catch (_) { /* storage blocked */ }
   });
 }
 $("composer").addEventListener("submit", send);
