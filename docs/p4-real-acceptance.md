@@ -1,6 +1,6 @@
 # P4 最小真实协作验收申请
 
-**状态（2026-10-25）**：经批准在 `86257d2` 上执行一次，判定为 **INCONCLUSIVE**（只认定本次）。当时唯一的原因是 #2 的 Claude Code 用量为 partial：报告了两个模型，且 `num_turns=2`。所有边界、输入和依赖检查都通过。判定脚本此后补上了独立的回合数检查，重判结果仍为 INCONCLUSIVE，原因为 partial 加上回合数不是 1。两个模型和第二个回合的来源仍未知。第二次申请见 [p4-real-acceptance-2.md](p4-real-acceptance-2.md)（未执行）。见 [第一次实录](p4-2026-10-25-run1.md)，标签 `evidence/p4-real-run-1-inconclusive`。授权已用完。下文保留申请原文。
+**状态（2026-10-25）**：经批准在 `86257d2` 上执行一次，判定为 **INCONCLUSIVE**（只认定本次）。当时唯一的原因是 #2 的 Claude Code 用量为 partial：报告了两个模型，且 `num_turns=2`。所有边界、输入和依赖检查都通过。判定脚本此后补上了独立的回合数检查，重判结果仍为 INCONCLUSIVE，原因为 partial 加上回合数不是 1。两个模型和第二个回合的来源仍未知。第二次申请见 [p4-real-acceptance-2.md](p4-real-acceptance-2.md)，已执行一次，同样判为 INCONCLUSIVE，见[第二次实录](p4-2026-10-25-run2.md)。见 [第一次实录](p4-2026-10-25-run1.md)，标签 `evidence/p4-real-run-1-inconclusive`。授权已用完。下文保留申请原文。
 
 ## 目的
 
