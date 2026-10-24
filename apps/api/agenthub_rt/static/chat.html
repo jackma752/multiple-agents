@@ -33,8 +33,20 @@
   .chip.warn { color: var(--warn); border-color: var(--warn); }
   .chip.bad { color: var(--bad); border-color: var(--bad); }
   .chip.info { color: var(--accent); border-color: var(--accent); }
-  .layout { display: grid; grid-template-columns: 240px 1fr; height: calc(100% - 53px); }
+  /* Three columns: conversations | timeline + composer | usage, summary, plan (P4.5). */
+  .layout { display: grid; grid-template-columns: 240px minmax(0, 1fr) 340px; height: calc(100% - 53px); }
   aside { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; overflow: auto; }
+  aside.side { border-right: 0; border-left: 1px solid var(--line); }
+  .side details.sec { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .side details.sec > summary { cursor: pointer; padding: 6px 10px; font-weight: 600; font-size: 13px; }
+  .side details.sec:has(> .usage-bar[hidden]) { display: none; }
+  .side .usage-bar { margin: 0; border: 0; padding: 2px 10px 10px; }
+  /* The section heading already names these two. */
+  #summaryBar .usage-line > strong:first-child, #planBar > .usage-line:first-child > strong:first-child { display: none; }
+  .side .plan-form .row, .side .summary-form .row { flex-wrap: wrap; }
+  .drawer-btn, .drawer-close { display: none; }
+  aside li .t { display: flex; gap: 6px; align-items: center; }
+  aside li .t span.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   aside ul { list-style: none; margin: 10px 0 0; padding: 0; }
   aside li { padding: 8px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
   aside li:hover { background: var(--panel2); }
@@ -87,32 +99,43 @@
   .summary-field textarea { min-height: 40px; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
            background: #3a1f22; border: 1px solid var(--bad); color: #ffd6d7; display: none; white-space: pre-wrap; }
+  /* Narrow windows: the side columns become drawers, the timeline keeps the height. */
+  @media (max-width: 1100px) {
+    .layout { grid-template-columns: 240px minmax(0, 1fr); }
+    aside.side { position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 92vw); z-index: 30;
+                 transform: translateX(100%); transition: transform .15s; box-shadow: -8px 0 24px #0008; }
+    aside.side.open { transform: none; }
+    #panelToggle, .side .drawer-close { display: inline-block; }
+  }
   @media (max-width: 760px) {
-    .layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 30vh; }
+    .layout { grid-template-columns: minmax(0, 1fr); }
+    aside.left { position: fixed; top: 0; left: 0; bottom: 0; width: min(300px, 88vw); z-index: 30;
+                 transform: translateX(-100%); transition: transform .15s; box-shadow: 8px 0 24px #0008; }
+    aside.left.open { transform: none; }
+    #convToggle, .left .drawer-close { display: inline-block; }
   }
 </style>
 </head>
 <body>
 <header class="top">
+  <button id="convToggle" class="drawer-btn" type="button">会话</button>
   <strong>Agent Hub · 会话</strong>
   <span id="adapterChip" class="chip">适配器未知</span>
   <span id="connChip" class="chip">未连接</span>
   <span class="grow"></span>
+  <button id="panelToggle" class="drawer-btn" type="button">面板</button>
   <input id="token" type="password" autocomplete="off" placeholder="用户 token（默认 dev-user-token）" />
   <button id="connectBtn">连接</button>
 </header>
 <div class="layout">
-  <aside>
+  <aside class="left" id="leftPanel">
+    <button class="drawer-close mini" type="button" data-close="leftPanel">关闭</button>
     <button id="newConvBtn" class="primary" style="width:100%">+ 新会话</button>
     <ul id="convList"></ul>
     <div id="usageAll" class="usage-panel" hidden></div>
   </aside>
   <main>
     <div id="banner" class="banner" hidden></div>
-    <div id="usageConv" class="usage-bar" hidden></div>
-    <div id="summaryBar" class="usage-bar" hidden></div>
-    <div id="planBar" class="usage-bar" hidden></div>
     <div id="timeline"><div class="empty">选择或新建一个会话。发送消息只会生成待审批调用，不会直接调用 Agent。</div></div>
     <form id="composer" autocomplete="off">
       <textarea id="text" placeholder="输入消息（Ctrl+Enter 发送）"></textarea>
@@ -150,6 +173,16 @@
       </div>
     </form>
   </main>
+  <aside class="side" id="sidePanel">
+    <button class="drawer-close mini" type="button" data-close="sidePanel">关闭</button>
+    <details class="sec" data-key="usage" open><summary>用量与预算</summary>
+      <div id="usageConv" class="usage-bar" hidden></div></details>
+    <details class="sec" data-key="summary" open><summary>阶段摘要</summary>
+      <div id="summaryBar" class="usage-bar" hidden></div></details>
+    <details class="sec" data-key="plan" open><summary>协作计划</summary>
+      <div id="planBar" class="usage-bar" hidden></div></details>
+    <div id="sideEmpty" class="dim">选择一个会话后，这里显示它的用量与预算、阶段摘要和协作计划。</div>
+  </aside>
 </div>
 <div id="toast" role="alert"></div>
 <script>
@@ -374,6 +407,7 @@ async function dispatchItem(plan, item) {
   const mode = $("mode").value;
   if (mode !== "strict" && mode !== "supervised") { toast("请先在输入框下方选择执行模式"); return; }
   await guarded(`dispatch:${plan.plan_id}:${item.index}`, async () => {
+    S.scrollAfter = S.lastMsgId;
     await api("POST", `/api/conversations/${enc(S.cid)}/plans/${plan.plan_id}/items/${item.index}/dispatch`, {
       execution_mode: mode, client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
     toast(`子任务 #${item.index} 已生成待审批调用`);
@@ -385,6 +419,7 @@ async function collectPlan(plan) {
   const mode = $("mode").value;
   if (mode !== "strict" && mode !== "supervised") { toast("请先在输入框下方选择执行模式"); return; }
   await guarded(`collect:${plan.plan_id}`, async () => {
+    S.scrollAfter = S.lastMsgId;
     await api("POST", `/api/conversations/${enc(S.cid)}/plans/${plan.plan_id}/collect`, {
       agent_id: $("agent").value, execution_mode: mode,
       client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
@@ -721,9 +756,11 @@ async function send(event) {
     // A creation already in flight (e.g. "+ 新会话" just clicked) is the one
     // this message goes to; otherwise create one. Never a second conversation.
     if (S.createPromise) await S.createPromise;
-    if (!S.cid) await createConversation(text.trim().slice(0, 40));
+    if (!S.cid) await createConversation("");  // the server titles it from this message
     const cid = S.cid;
     const gen = S.viewGen;
+    const untitled = !(S.convs.find((c) => c.conversation_id === cid) || {}).title;
+    S.scrollAfter = S.lastMsgId;
     const turn = await api("POST", `/api/conversations/${enc(cid)}/invocations`, {
       text, agent_id: $("agent").value, execution_mode: mode,
       client_request_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())),
@@ -742,6 +779,7 @@ async function send(event) {
     renderSuggestions();
     $("mode").value = "";  // the next call needs its own explicit choice
     if (current(gen)) needMessages(gen);
+    if (untitled) await loadConvs();  // its first message just gave it a title
   });
 }
 
@@ -861,7 +899,7 @@ function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
   S.consent = new Map(); S.banner = ""; S.handoff = []; S.usageConv = null;
   S.summaries = []; S.summaryLink = {}; S.attachSummary = null; S.includeHistory = false; S.summaryEdit = null;
-  S.plans = null; S.planEdit = null;
+  S.plans = null; S.planEdit = null; S.scrollAfter = null;
 }
 
 /* The only way to create a conversation: concurrent callers share one creation. */
@@ -1465,7 +1503,8 @@ function renderNow() {
   const nearBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80;
   const banner = $("banner");
   banner.hidden = !S.banner;
-  banner.textContent = S.banner;
+  banner.replaceChildren(S.banner, " ",
+    el("button", { class: "mini", title: "关闭这条通知", onclick: () => { S.banner = ""; render(); } }, "×"));
   tl.replaceChildren();
   if (!S.cid) {
     tl.append(el("div", { class: "empty" }, "选择或新建一个会话。发送消息只会生成待审批调用，不会直接调用 Agent。"));
@@ -1505,11 +1544,15 @@ function renderNow() {
         el("div", { class: "bubble" }, m.text)));
     }
   }
-  if (nearBottom) tl.scrollTop = tl.scrollHeight;
+  // A call the user just created shows its approval card at the end: go there.
+  const created = S.scrollAfter != null && S.lastMsgId > S.scrollAfter;
+  if (nearBottom || created) tl.scrollTop = tl.scrollHeight;
+  if (created) S.scrollAfter = null;
   exposeStats();
   renderUsage();
   renderSummary();
   renderPlans();
+  $("sideEmpty").hidden = !["usageConv", "summaryBar", "planBar"].every((id) => $(id).hidden);
   renderComposer();
 }
 
@@ -1520,12 +1563,33 @@ function exposeStats() {
   main.dataset.created = S.stats.created;
 }
 
+/* Titles are short (set from the first message, or renamed); the time is on the
+   second line only. A compress-and-continue conversation carries a "续" chip. */
 function renderConvs() {
   const list = $("convList");
-  list.replaceChildren(...S.convs.map((c) => el("li", {
-      class: c.conversation_id === S.cid ? "active" : "", onclick: () => select(c.conversation_id) },
-    el("div", { class: "t" }, c.title || "(无标题)"),
-    el("div", { class: "d" }, new Date(c.created_at).toLocaleString()))));
+  list.replaceChildren(...S.convs.map((c) => {
+    const here = c.conversation_id === S.cid;
+    return el("li", { class: here ? "active" : "", onclick: () => { closeDrawers(); select(c.conversation_id); } },
+      el("div", { class: "t" }, el("span", { class: "name", title: c.title || "" }, c.title || "未命名"),
+         c.parent_conversation_id ? chip("续", "info") : null,
+         here ? el("button", { class: "mini", title: "改名", onclick: (ev) => { ev.stopPropagation(); renameConversation(c); } }, "改名") : null),
+      el("div", { class: "d" }, new Date(c.created_at).toLocaleString()));
+  }));
+}
+
+async function renameConversation(c) {
+  const typed = prompt("会话名称", c.title || "");
+  if (typed == null) return;
+  const title = typed.trim();
+  if (!title) { toast("名称不能为空"); return; }
+  await guarded("rename", async () => {
+    await api("PATCH", `/api/conversations/${enc(c.conversation_id)}`, { title });
+    await loadConvs();
+  });
+}
+
+function closeDrawers() {
+  for (const id of ["leftPanel", "sidePanel"]) $(id).classList.remove("open");
 }
 
 function lastNativeThread(agent) {
@@ -1617,8 +1681,22 @@ async function connect() {
 }
 
 $("connectBtn").addEventListener("click", connect);
-$("newConvBtn").addEventListener("click", () => guarded("newconv",
-  () => createConversation("新会话 " + new Date().toLocaleTimeString())));
+$("newConvBtn").addEventListener("click", () => guarded("newconv", () => {
+  closeDrawers();
+  return createConversation("");  // "未命名" until its first message names it
+}));
+$("convToggle").addEventListener("click", () => $("leftPanel").classList.toggle("open"));
+$("panelToggle").addEventListener("click", () => $("sidePanel").classList.toggle("open"));
+for (const btn of document.querySelectorAll("[data-close]")) {
+  btn.addEventListener("click", () => $(btn.dataset.close).classList.remove("open"));
+}
+// Which side sections are folded is a per-browser convenience only.
+for (const sec of document.querySelectorAll("details.sec")) {
+  try { if (localStorage.getItem("agenthub.sec." + sec.dataset.key) === "0") sec.open = false; } catch (_) { /* storage blocked */ }
+  sec.addEventListener("toggle", () => {
+    try { localStorage.setItem("agenthub.sec." + sec.dataset.key, sec.open ? "1" : "0"); } catch (_) { /* storage blocked */ }
+  });
+}
 $("composer").addEventListener("submit", send);
 $("addRefBtn").addEventListener("click", () => addRef());
 $("fileRef").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRef(); } });
@@ -1630,7 +1708,8 @@ $("text").addEventListener("input", debounced(loadSuggestions, 700));
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();
 });
-$("agent").addEventListener("change", () => { renderAgentPosture(); renderComposer(); });
+// The plan's collect button names the selected agent: redraw it too.
+$("agent").addEventListener("change", () => { renderAgentPosture(); renderComposer(); renderPlans(); });
 $("mode").addEventListener("change", renderComposer);
 $("outputStyle").addEventListener("change", () => previewSend());
 window.addEventListener("hashchange", () => {

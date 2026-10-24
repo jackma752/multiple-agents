@@ -53,6 +53,11 @@ class ConversationIn(BaseModel):
     title: str = Field(default="", max_length=200)
 
 
+class RenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str = Field(min_length=1, max_length=200)
+
+
 class MessageIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     text: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
@@ -197,6 +202,19 @@ def register_conversations(app, db) -> None:
             session.add(row)
             session.flush()
             return conversation_view(row)
+
+    @app.patch("/api/conversations/{cid}")
+    def rename_conversation(cid: str, body: RenameIn, principal: Principal = Depends(authenticate)):
+        """A user-chosen title; it is never replaced by the first-message title."""
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(422, detail={"code": "invalid_title", "message": "title is empty"})
+        with db.session() as session:
+            row = require_conversation(session, cid, principal)
+            row.title = title
+            session.flush()
+            link = session.get(ConversationLinkRow, cid)
+            return conversation_view(row, link)
 
     @app.get("/api/conversations")
     def list_conversations(

@@ -146,8 +146,9 @@ def compress(session: Session, cid: str, user_id: str, summary_id: int, title: s
     """
     source = session.get(ConversationRow, cid)
     summary = usable_summary(session, cid, summary_id)
-    row = ConversationRow(id=new_id("conv"), user_id=user_id,
-                          title=(title or f"{source.title or cid}（续，摘要 v{summary.version}）")[:200])
+    # Same title as the source (P4.5): the list marks it "续" and shows its time;
+    # the summary version is on the continuation line inside the conversation.
+    row = ConversationRow(id=new_id("conv"), user_id=user_id, title=(title or source.title or "")[:200])
     session.add(row)
     session.flush()
     session.add(ConversationLinkRow(conversation_id=row.id, parent_conversation_id=cid, summary_id=summary.id))

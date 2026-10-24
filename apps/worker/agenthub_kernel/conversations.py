@@ -1,6 +1,7 @@
 """Durable local chat history. No provider calls or implicit approvals here."""
 
 import hashlib
+import re
 from typing import Any, Optional
 
 from sqlalchemy import exists, select
@@ -30,6 +31,36 @@ from agenthub_kernel.summaries import (
     history_segments, link_view, summary_segments, tree_owner, usable_summary,
 )
 from agenthub_kernel.usage_ledger import usage_view
+
+
+#: Request-shaped openings that say nothing about the topic (stripped from titles).
+_TITLE_OPENINGS = ("请你", "请帮我", "帮我", "帮忙", "麻烦你", "麻烦", "请", "根据以下", "根据下面", "根据",
+                   "我想要", "我想", "我要", "能不能", "可以")
+_CJK = re.compile(r"[㐀-鿿豈-﫿]")
+
+
+def short_title(text: str, limit: int = 5) -> str:
+    """A local title for a new conversation (P4.5): no model call.
+
+    The first clause, without request-shaped openings and punctuation: at
+    most ``limit`` characters when it starts with Chinese, else at most 3
+    words. Empty when nothing is left (the page shows "未命名").
+    """
+    for piece in (re.split(r"[\n。！？!?；;：:，,、]", text.strip(), maxsplit=1)[0], text):
+        s = piece.strip()
+        changed = True
+        while changed:
+            changed = False
+            for opening in _TITLE_OPENINGS:
+                if s.startswith(opening) and len(s) > len(opening):
+                    s, changed = s[len(opening):].lstrip(), True
+        first = next((ch for ch in s if ch.isalnum()), "")
+        if not first:
+            continue
+        if _CJK.match(first):
+            return "".join(ch for ch in s if ch.isalnum())[:limit]
+        return " ".join(re.findall(r"[^\W_][\w'-]*", s)[:3])[:40]
+    return ""
 
 
 def owned_conversation(session: Session, cid: str, user_id: str) -> ConversationRow:
@@ -350,6 +381,8 @@ def submit_turn(
         client_request_id=request.client_request_id, request_hash=request.request_hash(),
     )
     session.add(message)
+    if not (conversation.title or "").strip():
+        conversation.title = short_title(request.text)  # an untitled conversation is named by its first message
     session.flush()
     return {**turn_view(session, message), "replayed": False}
 
