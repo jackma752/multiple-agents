@@ -1,12 +1,18 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-24 T-0 用量、历史、缓存和压缩盘点**（离线，分支 `feat/t0-usage-baseline`）：完整能力表、字段口径和用量基线见 [T-0 基线](t0-usage-baseline.md)，下面两张表中有关用量的行以它为准。要点：
+- Claude Code 的 `input_tokens` 不含缓存，总输入要加上缓存写和缓存读：两次真实运行分别为 1,752 和 1,798，页面只显示了 2。
+- Codex 的 `inputTokens` 已包含缓存。`tokenUsage.last` 只是单次模型请求，多请求的回合会被少记：S3 第三次实耗输入 30,539，只记了 15,328（缺陷 D-T0-1，在 T-1a 修复）。
+- 中断或失败时没有用量，应该显示为未知，目前不显示。
+- 两家的缓存都只能观测；原生压缩都未接入。
+
 **2026-10-23 Claude Code 最小接入**（离线，分支 `feat/claude-code-min`；见 [Claude Code 适配器](claude-code-adapter.md)）。下表描述本仓库自己的 CC 适配器；表 B 的 CC 一行（经 AionUi 接入时的观察）保留为历史。**2026-10-24 更新**：做过一次零模型身份核验（INCONCLUSIVE，用户决定记录）和一次真实单回合（PASS，只认定当次，见 [单回合实录](claude-code-turn-2026-10-24-run1.md)）；下表其余项仍未验证。
 
 | 能力 | 状态 |
 |---|---|
 | 准入 | 严格模式拒绝（`claude_code_controls_unverified`）。监督模式只认代码常量 `PINNED_CLAUDE_CODE`（2.1.308，静态核对），并要求零模型身份核验已记录；2026-10-24 已记录（`b57a1d5f…`）。离线桩为 simulation |
 | 发消息 / 最终回复 | 已实现（`claude -p`，提示词走 stdin，取 `--output-format json` 的 `result`）。**已验证一次（只认定当次，`evidence/cc-turn-real-run-1-pass`）**：经过 Hub，监督模式，固定提示词，回复恰好为 `OK`，`num_turns=1` |
-| 真实用量 | 已实现：result 带 `usage` / `total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**已验证一次**：当次返回 input 2、cache write 1750、cache read 0、output 4，估算 $0.014088 |
+| 真实用量 | 已实现：result 带 `usage` / `total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**已验证一次**：当次返回 input 2、cache write 1750、cache read 0、output 4，估算 $0.014088。**口径（T-0）**：`input_tokens` 不含缓存，总输入 = input + cache write + cache read，即 1,752；双 Agent 第二次为 2 + 635 + 1,161 = 1,798。只保存了 4 个数字字段 |
 | 流式 | 未实现（不用 `stream-json`） |
 | 恢复会话 | 未实现（`--no-session-persistence`），不报告 `native_session` |
 | 取消 | `unsupported`；本地停止只结束本次入口进程，远端未确认停止时保留名额 |
@@ -30,6 +36,7 @@
 | 恢复会话 | thread 沿用首次调用的工作目录；核验返回的 cwd 和上一个回合；恢复时的一条用量重放单独记录。独立探针 S5 验证过一次冷恢复（`evidence/s5-real-run-2-pass`）；**经过 Hub 的续接、换 cwd、长对话：未验证** |
 | 控制内部子 Agent | **不能控制**，只能观测。`--disable multi_agent` 只关闭 Collab 功能，模型声明了版本时不起作用（S6 规划第 2.1 节）：它只是请求，**不是**“已禁用子 Agent”。会话中的 `multi_agent_version` 是模式字段，不是派生证据 |
 | 停止 | 只关闭本次调用自有的入口进程；后代进程只记录、不结束；远端停止不保证（监督模式既有边界） |
+| 用量（T-0 补充） | 来源为 `thread/tokenUsage/updated`，每次模型请求一条。`inputTokens` 已包含 `cachedInputTokens`，`outputTokens` 已包含推理用量。适配器只取最后一条 `last`，**多请求的回合会少记**（D-T0-1）。`turn/completed` 不带用量，适配器读取 `turn.usage` 的路径只对桩有效（D-T0-4）。中断或拒绝的回合没有用量，为未知。见 [T-0 基线](t0-usage-baseline.md) |
 
 **2026-10-21 app-server 可选传输**：新增 `AppServerCodexAdapter`（`AGENT_HUB_CODEX_TRANSPORT=app-server`），作为 exec 之外的另一种传输。下表 Codex 行描述的仍是 exec。app-server 传输各项能力如下：
 
