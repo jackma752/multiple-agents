@@ -128,6 +128,19 @@ THREAD_SETTINGS = {"sandbox": "read-only", "approvalPolicy": "on-request", "appr
 #: Policy repeated on every turn/start.
 TURN_POLICY = {"approvalPolicy": "on-request", "approvalsReviewer": "user",
                "sandboxPolicy": {"type": "readOnly", "networkAccess": False}}
+#: What the context preview may say about this adapter (T-1d): ``task_input``
+#: is the turn's only text input, verbatim. ``observed`` are real runs under
+#: this pin with a very short prompt (docs/t0-usage-baseline.md §4.1, §4.3):
+#: historical, they include that run's own input, never this call's estimate.
+CONTEXT_PROFILE = {
+    "adds_prompt_text": False,
+    "observed": [
+        {"evidence": "evidence/s6-2-real-run-2-pass", "binding": "codex-cli 0.163.0-alpha.11.2",
+         "input_total": 15183, "cache_read": 12416},
+        {"evidence": "evidence/two-agent-real-run-2-pass", "binding": "codex-cli 0.163.0-alpha.11.2",
+         "input_total": 15753, "cache_read": 12416},
+    ],
+}
 #: The usage of a call that never sent turn/start: known zero, not unknown.
 NO_TURN_USAGE = {"inputTokens": 0, "cachedInputTokens": 0, "cacheWriteInputTokens": 0,
                  "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 0}
@@ -1331,6 +1344,10 @@ class AppServerCodexAdapter(AdapterContract):
         if turn.native_child_usage:
             notes.append("native_child_usage_seen")
         return usage, source, notes
+
+    def context_profile(self) -> dict[str, Any]:
+        """What the context preview may say about this adapter (T-1d)."""
+        return {**CONTEXT_PROFILE, "observed": [dict(o) for o in CONTEXT_PROFILE["observed"]]}
 
     def usage_report(self, invocation_id: str) -> Optional[dict[str, Any]]:
         """This call's usage for the kernel ledger; ``None`` without a record.

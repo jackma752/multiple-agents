@@ -841,6 +841,14 @@ class CodexAdapter(AdapterContract):
             "workdir_entries_after": payload.get("workdir_entries_after", []),
         }
 
+    def context_profile(self) -> dict[str, Any]:
+        """What the context preview may say about this adapter (T-1d).
+
+        The prompt is the last argv element, ``task_input`` verbatim. No
+        observation is attached: the exec pin of the earlier runs is gone.
+        """
+        return {"adds_prompt_text": False, "observed": []}
+
     def usage_report(self, invocation_id: str) -> Optional[dict[str, Any]]:
         """This call's usage for the kernel ledger; ``None`` without a record.
 

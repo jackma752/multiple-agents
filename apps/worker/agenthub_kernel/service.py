@@ -471,7 +471,15 @@ class PolicyService:
         task = self.session.get(TaskRow, inv.task_id)
         if task is None:
             raise QuotaError("no_task", f"task {inv.task_id} not found")
-        current_snapshot = InvocationSnapshot(**inv.snapshot)
+        try:
+            current_snapshot = InvocationSnapshot(**inv.snapshot)
+        except (TypeError, ValueError):
+            # A stored snapshot that no longer validates (e.g. a context
+            # preview that does not describe its input) is void like a changed one.
+            self._set_invocation_status(inv, InvocationStatus.INVALID)
+            self.session.flush()
+            raise QuotaError("snapshot_invalid",
+                             f"invocation {invocation_id} snapshot does not validate; approval is void")
         if current_snapshot.payload_hash() != inv.payload_hash:
             self._set_invocation_status(inv, InvocationStatus.INVALID)
             self.session.flush()

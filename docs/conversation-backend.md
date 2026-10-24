@@ -702,3 +702,88 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
     - 每项都核对计数器等于各调用行之和，已知用量等于 complete 账本行之和。旧调用的审批保持 consumed，快照的策略版本不变。
   - 变异检查：去掉准入时对在途调用的记账，2 项失败；去掉预览中对在途调用的计算，3 项失败。两处都已还原。
   - 浏览器在 `t1-usage-demo` 上只检查了页面能加载、没有脚本错误，以及新文案能渲染。在浏览器里没有构造在途调用。
+
+## T-1d：发送前上下文预览（2026-10-24，离线，分支 `feat/t1-context-refs`）
+
+### 契约（`agenthub.context`，契约变更）
+
+- 会话路径上的每次调用，其输入（`task_input`）都由若干段组成：
+  - `user_input`：用户输入；
+  - `separator`：各块之间的空行；
+  - `handoff_frame`：Hub 加在交接回复前后的固定行；
+  - `handoff_content`：被交接的回复原文；
+  - `file_snippet`：预留，T-1f 开始产生。
+- `compose(segments)` 拼出要发送的文本，同时生成 `context_preview`：每段记录类型、字数、估算 token 和 SHA-256。交接段还记录来源 `message_id`、`agent_id`。
+- **各部分恰好拼成实际发送的文本**：按顺序连接等于 `task_input`，字数之和等于其长度。每段的哈希确定哪段文字属于哪一部分；哈希只是标识，正文照常发送。
+- **估算**：每段按 `estimate_visible_tokens` 计算（`chars_v1`：ASCII 约 4 字符 1 token，其他字符每个 1 token）。合计等于各段之和，逐段向上取整，所以略偏大。不是分词计数，没有安装分词器。
+- **适配器附加文本**（`adapter_text`）：适配器声明“原样发送 `task_input`”时为 `{"chars": 0}`，否则为“未知”。
+- **provider 侧**（`provider_hidden`）始终为 `unknown`，不并入估算：
+  - 列出基础指令、工具定义、环境信息；`native_resume` 时另列 thread 历史。
+  - 可附同一配置下的历史观测 `observed`：T-0 第 4.1、4.2 节的真实运行总输入，带证据标签和版本。这些观测含当时很短的输入，只是观测，不是本次预估。
+- **绑定审批**：`InvocationSnapshot.context_preview` 进入 `payload_hash`。
+  - 快照构造时用 `check_preview` 核对：版本和估算方法、每段的字数、估算和哈希、总字数、总估算，以及 provider 侧必须为 `unknown`。
+  - 批准后预览被改动：
+    - 不再描述发送文本的，在 consume 时以 `snapshot_invalid` 拒绝；
+    - 仍然自洽但与批准时不同的，以 `snapshot_changed` 拒绝。
+    - 两种情况调用都标为 invalid，适配器启动次数为 0。
+  - T-1d 之前的快照没有该字段，哈希不变，预算估算退回按整段文本计算。
+- 适配器可选扩展 `context_profile()`：
+  - app-server 和 exec 的 Codex、Claude Code 都声明原样发送；
+  - app-server 附 S6-2 第二次（15,183）和双 Agent 第二次（15,753）的观测；
+  - Claude Code 附单回合（1,752）和双 Agent 第二次（1,798）的观测；
+  - exec 不附观测，因为当时的固定版本已不存在；
+  - Mock 不声明。
+  - `describe()` 显示这些信息。
+
+### 内核与 API
+
+- `submit_turn` 用同一组片段生成发送文本和预览，所以交接框的格式与以前逐字相同。API 从服务该 Agent 的适配器取 `context_profile`；经路由时取该 Agent 自己的适配器。
+- `turn_view` 增加 `context_preview`，与快照中的字段相同。
+- 预算估算（T-1c）改用预览的合计（`visible_estimate`），审批卡预览和准入使用同一个数字。
+- `consume` 把快照校验失败（`TypeError`/`ValueError`）当作 `snapshot_invalid` 处理，不再抛出未处理的异常。
+- 其他创建调用的路径（任务 API、子任务、重试）不生成预览。重试会复制原快照，包括预览。
+
+### 页面
+
+- 审批卡增加“上下文预览”：待审批时展开，之后折叠。内容包括：
+  - 你的消息；
+  - 每段交接的正文和 Hub 框架；
+  - 分隔空行；
+  - 文件片段（目前为无）；
+  - 适配器附加文本；
+  - provider 侧未知，附历史观测；
+  - 合计和估算方法。
+
+### 未做与未验证
+
+- 文件片段和 `@` 引用：T-1e（解析与路径边界）、T-1f（不可变上下文包）。
+- 分词器、provider 远端计数：没有。
+- 预览只覆盖会话路径。
+- 历史观测是 T-0 的数字，不随适配器更新，换版本后需要重新观测。
+- 真实 Codex 和 Claude Code 上没有运行过（T-1h）。
+
+### 验证
+
+- `tests/test_context_preview.py` 共 23 项，覆盖：
+  - 精确拆分；
+  - 空段和未知类型；
+  - provider 侧不计入估算；
+  - 适配器附加文本；
+  - 12 种篡改都被拒，包括“总数和估算不变、只挪动分界”；这一项促使每段加上了哈希；
+  - 哈希绑定和旧快照兼容；
+  - `visible_estimate`；
+  - 预留的 `file_snippet` 类型；
+  - 经路由取适配器的 profile。
+- `tests/http/test_context_preview.py` 共 10 项，覆盖：
+  - 预览各部分之和等于 app-server 桩收到的 `turn/start` 文本；
+  - 交接拆成框架和正文，Claude Code 收到的正是各部分之和；
+  - `native_resume` 只多列 thread 历史，估算不变；
+  - 批准后改动预览：4 种情况都被拒，启动次数为 0；
+  - 预算估算等于预览合计；单次预算比它小 1 时，审批卡和准入都以 `estimate_exceeds_per_call_budget` 拒绝，Claude Code 没有启动；
+  - 重放请求得到同一预览；
+  - `describe`。
+- 变异检查：
+  - 快照不再调用 `check_preview`，14 项失败；
+  - 哈希不含预览，3 项失败；
+  - 两处都已还原。
+- 浏览器在离线桩 `t1-context-demo`（8176，multi）上检查：Codex 回复交接给 Claude Code，审批卡显示 83 字约 28 token（8 + 2 + 2 + 71 字），provider 侧未知并附 1,752 和 1,798 的观测，与 API 返回一致；没有脚本错误。

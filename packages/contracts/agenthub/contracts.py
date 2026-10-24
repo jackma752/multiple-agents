@@ -24,6 +24,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from agenthub.context import check_preview
+
 
 # --------------------------------------------------------------------------- #
 # Enums / state machines
@@ -161,10 +163,18 @@ class InvocationSnapshot:
     #: (``message_id``, ``agent_id``, ``sha256``, ``chars``), so the approval
     #: shows and binds exactly which content is passed on.
     handoff: tuple = ()
+    #: Pre-send context preview (T-1d, ``agenthub.context``): an exact split
+    #: of ``task_input`` into parts with estimates, plus the provider-side
+    #: context marked unknown. Checked against ``task_input`` here and bound
+    #: by ``payload_hash``. ``None`` for snapshots made before T-1d and for
+    #: calls not composed by the conversation path.
+    context_preview: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if self.execution_mode not in {"strict", "supervised"}:
             raise ValueError("execution_mode must be strict or supervised")
+        if self.context_preview is not None:
+            check_preview(self.task_input, self.context_preview)
         if isinstance(self.handoff, list):  # as stored by to_dict()
             object.__setattr__(self, "handoff", tuple(self.handoff))
         if not isinstance(self.handoff, tuple) or not all(isinstance(h, dict) for h in self.handoff):
@@ -201,6 +211,8 @@ class InvocationSnapshot:
             result["resume_thread_id"] = self.resume_thread_id
         if self.handoff:
             result["handoff"] = [dict(h) for h in self.handoff]
+        if self.context_preview is not None:
+            result["context_preview"] = self.context_preview
         return result
 
 
@@ -453,6 +465,13 @@ class AdapterContract:
     #   right after its own definitive refusal ``None`` proves nothing ran.
     #   Missing usage is reported as such, never as zero. Without this method
     #   the ledger records ``adapter_reports_no_usage`` (unknown).
+    # * ``context_profile() -> dict`` - what the context preview may say about
+    #   this adapter (T-1d, :mod:`agenthub.context`): ``adds_prompt_text``
+    #   (False only when ``task_input`` is sent verbatim) and ``observed``, a
+    #   list of earlier real runs' ``input_total`` under the same
+    #   configuration, each with its ``evidence`` and ``binding``. Historical
+    #   observations only, shown apart from the estimate. Without this method
+    #   the preview marks the adapter's own text as unknown.
     # * ``interrupt_invocation(invocation_id) -> dict`` - ask the provider to
     #   interrupt a turn this process is driving. Returns at least
     #   ``interrupt_requested`` / ``interrupt_accepted``. It NEVER settles or

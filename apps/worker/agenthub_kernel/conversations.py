@@ -7,6 +7,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
 from agenthub.chat import CONTEXT_MODE, MAX_HANDOFF_CHARS, MAX_MESSAGE_CHARS, ConversationTurn
+from agenthub.context import HANDOFF_CONTENT, HANDOFF_FRAME, SEPARATOR, USER_INPUT, compose
 from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
 
 #: Statuses in which a provider thread may still be executing a turn.
@@ -54,6 +55,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "handoff": inv.snapshot.get("handoff") or [],
         # With a handoff, what is sent differs from the user's own text: show it all.
         "sent_text": inv.snapshot["task_input"] if inv.snapshot.get("handoff") else None,
+        # What this call sends, part by part, as approved (T-1d); None before T-1d.
+        "context_preview": inv.snapshot.get("context_preview"),
         # Normalized ledger row (T-1a); None until the call is settled.
         "usage": usage_view(session, inv),
         # Token budget of its tree as the approval card shows it (T-1c).
@@ -66,15 +69,21 @@ def _root_of_task(session: Session, task_id: str) -> Optional[str]:
     return task.root_task_id if task is not None else None
 
 
+def handoff_segments(source: ChatMessageRow, agent_id: str) -> list[tuple]:
+    """How one handed-over reply is framed in the next call's input (fixed format),
+    as context-preview segments: the Hub's frame lines around the reply's text."""
+    where = {"message_id": source.id, "agent_id": agent_id}
+    return [(HANDOFF_FRAME, f"--- Handoff: reply of {agent_id} (Hub message {source.id}) ---\n", where),
+            (HANDOFF_CONTENT, source.text, where),
+            (HANDOFF_FRAME, "\n--- End of handoff ---", where)]
+
+
 def handoff_block(source: ChatMessageRow, agent_id: str) -> str:
-    """How one handed-over reply is framed in the next call's input (fixed format)."""
-    return (f"--- Handoff: reply of {agent_id} (Hub message {source.id}) ---\n"
-            f"{source.text}\n"
-            f"--- End of handoff ---")
+    return "".join(segment[1] for segment in handoff_segments(source, agent_id))
 
 
-def build_handoff(session: Session, cid: str, message_ids: tuple) -> tuple[list[str], tuple]:
-    """Blocks and source records for the chosen replies, or QuotaError.
+def build_handoff(session: Session, cid: str, message_ids: tuple) -> tuple[list[list[tuple]], tuple]:
+    """Segments and source records for the chosen replies, or QuotaError.
 
     Only assistant replies of this same conversation can be handed on - a
     message id from another conversation is "not found", never read.
@@ -90,7 +99,7 @@ def build_handoff(session: Session, cid: str, message_ids: tuple) -> tuple[list[
         if total > MAX_HANDOFF_CHARS:
             raise QuotaError("handoff_too_large",
                              f"handed-over text exceeds {MAX_HANDOFF_CHARS} characters")
-        blocks.append(handoff_block(source, source_agent))
+        blocks.append(handoff_segments(source, source_agent))
         records.append({"message_id": source.id, "agent_id": source_agent, "chars": len(source.text),
                         "sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest()})
     return blocks, tuple(records)
@@ -147,12 +156,14 @@ def native_resume_blocker(session: Session, inv: InvocationRow) -> Optional[tupl
 
 def submit_turn(
     session: Session, cid: str, user_id: str, request: ConversationTurn,
-    *, adapter_version: str = "unknown",
+    *, adapter_version: str = "unknown", context_profile: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Caller holds SQLite's writer lock; message/draft/approval commit together.
 
     ``adapter_version`` is the serving adapter's binding identity; it enters
-    the snapshot, so the approval binds it (D11).
+    the snapshot, so the approval binds it (D11). ``context_profile`` is what
+    the serving adapter declares for the context preview (T-1d); the preview
+    enters the snapshot too.
     """
     conversation = owned_conversation(session, cid, user_id)
     previous = session.scalar(select(ChatMessageRow).where(
@@ -189,19 +200,23 @@ def submit_turn(
 
     # A manual handoff: the chosen replies are appended to the user's text in a
     # fixed frame. The composed text is what the agent receives and what the
-    # approval binds; the user's message keeps only what the user typed.
-    task_input, handoff = request.text, ()
+    # approval binds; the user's message keeps only what the user typed. The
+    # context preview is built from the same segments, so its parts are an
+    # exact split of that text (T-1d).
+    segments, handoff = [(USER_INPUT, request.text)], ()
     if request.handoff_message_ids:
         blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
-        task_input = "\n\n".join([request.text, *blocks])
-        if len(task_input) > MAX_MESSAGE_CHARS:
-            raise QuotaError("handoff_too_large", "message with handoff exceeds the size limit")
+        for block in blocks:
+            segments += [(SEPARATOR, "\n\n"), *block]
+    task_input, preview = compose(segments, context_mode=request.context_mode, profile=context_profile)
+    if len(task_input) > MAX_MESSAGE_CHARS:
+        raise QuotaError("handoff_too_large", "message with handoff exceeds the size limit")
 
     snapshot = InvocationSnapshot(
         agent_id=request.agent_id, task_input=task_input, parent_task_id=None,
         depth=0, policy_version=root.policy_version, execution_mode=request.execution_mode,
         context_mode=request.context_mode, resume_thread_id=resume_thread_id,
-        adapter_version=adapter_version, handoff=handoff,
+        adapter_version=adapter_version, handoff=handoff, context_preview=preview,
     )
     inv = svc.create_invocation(task_id=root.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)

@@ -15,6 +15,8 @@
   - 缺失一律为“未知”。
 - **都没有在真实 Codex 或 Claude Code 上运行过**，真实对照在 T-1h 单独申请。
 
+**2026-10-24 T-1d 上下文预览**（离线；见 [会话后端契约](conversation-backend.md) 的 T-1d 一节）：可选扩展 `context_profile()` 声明适配器是否原样发送 `task_input`，并附同一配置下的历史观测。app-server 和 exec 的 Codex、Claude Code 都原样发送，不添加任何提示文本；只添加固定参数，例如 thread 设置和 CLI 标志。观测值：app-server 为 15,183 和 15,753，Claude Code 为 1,752 和 1,798；exec 无观测。Mock 不声明，预览中它的附加文本显示为“未知”。provider 侧的指令、工具定义和 thread 历史对 Hub 一律未知，不计入估算。
+
 **2026-10-24 T-1c token 预算**（离线；见 [会话后端契约](conversation-backend.md) 的 T-1c 一节）：严格预算模式只接受报告用量的适配器，即实现了 `usage_report` 的 app-server、Claude Code 和 exec；Mock 等适配器在严格模式下被拒（`budget_unmeterable`）。`describe()` 中用 `usage_reporting` 标出。任何适配器都**没有**经验证的输出或总量硬上限：单次预算只是预留量，不能在回合中途截断。预算开启（或关闭后重新开启）之前已获准、仍在执行的调用没有预留，按“用量未知且无预留”计，结算后再按账本计入；这一点与适配器无关（`TreeSpend.unreserved_in_flight`）。
 
 **2026-10-23 Claude Code 最小接入**（离线，分支 `feat/claude-code-min`；见 [Claude Code 适配器](claude-code-adapter.md)）。下表描述本仓库自己的 CC 适配器；表 B 的 CC 一行（经 AionUi 接入时的观察）保留为历史。**2026-10-24 更新**：做过一次零模型身份核验（INCONCLUSIVE，用户决定记录）和一次真实单回合（PASS，只认定当次，见 [单回合实录](claude-code-turn-2026-10-24-run1.md)）；下表其余项仍未验证。

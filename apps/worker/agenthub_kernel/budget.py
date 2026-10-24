@@ -21,8 +21,9 @@
   compute the same reconciliation without writing (:func:`spend_preview`),
   so the approval card's preview and the admission see the same numbers.
 
-Nothing here reads prompt or reply text; the estimate is computed from the
-approved snapshot's input length only and stored as a number.
+Nothing here reads prompt or reply text; the estimate is the approved
+snapshot's context-preview estimate (T-1d), or for older snapshots the
+estimate of its input text, and is stored as a number.
 """
 
 from __future__ import annotations
@@ -32,9 +33,8 @@ from typing import Any, Optional
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from agenthub.budget import (
-    STRICT, BudgetDecision, BudgetPolicy, TreeSpend, decide, estimate_visible_tokens, settle,
-)
+from agenthub.budget import STRICT, BudgetDecision, BudgetPolicy, TreeSpend, decide, settle
+from agenthub.context import visible_estimate
 from agenthub.contracts import Policy
 from agenthub_kernel.db import (
     InvocationRow, TaskRow, TokenBudgetItemRow, TreeTokenBudgetRow, UsageLedgerRow,
@@ -140,7 +140,7 @@ def admit(session: Session, inv: InvocationRow, root_task_id: str, policy: Polic
     if not budget.active:
         return None
     ensure_counters(session, root_task_id)
-    estimate = estimate_visible_tokens((inv.snapshot or {}).get("task_input", ""))
+    estimate = visible_estimate(inv.snapshot)
     decision = decide(budget, _counters(session, root_task_id), estimate=estimate, metered=metered)
     if not decision.allowed:
         return decision
@@ -225,7 +225,7 @@ def budget_view(session: Session, root_task_id: Optional[str], *,
     """
     policy = tree_policy(session, root_task_id) if root_task_id else Policy()
     budget = BudgetPolicy.from_policy(policy)
-    estimate = estimate_visible_tokens((inv.snapshot or {}).get("task_input", "")) if inv is not None else None
+    estimate = visible_estimate(inv.snapshot) if inv is not None else None
     view: dict[str, Any] = {
         "active": budget.active, **budget.to_dict(),
         "estimate_visible": estimate,

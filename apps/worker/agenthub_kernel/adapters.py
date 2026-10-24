@@ -185,6 +185,24 @@ def adapter_binding(adapter: Any, agent_id: Optional[str] = None) -> str:
     return value
 
 
+def adapter_context_profile(adapter: Any, agent_id: Optional[str] = None) -> Optional[dict]:
+    """What the context preview may say about the adapter serving ``agent_id`` (T-1d).
+
+    ``None`` when it declares nothing, its declaration fails, or a router
+    serves no adapter for the agent: the preview then marks the adapter's own
+    text as unknown and attaches no observation.
+    """
+    adapter = adapter_for(adapter, agent_id)
+    profile = getattr(adapter, "context_profile", None)
+    if adapter is None or not callable(profile):
+        return None
+    try:
+        value = profile()
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def describe(adapter: Any) -> dict:
     """Small, safe summary for the console header.
 
@@ -235,4 +253,6 @@ def describe(adapter: Any) -> dict:
     info["native_resume"] = bool(supports()) if callable(supports) else False
     # Strict token budgets refuse agents that cannot report usage (T-1c).
     info["usage_reporting"] = callable(getattr(adapter, "usage_report", None))
+    # What the pre-send context preview may say about it (T-1d).
+    info["context_profile"] = adapter_context_profile(adapter)
     return info

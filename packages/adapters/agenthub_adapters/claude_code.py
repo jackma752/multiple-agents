@@ -110,6 +110,20 @@ CLAUDE_ARGV_TAIL = (
     "--no-session-persistence",  # no transcript on disk; no resume
 )
 
+#: What the context preview may say about this adapter (T-1d): the prompt is
+#: ``task_input`` on stdin, verbatim. ``observed`` are real runs under this pin
+#: (docs/t0-usage-baseline.md §4.2, §4.3): total input including cache, with
+#: that run's own short input; historical, never this call's estimate.
+CONTEXT_PROFILE = {
+    "adds_prompt_text": False,
+    "observed": [
+        {"evidence": "evidence/cc-turn-real-run-1-pass", "binding": "2.1.308",
+         "input_total": 1752, "cache_read": 0},
+        {"evidence": "evidence/two-agent-real-run-2-pass", "binding": "2.1.308",
+         "input_total": 1798, "cache_read": 1161},
+    ],
+}
+
 #: Inherited variables the child never sees (prefix match, case-insensitive).
 STRIPPED_ENV_PREFIXES = ("CLAUDE", "ANTHROPIC")
 #: Inherited variables the child never sees (exact names, case-insensitive).
@@ -830,6 +844,10 @@ class ClaudeCodeAdapter(AdapterContract):
         # No native_session: this adapter cannot resume, so nothing may bind one.
         return {"status": record.get("status"), "thread_id": payload.get("thread_id", ""),
                 "final_message": payload.get("final_message", ""), "usage": payload.get("usage", {})}
+
+    def context_profile(self) -> dict[str, Any]:
+        """What the context preview may say about this adapter (T-1d)."""
+        return {**CONTEXT_PROFILE, "observed": [dict(o) for o in CONTEXT_PROFILE["observed"]]}
 
     def usage_report(self, invocation_id: str) -> Optional[dict[str, Any]]:
         """This call's usage for the kernel ledger; ``None`` without a record.

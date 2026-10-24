@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from starlette.concurrency import run_in_threadpool
 
 from agenthub.chat import MAX_MESSAGE_CHARS, ConversationTurn
-from agenthub_kernel.adapters import adapter_binding
+from agenthub_kernel.adapters import adapter_binding, adapter_context_profile
 from agenthub_kernel.conversations import (
     conversation_view, owned_conversation, submit_turn, turn_view,
 )
@@ -271,9 +271,11 @@ def register_conversations(app, db) -> None:
             try:
                 # The identity of the adapter serving THIS agent (behind a router,
                 # each agent has its own); "unavailable" for an unserved agent.
+                # Its context profile feeds the bound pre-send preview (T-1d).
+                adapter = app.state.worker.adapter
                 return submit_turn(session, cid, principal.identity, request,
-                                   adapter_version=adapter_binding(app.state.worker.adapter,
-                                                                   request.agent_id))
+                                   adapter_version=adapter_binding(adapter, request.agent_id),
+                                   context_profile=adapter_context_profile(adapter, request.agent_id))
             except QuotaError as exc:
                 raise HTTPException(
                     404 if exc.code in ("no_conversation", "handoff_not_found") else 409,

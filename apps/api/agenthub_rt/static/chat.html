@@ -226,7 +226,7 @@ function call(id) {
   if (!c) {
     c = { id, status: null, approval_id: null, approval_status: null, agent_id: null,
           execution_mode: "strict", context_mode: "independent", resume_thread_id: null,
-          handoff: [], sent_text: null,
+          handoff: [], sent_text: null, context_preview: null,
           stream: "", gap: false, turn: null, ended: null, declined: [], cards: [], stop: null,
           interrupt: null, native: [], usage: null };
     S.calls.set(id, c);
@@ -252,6 +252,7 @@ function absorbMessage(m) {
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
+      context_preview: inv.context_preview,
     });
   }
 }
@@ -771,6 +772,10 @@ function renderCall(c) {
   const sent = handoff.length && c.sent_text ? el("details", { class: "sent", open: awaiting ? "open" : null },
     el("summary", {}, "将发送的完整内容（" + c.sent_text.length + " 字）"),
     el("pre", { class: "mono" }, c.sent_text)) : null;
+  // What the approval binds, part by part (T-1d): open while it can still be approved.
+  const preview = c.context_preview ? el("details", { class: "sent", open: awaiting ? "open" : null },
+    el("summary", {}, contextSummary(c.context_preview)),
+    contextLines(c.context_preview).map((t) => el("div", { class: "note" }, t))) : null;
   return el("div", { class: "call" },
     el("div", { class: "row" },
       chip(label, kind),
@@ -784,9 +789,45 @@ function renderCall(c) {
         ? chip("用量 " + usageText(c.usage), c.usage.completeness === "complete" ? "" : "warn") : null,
       el("span", { class: "grow" }), actions),
     consentBox,
+    preview,
     sent,
     notes.map((n) => el("div", { class: "note" }, n)),
     c.cards.map(renderCard));
+}
+
+/* Pre-send context preview (T-1d). Parts are an exact split of the text sent; the
+   numbers are estimates (chars_v1, no tokenizer); provider-side context is unknown. */
+const PROVIDER_PART = { instructions_and_tools: "基础指令、工具定义、环境信息", thread_history: "thread 历史" };
+
+function contextSummary(p) {
+  return `上下文预览：Hub 发送 ${fmtN(p.chars)} 字，约 ${fmtN(p.estimate)} token（估算）；provider 侧未知`;
+}
+
+function contextLines(p) {
+  const sum = (parts) => parts.reduce((a, x) => ({ chars: a.chars + x.chars, estimate: a.estimate + x.estimate }),
+                                      { chars: 0, estimate: 0 });
+  const size = (s) => `${fmtN(s.chars)} 字 ≈ ${fmtN(s.estimate)} token`;
+  const of = (kind) => p.parts.filter((x) => x.kind === kind);
+  const lines = [`你的消息：${size(sum(of("user_input")))}`];
+  const sources = [...new Set(p.parts.filter((x) => x.message_id != null).map((x) => x.message_id))];
+  for (const id of sources) {
+    const mine = p.parts.filter((x) => x.message_id === id);
+    const agent = mine[0].agent_id || "Agent";
+    lines.push(`交接 ${agent} #${id}：正文 ${size(sum(mine.filter((x) => x.kind === "handoff_content")))}，` +
+               `Hub 框架 ${size(sum(mine.filter((x) => x.kind === "handoff_frame")))}`);
+  }
+  const seps = of("separator");
+  if (seps.length) lines.push(`分隔空行：${size(sum(seps))}`);
+  const files = of("file_snippet");
+  lines.push(files.length ? `文件片段：${files.length} 段，${size(sum(files))}` : "文件片段：无");
+  lines.push(p.adapter_text && p.adapter_text.chars === 0 ? "适配器附加文本：无（原样发送上面的内容）"
+                                                          : "适配器附加文本：未知（该适配器未声明）");
+  const h = p.provider_hidden || {};
+  const obs = (h.observed || []).map((o) => `${fmtN(o.input_total)}（${o.evidence}，${o.binding}）`);
+  lines.push(`provider 侧（${(h.includes || []).map((k) => PROVIDER_PART[k] || k).join("、")}）：未知，不计入估算` +
+             (obs.length ? `；同一配置下的历史观测，总输入 ${obs.join("、")} token，含当时很短的输入，不是本次预估` : ""));
+  lines.push(`合计：Hub 可见 ${size(p)}；按字符估算（${p.estimator}），不是分词计数`);
+  return lines;
 }
 
 const SUPERVISED_BOUNDARY = "原生子 Agent 与不经审批的工具操作（可能包括启动其他 Agent 的 CLI）" +

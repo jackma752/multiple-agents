@@ -318,8 +318,12 @@ def test_adapters_without_a_binding_keep_unknown_and_old_hashes(make_client, tmp
     assert r.status_code == 200, r.text
     snapshot = snapshot_of(client, r.json()["invocation_id"])
     assert snapshot["adapter_version"] == "unknown"
+    # Since T-1d a new turn also binds its context preview (stored snapshots keep
+    # their hashes); the binding itself adds nothing for an adapter without one.
+    preview = snapshot["context_preview"]
+    assert preview["adapter_text"] == {"status": "unknown"}  # the Mock declares no profile
     legacy = InvocationSnapshot(agent_id="mock", task_input="x", parent_task_id=None, depth=0,
-                                policy_version=snapshot["policy_version"])
+                                policy_version=snapshot["policy_version"], context_preview=preview)
     assert r.json()["payload_hash"] == legacy.payload_hash()
     assert adapter_binding(MockAdapter()) == "unknown"
 
