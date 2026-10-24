@@ -44,10 +44,17 @@ HANDOFF_CONTENT = "handoff_content"  # the handed-over reply itself
 SEPARATOR = "separator"              # blank lines between blocks
 FILE_FRAME = "file_frame"            # the Hub's fixed lines around a file snippet
 FILE_SNIPPET = "file_snippet"        # text the Hub read from a referenced file (agenthub.files)
-PART_KINDS = frozenset({USER_INPUT, HANDOFF_FRAME, HANDOFF_CONTENT, SEPARATOR, FILE_FRAME, FILE_SNIPPET})
+SUMMARY_FRAME = "summary_frame"      # the Hub's fixed lines around a stage summary (agenthub.summary)
+SUMMARY_CONTENT = "summary_content"  # the stage summary itself
+HISTORY_FRAME = "history_frame"      # the Hub's fixed line before a past message (summary drafting)
+HISTORY_CONTENT = "history_content"  # a past message of this conversation
+PART_KINDS = frozenset({USER_INPUT, HANDOFF_FRAME, HANDOFF_CONTENT, SEPARATOR, FILE_FRAME, FILE_SNIPPET,
+                        SUMMARY_FRAME, SUMMARY_CONTENT, HISTORY_FRAME, HISTORY_CONTENT})
 #: Keys a part may carry besides its numbers: where its text came from. File
-#: parts carry the root-relative path, the line range and the whole file's hash.
-SOURCE_KEYS = frozenset({"message_id", "agent_id", "path", "start_line", "end_line", "file_sha256"})
+#: parts carry the root-relative path, the line range and the whole file's hash;
+#: summary parts the summary's id and version; history parts the message and role.
+SOURCE_KEYS = frozenset({"message_id", "agent_id", "path", "start_line", "end_line", "file_sha256",
+                         "summary_id", "summary_version", "role"})
 
 #: What the provider adds on its own side (labels only; sizes unknown).
 PROVIDER_FIXED = "instructions_and_tools"

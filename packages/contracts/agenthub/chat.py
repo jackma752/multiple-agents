@@ -8,6 +8,7 @@ thread id is then bound into the approved snapshot.
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+from typing import Optional
 
 from agenthub.contracts import CONTEXT_MODES, INDEPENDENT
 from agenthub.files import MAX_REFS, parse_ref
@@ -32,8 +33,17 @@ class ConversationTurn:
     #: Files (or line ranges) the Hub reads and sends with this message
     #: (``agenthub.files`` syntax), chosen by the user.
     file_refs: tuple = ()
+    #: A stage summary sent with this message instead of history (``agenthub.summary``):
+    #: one of this conversation's, or of the conversation it was compressed from.
+    summary_id: Optional[int] = None
+    #: Send this conversation's recent messages with this one (summary drafting).
+    include_history: bool = False
 
     def __post_init__(self) -> None:
+        if self.summary_id is not None and (type(self.summary_id) is not int or self.summary_id < 1):
+            raise ValueError("summary_id must be a positive integer")
+        if type(self.include_history) is not bool:
+            raise ValueError("include_history must be a boolean")
         ids = self.handoff_message_ids
         if (not isinstance(ids, tuple) or len(ids) > MAX_HANDOFF_MESSAGES
                 or len(set(ids)) != len(ids)
@@ -69,6 +79,9 @@ class ConversationTurn:
             data["file_refs"] = list(data["file_refs"])
         else:
             del data["file_refs"]
+        for key in ("summary_id", "include_history"):  # likewise, absent unless used
+            if not data[key]:
+                del data[key]
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()

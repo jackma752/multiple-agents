@@ -82,6 +82,9 @@
                  color: var(--dim); }
   .usage-panel h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--fg); }
   .usage-line { margin: 2px 0; word-break: break-word; }
+  .summary-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .summary-field { display: flex; flex-direction: column; gap: 2px; }
+  .summary-field textarea { min-height: 40px; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
            background: #3a1f22; border: 1px solid var(--bad); color: #ffd6d7; display: none; white-space: pre-wrap; }
   @media (max-width: 760px) {
@@ -108,6 +111,7 @@
   <main>
     <div id="banner" class="banner" hidden></div>
     <div id="usageConv" class="usage-bar" hidden></div>
+    <div id="summaryBar" class="usage-bar" hidden></div>
     <div id="timeline"><div class="empty">选择或新建一个会话。发送消息只会生成待审批调用，不会直接调用 Agent。</div></div>
     <form id="composer" autocomplete="off">
       <textarea id="text" placeholder="输入消息（Ctrl+Enter 发送）"></textarea>
@@ -172,6 +176,10 @@ const S = {
   refs: [],           // file references (agenthub.files syntax) for the NEXT call only
   sendPreview: null,  // what the composer would send now: {sent_text, context_preview, budget}
   suggestions: [],    // file references the user may add (never added without a click)
+  summaries: [], summaryLink: {}, summaryInstruction: "",  // stage summaries (T-2)
+  attachSummary: null, // summary_id sent with each next call until removed
+  includeHistory: false, // the next call carries recent history (summary drafting)
+  summaryEdit: null,   // the summary form being edited, or null
   busy: new Set(),    // actions in flight (keys), to disable double clicks
   viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
   createPromise: null, // the one conversation creation in flight, shared by every caller
@@ -580,12 +588,14 @@ async function send(event) {
       context_mode: $("resume").checked ? "native_resume" : "independent",
       handoff_message_ids: S.handoff.slice(),
       file_refs: S.refs.slice(),
+      summary_id: S.attachSummary, include_history: S.includeHistory,
     });
     if (current(gen)) patch(call(turn.invocation_id), turn);
     $("text").value = "";
     $("resume").checked = false;
     S.handoff = [];  // a handoff belongs to one call; the next one chooses again
     S.refs = []; S.sendPreview = null; S.suggestions = [];  // likewise the referenced files
+    S.includeHistory = false;  // a summary stays attached until removed; history is per drafting call
     renderSuggestions();
     $("mode").value = "";  // the next call needs its own explicit choice
     if (current(gen)) needMessages(gen);
@@ -597,12 +607,15 @@ async function send(event) {
 /* What the composer would send now (nothing is created): the same composition the
    server will bind into the approval when the message is sent. */
 async function previewSend(refs = S.refs) {
-  if (!refs.length && !S.handoff.length) { S.sendPreview = null; renderComposer(); return true; }
+  if (!refs.length && !S.handoff.length && S.attachSummary == null && !S.includeHistory) {
+    S.sendPreview = null; renderComposer(); return true;
+  }
   try {
     S.sendPreview = await api("POST", "/api/context-preview", {
       conversation_id: S.cid || null, text: $("text").value, agent_id: $("agent").value,
       context_mode: $("resume").checked ? "native_resume" : "independent",
       handoff_message_ids: S.handoff.slice(), file_refs: refs,
+      summary_id: S.attachSummary, include_history: S.includeHistory,
     });
     renderComposer();
     return true;
@@ -703,6 +716,7 @@ async function loadConvs() {
 function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
   S.consent = new Map(); S.banner = ""; S.handoff = []; S.usageConv = null;
+  S.summaries = []; S.summaryLink = {}; S.attachSummary = null; S.includeHistory = false; S.summaryEdit = null;
 }
 
 /* The only way to create a conversation: concurrent callers share one creation. */
@@ -731,11 +745,113 @@ async function select(cid) {
   renderConvs(); render();
   try {
     await loadMessages(gen);
+    await loadSummaries(gen);
   } catch (e) {
     if (current(gen)) toast("读取消息失败：" + e.message);
   }
   if (!current(gen)) return;  // another select() won while messages loaded
   follow(gen, cid);
+}
+
+/* ---------------------------------------------- stage summaries (T-2) --- */
+
+async function loadSummaries(gen = S.viewGen) {
+  if (!S.cid || !current(gen)) return;
+  const data = await api("GET", `/api/conversations/${enc(S.cid)}/summaries`);
+  if (!current(gen)) return;
+  S.summaries = data.summaries;
+  S.summaryLink = { parent: data.parent_conversation_id, summary: data.continued_from_summary_id };
+  S.summaryInstruction = data.instruction;
+  // A conversation that continues another starts with its summary attached (removable).
+  if (S.summaryLink.summary && !S.messages.length && S.attachSummary == null) S.attachSummary = S.summaryLink.summary;
+  render();
+  previewSend();
+}
+
+const SUMMARY_FIELDS = [["goal", "目标（必填）"], ["constraints", "约束"], ["done", "已完成"],
+                        ["open_issues", "未解决"], ["next_steps", "下一步"]];
+
+function editSummary(from) {
+  S.summaryEdit = { ...Object.fromEntries(SUMMARY_FIELDS.map(([k]) => [k, (from && from[k]) || ""])),
+                    file_refs: ((from && from.file_refs) || []).join("\n"),
+                    from_message_id: (from && from.from_message_id) || null };
+  render();
+}
+
+async function saveSummary() {
+  const form = document.querySelector(".summary-form");
+  const body = Object.fromEntries(SUMMARY_FIELDS.map(([k]) => [k, form.querySelector(`[name=${k}]`).value]));
+  body.file_refs = form.querySelector("[name=file_refs]").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  body.from_message_id = S.summaryEdit.from_message_id;
+  await guarded("summary", async () => {
+    const saved = await api("POST", `/api/conversations/${enc(S.cid)}/summaries`, body);
+    S.summaryEdit = null;
+    toast(`已保存阶段摘要 v${saved.version}`);
+    await loadSummaries();
+  });
+}
+
+async function draftFromReply(m) {
+  const draft = await api("GET", `/api/conversations/${enc(S.cid)}/summary-draft`, undefined, { message_id: m.message_id });
+  editSummary(draft);
+}
+
+function draftSummary() {
+  $("text").value = S.summaryInstruction;
+  S.includeHistory = true;
+  toast("已填入摘要请求并附带最近历史：选择 Agent 和模式后发送，审批后得到草稿");
+  render();
+  previewSend();
+}
+
+async function compressFrom(summary) {
+  await guarded("compress", async () => {
+    const conv = await api("POST", `/api/conversations/${enc(S.cid)}/compress`, { summary_id: summary.summary_id });
+    await loadConvs();
+    await select(conv.conversation_id);
+    toast(`已用摘要 v${summary.version} 开启新会话；原会话保留，可从左侧回看`);
+  });
+}
+
+function renderSummary() {
+  const bar = $("summaryBar");
+  bar.hidden = !S.cid || (!S.summaries.length && !S.messages.length && !S.summaryLink.parent);
+  const active = document.activeElement;
+  if (bar.hidden || (bar.contains(active) && active.matches(".summary-form textarea"))) return;
+  const latest = S.summaries[0];
+  const parent = S.summaryLink.parent && S.convs.find((c) => c.conversation_id === S.summaryLink.parent);
+  const lines = [];
+  if (S.summaryLink.parent) {
+    const from = S.summaries.find((s) => s.summary_id === S.summaryLink.summary);
+    lines.push(el("div", { class: "usage-line" }, `从会话「${(parent && parent.title) || S.summaryLink.parent}」压缩继续` +
+      (from ? `（摘要 v${from.version}）` : "") + "；原会话保留 ",
+      el("button", { class: "mini", onclick: () => select(S.summaryLink.parent) }, "回看原会话")));
+  }
+  lines.push(el("div", { class: "usage-line" }, el("strong", {}, "阶段摘要 "),
+    latest ? `v${latest.version}（${latest.source === "manual" ? "手写" : "由草稿编辑"}，${fmtN(latest.chars)} 字）目标：${latest.goal.slice(0, 60)}`
+           : "还没有摘要",
+    " ",
+    latest ? el("button", { class: "mini" + (S.attachSummary === latest.summary_id ? " on" : ""),
+                            onclick: () => { S.attachSummary = S.attachSummary === latest.summary_id ? null : latest.summary_id; render(); previewSend(); } },
+                S.attachSummary === latest.summary_id ? "已附带到下一条（点此取消）" : "附带到下一条") : null,
+    el("button", { class: "mini", onclick: () => editSummary(latest) }, latest ? "编辑（存为新版本）" : "写摘要"),
+    S.messages.length ? el("button", { class: "mini", onclick: draftSummary }, "生成摘要草稿") : null,
+    latest ? el("button", { class: "mini", disabled: S.busy.has("compress"), onclick: () => compressFrom(latest) }, "压缩并继续") : null,
+  ));
+  if (S.summaryEdit) {
+    const e = S.summaryEdit;
+    lines.push(el("div", { class: "summary-form" },
+      e.from_message_id ? el("div", { class: "dim" }, `草稿来自回复 #${e.from_message_id}，保存前可修改`) : null,
+      // Each field writes back as it is typed, so a re-render never loses an edit.
+      ...SUMMARY_FIELDS.map(([k, label]) => el("label", { class: "summary-field" }, label,
+        el("textarea", { name: k, rows: k === "goal" ? "2" : "3", oninput: (ev) => { e[k] = ev.target.value; } }, e[k]))),
+      el("label", { class: "summary-field" }, "必要文件引用（每行一个，如 src/app.py:L10-20）",
+        el("textarea", { name: "file_refs", rows: "2", oninput: (ev) => { e.file_refs = ev.target.value; } }, e.file_refs)),
+      el("div", { class: "row" },
+        el("button", { class: "primary", disabled: S.busy.has("summary"), onclick: saveSummary }, "保存为新版本"),
+        el("button", { onclick: () => { S.summaryEdit = null; render(); } }, "取消"))));
+  }
+  bar.replaceChildren(...lines);
 }
 
 /* ------------------------------------------------------------ render --- */
@@ -836,11 +952,14 @@ function renderCall(c) {
   }
   const notes = [];
   const handoff = c.handoff || [];
-  const fileCount = ((c.context_preview || {}).parts || []).filter((x) => x.kind === "file_snippet").length;
+  const parts = (c.context_preview || {}).parts || [];
+  const fileCount = parts.filter((x) => x.kind === "file_snippet").length;
+  const extras = [handoff.length ? `${handoff.length} 段交接` : "", fileCount ? `${fileCount} 段文件` : "",
+                  parts.some((x) => x.kind === "summary_content") ? "阶段摘要" : "",
+                  parts.some((x) => x.kind === "history_frame") ? "最近历史" : ""].filter(Boolean);
   if (c.status === "awaiting_approval")
     notes.push(`同意后将调用 ${c.agent_id || "Agent"} 一次，发送` +
-               (handoff.length || fileCount ? `下面的完整内容（你的消息` + (handoff.length ? ` + ${handoff.length} 段交接` : "") +
-                                              (fileCount ? ` + ${fileCount} 段文件` : "") + "）" : "本条消息原文") +
+               (extras.length ? `下面的完整内容（你的消息 + ${extras.join(" + ")}）` : "本条消息原文") +
                (c.context_mode === "native_resume" ? `，并续接 thread ${short(c.resume_thread_id)} 的上下文。` : "。"));
   if (c.turn) notes.push(c.turn.resumed ? `模型回合已开始（续接 thread ${short(c.turn.thread_id)}）` : "模型回合已开始");
   if (c.ended && c.ended.native_unfinished && c.ended.native_unfinished.length) {
@@ -925,9 +1044,15 @@ function contextLines(p) {
   const size = (s) => `${fmtN(s.chars)} 字 ≈ ${fmtN(s.estimate)} token`;
   const of = (kind) => p.parts.filter((x) => x.kind === kind);
   const lines = [`你的消息：${size(sum(of("user_input")))}`];
-  const sources = [...new Set(p.parts.filter((x) => x.message_id != null).map((x) => x.message_id))];
+  const summary = of("summary_content")[0];
+  if (summary) lines.push(`阶段摘要 v${summary.summary_version}：正文 ${size(summary)}，Hub 框架 ${size(sum(of("summary_frame")))}`);
+  const history = of("history_content");
+  if (history.length || of("history_frame").length)
+    lines.push(`最近历史：${history.length} 条消息，正文 ${size(sum(history))}，Hub 框架 ${size(sum(of("history_frame")))}`);
+  const handoffParts = p.parts.filter((x) => x.kind.startsWith("handoff") && x.message_id != null);
+  const sources = [...new Set(handoffParts.map((x) => x.message_id))];
   for (const id of sources) {
-    const mine = p.parts.filter((x) => x.message_id === id);
+    const mine = handoffParts.filter((x) => x.message_id === id);
     const agent = mine[0].agent_id || "Agent";
     lines.push(`交接 ${agent} #${id}：正文 ${size(sum(mine.filter((x) => x.kind === "handoff_content")))}，` +
                `Hub 框架 ${size(sum(mine.filter((x) => x.kind === "handoff_frame")))}`);
@@ -1205,13 +1330,16 @@ function renderNow() {
            used ? chip("用量 " + used, "") : null,
            el("button", { class: "mini" + (chosen ? " on" : ""), "data-handoff": m.message_id,
                           title: "把这条回复附在下一次调用里交给所选 Agent；发送前会在审批卡里完整显示",
-                          onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent")),
+                          onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent"),
+           el("button", { class: "mini", title: "把这条回复按“目标/约束/已完成/未解决/下一步/文件”读成摘要草稿，编辑后保存",
+                          onclick: () => draftFromReply(m).catch((e) => toast(e.message)) }, "用作摘要草稿")),
         el("div", { class: "bubble" }, m.text)));
     }
   }
   if (nearBottom) tl.scrollTop = tl.scrollHeight;
   exposeStats();
   renderUsage();
+  renderSummary();
   renderComposer();
 }
 
@@ -1253,7 +1381,15 @@ function renderComposer() {
   $("handoffChips").replaceChildren(...picks.map((m) => el("span", { class: "chip info" },
     `附带交接：${(m.invocation && m.invocation.agent_id) || "Agent"} #${m.message_id}（${m.text.length} 字）`,
     el("button", { class: "mini", title: "移除", onclick: () => toggleHandoff(m) }, "×"))));
-  $("refChips").replaceChildren(...S.refs.map((spec) => el("span", { class: "chip info" },
+  const attached = S.summaries.find((s) => s.summary_id === S.attachSummary);
+  $("refChips").replaceChildren(
+    ...(S.attachSummary != null ? [el("span", { class: "chip info" }, `附带摘要 v${attached ? attached.version : "?"}`,
+      el("button", { type: "button", class: "mini", title: "移除",
+                     onclick: () => { S.attachSummary = null; render(); previewSend(); } }, "×"))] : []),
+    ...(S.includeHistory ? [el("span", { class: "chip warn" }, "附带最近历史（摘要草稿）",
+      el("button", { type: "button", class: "mini", title: "移除",
+                     onclick: () => { S.includeHistory = false; render(); previewSend(); } }, "×"))] : []),
+    ...S.refs.map((spec) => el("span", { class: "chip info" },
     `引用：${spec}`, el("button", { type: "button", class: "mini", title: "移除", onclick: () => removeRef(spec) }, "×"))));
   renderSendPreview();
   $("composerNote").textContent = !S.token ? "请先连接"
@@ -1317,7 +1453,9 @@ $("composer").addEventListener("submit", send);
 $("addRefBtn").addEventListener("click", () => addRef());
 $("fileRef").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRef(); } });
 $("fileRef").addEventListener("input", debounced(suggestFiles, 250));
-$("text").addEventListener("input", debounced(() => { if (S.refs.length || S.handoff.length) previewSend(); }, 500));
+$("text").addEventListener("input", debounced(() => {
+  if (S.refs.length || S.handoff.length || S.attachSummary != null || S.includeHistory) previewSend();
+}, 500));
 $("text").addEventListener("input", debounced(loadSuggestions, 700));
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();

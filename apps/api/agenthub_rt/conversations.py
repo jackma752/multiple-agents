@@ -22,6 +22,10 @@ from agenthub_kernel.conversations import (
 )
 from agenthub_kernel.file_refs import FileRefError, list_files
 from agenthub_kernel.file_suggest import suggest
+from agenthub_kernel.summaries import (
+    available_summaries, compress, link_of, link_view, save_summary, summary_view,
+)
+from agenthub.summary import SUMMARY_INSTRUCTION, StageSummary, parse_summary_text
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
 from agenthub_kernel.usage_ledger import conversation_usage, instance_usage
 
@@ -33,7 +37,7 @@ SSE_BATCH = 200
 def sse_frame(event: dict) -> str:
     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     return f"id: {event['seq']}\nevent: {event['type']}\ndata: {data}\n\n"
-from agenthub_kernel.db import ChatMessageRow, ConversationRow, InvocationRow
+from agenthub_kernel.db import ChatMessageRow, ConversationLinkRow, ConversationRow, InvocationRow
 from agenthub_kernel.service import QuotaError, new_id
 from agenthub_rt.auth import Principal, authenticate, require_approver
 
@@ -66,6 +70,9 @@ class TurnIn(MessageIn):
     handoff_message_ids: list[int] = Field(default_factory=list, max_length=3)
     # Files or line ranges the Hub reads and sends (agenthub.files syntax).
     file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+    # A stage summary sent instead of history; recent history (summary drafting).
+    summary_id: Optional[int] = None
+    include_history: bool = False
 
     @field_validator("agent_id", "client_request_id")
     @classmethod
@@ -84,6 +91,27 @@ class PreviewIn(BaseModel):
     context_mode: Literal["independent", "native_resume"] = "independent"
     handoff_message_ids: list[int] = Field(default_factory=list, max_length=3)
     file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+    summary_id: Optional[int] = None
+    include_history: bool = False
+
+
+class SummaryIn(BaseModel):
+    """A new version of a conversation's stage summary (agenthub.summary)."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    goal: str
+    constraints: str = ""
+    done: str = ""
+    open_issues: str = ""
+    next_steps: str = ""
+    file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+    # The drafting call's reply it was edited from, if any (recorded as its source).
+    from_message_id: Optional[int] = None
+
+
+class CompressIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    summary_id: int
+    title: str = Field(default="", max_length=200)
 
 
 class SuggestIn(BaseModel):
@@ -102,7 +130,7 @@ def _turn_of(data: dict) -> ConversationTurn:
 
 
 def _http_error(exc: QuotaError) -> HTTPException:
-    status = 404 if exc.code in ("no_conversation", "handoff_not_found") else (
+    status = 404 if exc.code in ("no_conversation", "handoff_not_found", "summary_not_found") else (
         422 if exc.code in FILE_REF_INPUT_ERRORS else 409)
     return HTTPException(status, detail={"code": exc.code, "message": exc.message})
 
@@ -146,8 +174,10 @@ def register_conversations(app, db) -> None:
                 ConversationRow.user_id == principal.identity,
             ).order_by(ConversationRow.created_at.desc(), ConversationRow.id.desc())
                 .offset(offset).limit(limit + 1)).all()
+            links = {link.conversation_id: link for link in session.scalars(select(ConversationLinkRow).where(
+                ConversationLinkRow.conversation_id.in_([row.id for row in rows])))}
             return {
-                "conversations": [conversation_view(row) for row in rows[:limit]],
+                "conversations": [conversation_view(row, links.get(row.id)) for row in rows[:limit]],
                 "has_more": len(rows) > limit, "next_offset": offset + min(len(rows), limit),
             }
 
@@ -179,7 +209,7 @@ def register_conversations(app, db) -> None:
                     "result": row.result_metadata,
                 })
             return {
-                **conversation_view(conversation), "messages": messages,
+                **conversation_view(conversation, link_of(session, cid)), "messages": messages,
                 "has_more": len(rows) > limit,
                 "next_after_id": messages[-1]["message_id"] if messages else after_id,
             }
@@ -332,7 +362,8 @@ def register_conversations(app, db) -> None:
         require_approver(principal)
         request = SimpleNamespace(text=body.text, context_mode=body.context_mode,
                                   handoff_message_ids=tuple(body.handoff_message_ids),
-                                  file_refs=tuple(body.file_refs))
+                                  file_refs=tuple(body.file_refs), summary_id=body.summary_id,
+                                  include_history=body.include_history)
         with db.session() as session:
             conversation = None
             if body.conversation_id is not None:
@@ -350,6 +381,60 @@ def register_conversations(app, db) -> None:
             budget = estimate_check(session, conversation.root_task_id if conversation else None,
                                     preview["estimate"])
         return {"sent_text": sent, "context_preview": preview, "budget": budget}
+
+    # ---------------------------------------------------- stage summaries (T-2)
+
+    @app.get("/api/conversations/{cid}/summaries")
+    def list_summaries(cid: str, principal: Principal = Depends(authenticate)):
+        """Summaries a message here may attach: this conversation's versions and those
+        of the conversation it continues, newest first."""
+        with db.session() as session:
+            require_conversation(session, cid, principal)
+            return {"summaries": [summary_view(r) for r in available_summaries(session, cid)],
+                    **link_view(link_of(session, cid)), "instruction": SUMMARY_INSTRUCTION}
+
+    @app.post("/api/conversations/{cid}/summaries")
+    def create_summary(cid: str, body: SummaryIn, principal: Principal = Depends(authenticate)):
+        """Save a new version. Nothing is sent or approved by saving."""
+        data = body.model_dump()
+        source = data.pop("from_message_id")
+        try:
+            summary = StageSummary(**data)
+        except ValueError as exc:
+            raise HTTPException(422, detail={"code": "invalid_summary", "message": str(exc)})
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            require_conversation(session, cid, principal)
+            if source is not None:
+                draft = session.get(ChatMessageRow, source)
+                if draft is None or draft.conversation_id != cid or draft.role != "assistant":
+                    raise HTTPException(404, detail={"code": "draft_not_found",
+                                                     "message": "draft must be a reply in this conversation"})
+            row = save_summary(session, cid, summary, source=f"draft:{source}" if source else "manual")
+            return summary_view(row)
+
+    @app.get("/api/conversations/{cid}/summary-draft")
+    def summary_draft(cid: str, message_id: int = Query(..., ge=1), principal: Principal = Depends(authenticate)):
+        """A reply of this conversation read back into summary fields, for editing (not saved)."""
+        with db.session() as session:
+            require_conversation(session, cid, principal)
+            reply = session.get(ChatMessageRow, message_id)
+            if reply is None or reply.conversation_id != cid or reply.role != "assistant":
+                raise HTTPException(404, detail={"code": "draft_not_found",
+                                                 "message": "draft must be a reply in this conversation"})
+            return {"from_message_id": reply.id, **parse_summary_text(reply.text)}
+
+    @app.post("/api/conversations/{cid}/compress")
+    def compress_conversation(cid: str, body: CompressIn, principal: Principal = Depends(authenticate)):
+        """Continue in a new conversation from a summary; this one stays as it is."""
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            require_conversation(session, cid, principal)
+            try:
+                row = compress(session, cid, principal.identity, body.summary_id, body.title)
+            except QuotaError as exc:
+                raise _http_error(exc)
+            return conversation_view(row, link_of(session, row.id))
 
     @app.post("/api/file-suggestions")
     def file_suggestions(body: SuggestIn, principal: Principal = Depends(authenticate)):

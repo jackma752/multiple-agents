@@ -10,8 +10,8 @@ The approval & quota kernel and persistent local chat use these tables:
 ``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
 ``conversations``, ``chat_messages``, ``conversation_events``,
 ``conversation_event_cursors``, ``stream_chunks``, ``tool_approvals``,
-``tool_gate_closures``, ``usage_ledger``, ``tree_token_budget`` and
-``token_budget_items``.
+``tool_gate_closures``, ``usage_ledger``, ``tree_token_budget``,
+``token_budget_items``, ``conversation_summaries`` and ``conversation_links``.
 """
 
 from __future__ import annotations
@@ -132,6 +132,44 @@ class ChatMessageRow(Base):
     client_request_id = Column(String, nullable=True)
     request_hash = Column(String, nullable=True)
     result_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ConversationSummaryRow(Base):
+    """One saved version of a conversation's stage summary (T-2, ``agenthub.summary``).
+
+    Versions are immutable: editing saves a new row. ``source`` is ``manual``
+    or ``draft:<message_id>`` (edited from a drafting call's reply).
+    """
+
+    __tablename__ = "conversation_summaries"
+    __table_args__ = (UniqueConstraint("conversation_id", "version"), {"sqlite_autoincrement": True})
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    version = Column(Integer, nullable=False)
+    goal = Column(Text, nullable=False)
+    constraints = Column(Text, nullable=False, default="")
+    done = Column(Text, nullable=False, default="")
+    open_issues = Column(Text, nullable=False, default="")
+    next_steps = Column(Text, nullable=False, default="")
+    file_refs = Column(JSON, nullable=False, default=list)
+    source = Column(String, nullable=False, default="manual")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ConversationLinkRow(Base):
+    """A conversation started by "compress and continue": where it came from (T-2).
+
+    A new table, not columns on ``conversations``: ``create_all`` never alters
+    existing tables. The source conversation is left as it was.
+    """
+
+    __tablename__ = "conversation_links"
+
+    conversation_id = Column(ForeignKey("conversations.id"), primary_key=True)
+    parent_conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    summary_id = Column(ForeignKey("conversation_summaries.id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 

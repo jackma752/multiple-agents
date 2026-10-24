@@ -19,6 +19,7 @@ from agenthub_kernel.db import (
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.budget import budget_view
 from agenthub_kernel.file_refs import FileRefError, file_segments
+from agenthub_kernel.summaries import history_segments, link_view, summary_segments, usable_summary
 from agenthub_kernel.usage_ledger import usage_view
 
 
@@ -29,11 +30,13 @@ def owned_conversation(session: Session, cid: str, user_id: str) -> Conversation
     return row
 
 
-def conversation_view(row: ConversationRow) -> dict[str, Any]:
+def conversation_view(row: ConversationRow, link: Any = None) -> dict[str, Any]:
+    """``link``: its ``ConversationLinkRow`` when it continues another conversation (T-2)."""
     return {
         "conversation_id": row.id, "title": row.title,
         "root_task_id": row.root_task_id, "context_mode": CONTEXT_MODE,
         "created_at": row.created_at.isoformat() + "Z",
+        **link_view(link),
     }
 
 
@@ -66,8 +69,9 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
 
 
 def _adds_context(snapshot: dict) -> bool:
+    """Does the call send more than the user's own text (handoff, files, summary, history)?"""
     parts = (snapshot.get("context_preview") or {}).get("parts") or []
-    return bool(snapshot.get("handoff")) or any(p.get("kind") == FILE_SNIPPET for p in parts)
+    return bool(snapshot.get("handoff")) or any(p.get("kind") != USER_INPUT for p in parts)
 
 
 def _root_of_task(session: Session, task_id: str) -> Optional[str]:
@@ -189,23 +193,38 @@ def compose_turn(session: Session, cid: str, request: Any, *, context_profile: O
     preview is built from the same segments, so its parts are an exact split of
     that text (T-1d). File contents are read now, once: the approved text is
     what runs, whatever happens to the files afterwards (T-1f).
+
+    T-2: ``include_history`` adds this conversation's recent messages (for
+    drafting a summary) and ``summary_id`` a stage summary, whose file
+    references are read with the call's own.
     """
     segments, handoff = [(USER_INPUT, request.text)], ()
+    refs = list(getattr(request, "file_refs", ()) or ())
+    if getattr(request, "include_history", False) and cid is not None:
+        segments += [(SEPARATOR, "\n\n"), *history_segments(session, cid)]
+    summary_id = getattr(request, "summary_id", None)
+    if summary_id is not None:
+        if cid is None:
+            raise QuotaError("summary_not_found", "a summary needs its conversation")
+        summary = usable_summary(session, cid, summary_id)
+        segments += [(SEPARATOR, "\n\n"), *summary_segments(summary)]
+        refs = list(dict.fromkeys([*(summary.file_refs or []), *refs]))
     if request.handoff_message_ids:
         blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
         for block in blocks:
             segments += [(SEPARATOR, "\n\n"), *block]
-    if request.file_refs:
+    if refs:
         try:
-            segments += file_segments(files_root, request.file_refs)
+            segments += file_segments(files_root, refs)
         except FileRefError as exc:
             raise QuotaError(exc.code, exc.message) from None
         except ValueError as exc:
             raise QuotaError("invalid_file_ref", str(exc)) from None
     task_input, preview = compose(segments, context_mode=request.context_mode, profile=context_profile)
     if len(task_input) > MAX_MESSAGE_CHARS:
-        raise QuotaError("handoff_too_large" if not request.file_refs else "context_too_large",
-                         "message with its handoff and files exceeds the size limit")
+        raise QuotaError("handoff_too_large" if not (refs or summary_id or request.include_history)
+                         else "context_too_large",
+                         "message with its handoff, summary, history and files exceeds the size limit")
     return task_input, preview, handoff
 
 
