@@ -206,6 +206,20 @@ def settle_budget(session: Session, invocation_id: str) -> None:
     _settle_item(session, task.root_task_id, invocation_id)
 
 
+def estimate_check(session: Session, root_task_id: Optional[str], estimate: int) -> Optional[dict[str, Any]]:
+    """What the tree's budget would say about a call with this estimate (composer
+    preview; assumes the agent reports usage). None without a budget. Nothing is
+    reserved, trimmed or widened here: an over-budget preview asks the user to
+    narrow the references."""
+    if root_task_id is None:
+        return None
+    budget = BudgetPolicy.from_policy(tree_policy(session, root_task_id))
+    if not budget.active:
+        return None
+    decision = decide(budget, spend_preview(session, root_task_id), estimate=estimate, metered=True)
+    return {**budget.to_dict(), "estimate": estimate, "decision": decision.to_dict()}
+
+
 def item_view(item: Optional[TokenBudgetItemRow]) -> Optional[dict[str, Any]]:
     if item is None:
         return None

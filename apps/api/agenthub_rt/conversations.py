@@ -16,10 +16,12 @@ from starlette.concurrency import run_in_threadpool
 from agenthub.chat import MAX_MESSAGE_CHARS, ConversationTurn
 from agenthub.files import MAX_REFS
 from agenthub_kernel.adapters import adapter_binding, adapter_context_profile
+from agenthub_kernel.budget import estimate_check
 from agenthub_kernel.conversations import (
-    compose_turn, conversation_view, owned_conversation, submit_turn, turn_view,
+    compose_turn, conversation_view, owned_conversation, recent_file_refs, submit_turn, turn_view,
 )
 from agenthub_kernel.file_refs import FileRefError, list_files
+from agenthub_kernel.file_suggest import suggest
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
 from agenthub_kernel.usage_ledger import conversation_usage, instance_usage
 
@@ -81,6 +83,13 @@ class PreviewIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=200)
     context_mode: Literal["independent", "native_resume"] = "independent"
     handoff_message_ids: list[int] = Field(default_factory=list, max_length=3)
+    file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+
+class SuggestIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    conversation_id: Optional[str] = None  # for its recent references
+    text: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
     file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
 
 
@@ -325,8 +334,9 @@ def register_conversations(app, db) -> None:
                                   handoff_message_ids=tuple(body.handoff_message_ids),
                                   file_refs=tuple(body.file_refs))
         with db.session() as session:
+            conversation = None
             if body.conversation_id is not None:
-                require_conversation(session, body.conversation_id, principal)
+                conversation = require_conversation(session, body.conversation_id, principal)
             elif request.handoff_message_ids:
                 raise HTTPException(422, detail={"code": "invalid_turn",
                                                   "message": "a handoff needs its conversation_id"})
@@ -336,7 +346,26 @@ def register_conversations(app, db) -> None:
                     context_profile=adapter_context_profile(app.state.worker.adapter, body.agent_id))
             except QuotaError as exc:
                 raise _http_error(exc)
-        return {"sent_text": sent, "context_preview": preview}
+            # Over the budget: the page asks to narrow the references (never trims).
+            budget = estimate_check(session, conversation.root_task_id if conversation else None,
+                                    preview["estimate"])
+        return {"sent_text": sent, "context_preview": preview, "budget": budget}
+
+    @app.post("/api/file-suggestions")
+    def file_suggestions(body: SuggestIn, principal: Principal = Depends(authenticate)):
+        """Files or ranges the user may add, from the message, the chosen files and
+        this conversation's recent references. Suggests only; adds nothing."""
+        require_approver(principal)
+        with db.session() as session:
+            recent = []
+            if body.conversation_id is not None:
+                require_conversation(session, body.conversation_id, principal)
+                recent = recent_file_refs(session, body.conversation_id)
+            try:
+                found = suggest(app.state.files_root, body.text, body.file_refs, recent)
+            except FileRefError as exc:
+                raise HTTPException(409, detail={"code": exc.code, "message": exc.message})
+        return {"suggestions": found}
 
     @app.get("/api/files")
     def files(q: str = Query("", max_length=200), limit: int = Query(50, ge=1, le=200),

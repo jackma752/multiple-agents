@@ -1,4 +1,12 @@
-# 当前交接：T-1e/T-1f 文件引用（2026-10-24，分支 `feat/t1-context-refs`，离线）
+# 当前交接：T-1g 文件建议 + T-1h 申请（2026-10-24，分支 `feat/t1-context-refs`，离线）
+
+- T-1g（最小可用版）：根据消息中的路径和行号、已选文件、本会话最近的引用，建议文件或片段；用户点击后才加入，然后走原来的预览和审批。超过单次预算时提示缩小范围，不自动截断，也不扩大上下文。说明见 [会话后端契约](conversation-backend.md) 的 T-1g 一节。
+- T-1h：最小真实验收申请见 [t1h-real-acceptance.md](t1h-real-acceptance.md)。判定脚本是 `tools/probes/t1h_collect.py`，启动配置是 `t1h-real`（8177）。**未执行，需要批准。**
+- 放到以后：`@diff`、文件修改提醒、在消息正文中直接写 `@`、目录引用。
+
+---
+
+# 历史交接：T-1e/T-1f 文件引用（2026-10-24，分支 `feat/t1-context-refs`，离线）
 
 - 已完成流程：选择文件或行范围 → 发送前预览 → 审批 → 发送。说明见 [会话后端契约](conversation-backend.md) 的 T-1e/T-1f 一节。
 - 需要配置 `AGENT_HUB_FILES_ROOT`（或 `serve.py --files-root`），否则引用被拒绝。

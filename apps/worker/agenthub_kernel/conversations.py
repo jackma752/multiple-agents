@@ -160,6 +160,25 @@ def native_resume_blocker(session: Session, inv: InvocationRow) -> Optional[tupl
     return None
 
 
+def recent_file_refs(session: Session, cid: str, limit: int = 3) -> list[str]:
+    """This conversation's latest file references as specs, newest first, distinct."""
+    rows = session.scalars(
+        select(InvocationRow.snapshot).join(ChatMessageRow, ChatMessageRow.invocation_id == InvocationRow.id)
+        .where(ChatMessageRow.conversation_id == cid, ChatMessageRow.role == "user")
+        .order_by(ChatMessageRow.id.desc()).limit(20)
+    ).all()
+    specs: list[str] = []
+    for snapshot in rows:
+        for part in ((snapshot or {}).get("context_preview") or {}).get("parts") or []:
+            if part.get("kind") == FILE_SNIPPET:
+                spec = f"{part['path']}:L{part['start_line']}-{part['end_line']}"
+                if spec not in specs:
+                    specs.append(spec)
+        if len(specs) >= limit:
+            break
+    return specs[:limit]
+
+
 def compose_turn(session: Session, cid: str, request: Any, *, context_profile: Optional[dict] = None,
                  files_root: Optional[str] = None) -> tuple[str, dict, tuple]:
     """The text a turn sends, its context preview and its handoff records; writes nothing.

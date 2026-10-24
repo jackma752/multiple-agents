@@ -118,6 +118,7 @@
         <button type="button" id="addRefBtn">添加引用</button>
         <span id="refChips"></span>
       </div>
+      <div class="row" id="suggestions"></div>
       <div id="sendPreview"></div>
       <div class="row">
         <label>Agent <select id="agent"></select></label>
@@ -169,7 +170,8 @@ const S = {
   consent: new Map(), // invocation_id -> boundary consent ticked for THIS call only
   handoff: [],        // reply message_ids chosen to pass on with the NEXT call only
   refs: [],           // file references (agenthub.files syntax) for the NEXT call only
-  sendPreview: null,  // what the composer would send now: {sent_text, context_preview}
+  sendPreview: null,  // what the composer would send now: {sent_text, context_preview, budget}
+  suggestions: [],    // file references the user may add (never added without a click)
   busy: new Set(),    // actions in flight (keys), to disable double clicks
   viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
   createPromise: null, // the one conversation creation in flight, shared by every caller
@@ -583,7 +585,8 @@ async function send(event) {
     $("text").value = "";
     $("resume").checked = false;
     S.handoff = [];  // a handoff belongs to one call; the next one chooses again
-    S.refs = []; S.sendPreview = null;  // likewise the referenced files
+    S.refs = []; S.sendPreview = null; S.suggestions = [];  // likewise the referenced files
+    renderSuggestions();
     $("mode").value = "";  // the next call needs its own explicit choice
     if (current(gen)) needMessages(gen);
   });
@@ -609,17 +612,49 @@ async function previewSend(refs = S.refs) {
   }
 }
 
-async function addRef() {
-  const spec = $("fileRef").value.trim();
+async function addRef(spec = $("fileRef").value.trim()) {
   if (!spec) return;
   if (S.refs.includes(spec)) { toast("已经引用了这一项"); return; }
   if (S.refs.length >= 8) { toast("一次最多引用 8 项"); return; }
-  if (await previewSend([...S.refs, spec])) { S.refs.push(spec); $("fileRef").value = ""; renderComposer(); }
+  if (await previewSend([...S.refs, spec])) {
+    S.refs.push(spec);
+    if ($("fileRef").value.trim() === spec) $("fileRef").value = "";
+    renderComposer();
+    loadSuggestions();
+  }
 }
 
 function removeRef(spec) {
   S.refs = S.refs.filter((s) => s !== spec);
   previewSend();
+  loadSuggestions();
+}
+
+/* Suggestions from the message's paths, the chosen files and this conversation's
+   recent references. Shown only; each needs a click to become a reference. */
+async function loadSuggestions() {
+  if (!S.token) return;
+  try {
+    const data = await api("POST", "/api/file-suggestions", {
+      conversation_id: S.cid || null, text: $("text").value, file_refs: S.refs.slice() });
+    S.suggestions = data.suggestions;
+  } catch (_) { S.suggestions = []; /* no files root: nothing to suggest */ }
+  renderSuggestions();
+}
+
+const SUGGEST_REASON = { mentioned: "消息提到", mentioned_line: "消息提到的行附近", related: "与已选文件相关",
+                         recent: "本会话最近引用" };
+
+function renderSuggestions() {
+  const items = S.suggestions.filter((s) => !s.spec || !S.refs.includes(s.spec));
+  $("suggestions").replaceChildren(...(items.length ? [el("span", { class: "dim" }, "建议引用：")] : []),
+    ...items.map((s) => el("span", { class: "chip" },
+      `${SUGGEST_REASON[s.reason] || s.reason}：${s.spec || s.path}` +
+      (s.needs_range ? `（整文件 ${fmtN(s.lines)} 行、约 ${fmtN(s.estimate)} token，较大，请指定行范围）`
+                     : `（约 ${fmtN(s.estimate)} token）`),
+      s.needs_range
+        ? el("button", { type: "button", class: "mini", onclick: () => { $("fileRef").value = s.path + ":L"; $("fileRef").focus(); } }, "指定范围")
+        : el("button", { type: "button", class: "mini", onclick: () => addRef(s.spec) }, "加入"))));
 }
 
 async function suggestFiles() {
@@ -639,10 +674,21 @@ function debounced(fn, ms) {
 function renderSendPreview() {
   const p = S.sendPreview && S.sendPreview.context_preview;
   if (!p) { $("sendPreview").replaceChildren(); return; }
-  $("sendPreview").replaceChildren(el("details", { class: "sent" },
-    el("summary", {}, "发送前预览：" + contextSummary(p).replace(/^上下文预览：/, "")),
-    contextLines(p).map((t) => el("div", { class: "note" }, t)),
-    el("pre", { class: "mono" }, S.sendPreview.sent_text)));
+  const warn = budgetWarning(S.sendPreview.budget);
+  $("sendPreview").replaceChildren(
+    warn ? el("div", { class: "note" }, el("span", { class: "chip bad" }, "预算"), " " + warn) : null,
+    el("details", { class: "sent" },
+      el("summary", {}, "发送前预览：" + contextSummary(p).replace(/^上下文预览：/, "")),
+      contextLines(p).map((t) => el("div", { class: "note" }, t)),
+      el("pre", { class: "mono" }, S.sendPreview.sent_text)));
+}
+
+/* Over the budget the user narrows the references; nothing is trimmed or widened. */
+function budgetWarning(b) {
+  if (!b || !b.decision || b.decision.allowed) return "";
+  if (b.decision.code === "estimate_exceeds_per_call_budget")
+    return `估算约 ${fmtN(b.estimate)} token，超过单次预算 ${fmtN(b.per_call)}：请缩小引用的行范围或移除引用（不会自动截断）`;
+  return `按当前预算，执行时会被拒绝：${b.decision.message || b.decision.code}`;
 }
 
 /* ----------------------------------------------------- conversations --- */
@@ -1268,10 +1314,11 @@ $("connectBtn").addEventListener("click", connect);
 $("newConvBtn").addEventListener("click", () => guarded("newconv",
   () => createConversation("新会话 " + new Date().toLocaleTimeString())));
 $("composer").addEventListener("submit", send);
-$("addRefBtn").addEventListener("click", addRef);
+$("addRefBtn").addEventListener("click", () => addRef());
 $("fileRef").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRef(); } });
 $("fileRef").addEventListener("input", debounced(suggestFiles, 250));
 $("text").addEventListener("input", debounced(() => { if (S.refs.length || S.handoff.length) previewSend(); }, 500));
+$("text").addEventListener("input", debounced(loadSuggestions, 700));
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();
 });
