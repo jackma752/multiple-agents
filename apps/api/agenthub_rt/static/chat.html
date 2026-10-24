@@ -325,7 +325,8 @@ async function loadPlans(gen = S.viewGen) {
 }
 
 const ITEM_STATE = { pending: ["待分派", ""], awaiting: ["待审批", "warn"], running: ["执行中", "info"],
-                     done: ["完成", "ok"], failed: ["失败", "bad"] };
+                     unconfirmed: ["状态待确认", "warn"], done: ["完成", "ok"], no_result: ["已结束、无回复", "warn"],
+                     failed: ["失败", "bad"] };
 
 function editPlan(items, fromMessageId) {
   S.planEdit = { from_message_id: fromMessageId || null,
@@ -413,8 +414,9 @@ function renderPlans() {
       lines.push(el("div", { class: "usage-line" }, chip(`#${item.index} ${item.agent_id}`, "info"), " ", chip(label, kind),
         item.depends_on.length ? ` 依赖 ${item.depends_on.join("、")}${waiting.length ? "（等待中）" : ""} ` : " ",
         item.goal.slice(0, 80), item.attempts ? `（第 ${item.attempts} 次）` : "", " ",
+        item.state === "unconfirmed" ? "上一次调用状态未知，可能仍在运行；名额保留，需先经恢复或人工裁决确认结束，才能决定是否重试 " : null,
         item.ready ? el("button", { class: "mini", disabled: S.busy.has(`dispatch:${plan.plan_id}:${item.index}`) || !p.collaboration_enabled,
-                                    onclick: () => dispatchItem(plan, item) }, item.state === "failed" ? "重试" : "分派") : null));
+                                    onclick: () => dispatchItem(plan, item) }, item.state === "pending" ? "分派" : "重试") : null));
     }
     if (plan.all_done) lines.push(el("div", { class: "usage-line" }, "全部完成 ",
       el("button", { class: "mini", disabled: S.busy.has(`collect:${plan.plan_id}`), onclick: () => collectPlan(plan) },

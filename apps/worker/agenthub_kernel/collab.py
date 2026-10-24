@@ -1,12 +1,24 @@
 """Collaboration plans: save, item state, dispatch rules (P4, ``agenthub.collab``).
 
-An item's state is derived from its calls (``collab_attempts``), never stored:
-``pending`` (not dispatched), ``awaiting`` / ``running`` (its latest call),
-``done`` (succeeded with a reply), ``failed`` (anything else that ended).
+An item's state is derived from the calls of its sub-task, never stored. Every
+call on the sub-task counts - the plan's own dispatches and a retry created by
+the manual adjudication of an ``unknown`` call alike - and the latest decides:
+
+* ``pending``: not dispatched yet;
+* ``awaiting`` / ``running``: its latest call is pending approval or executing;
+* ``unconfirmed``: its latest call is ``unknown`` - it may still be running,
+  so it is neither a failure nor retryable, and keeps its quota slot. It
+  stays so until recovery or the user's adjudication confirms how it ended;
+* ``done``: succeeded, with a reply that can be handed on;
+* ``no_result``: succeeded but without a reply in this conversation;
+* ``failed``: confirmed to have ended otherwise (failed, canceled, timed out,
+  rejected, invalid).
+
 Dispatching is refused unless the collaboration switch is on, every item it
-depends on is ``done``, the item is not already in progress or done, and it
-has attempts left. The kernel then creates the depth-1 sub-task call like any
-other turn (``conversations.submit_turn``); approval and limits apply there.
+depends on is ``done``, the item is ``pending``, ``failed`` or ``no_result``,
+and it has attempts left. The kernel then creates the depth-1 sub-task call
+like any other turn (``conversations.submit_turn``); approval and limits apply
+there.
 """
 
 from __future__ import annotations
@@ -54,12 +66,17 @@ def _items(session: Session, plan_id: int) -> list[CollabItemRow]:
                            .order_by(CollabItemRow.idx)).all()
 
 
-def _latest(session: Session, item_id: int) -> tuple[int, Optional[InvocationRow]]:
-    rows = session.execute(select(CollabAttemptRow.attempt, InvocationRow)
-                           .join(InvocationRow, InvocationRow.id == CollabAttemptRow.invocation_id)
-                           .where(CollabAttemptRow.item_id == item_id)
-                           .order_by(CollabAttemptRow.attempt.desc())).first()
-    return (rows[0], rows[1]) if rows else (0, None)
+#: Retryable end states (confirmed over, nothing to hand on).
+RETRYABLE = ("pending", "failed", "no_result")
+
+
+def _latest(session: Session, item: CollabItemRow) -> tuple[int, Optional[InvocationRow]]:
+    """(calls on the item's sub-task, the latest of them)."""
+    if item.task_id is None:
+        return 0, None
+    calls = session.scalars(select(InvocationRow).where(InvocationRow.task_id == item.task_id)
+                            .order_by(InvocationRow.created_at, InvocationRow.id)).all()
+    return len(calls), (calls[-1] if calls else None)
 
 
 def _reply(session: Session, invocation_id: str) -> Optional[ChatMessageRow]:
@@ -68,14 +85,16 @@ def _reply(session: Session, invocation_id: str) -> Optional[ChatMessageRow]:
 
 
 def item_state(session: Session, item: CollabItemRow) -> dict[str, Any]:
-    attempts, inv = _latest(session, item.id)
+    attempts, inv = _latest(session, item)
     reply = _reply(session, inv.id) if inv is not None else None
     if inv is None:
         state = "pending"
     elif inv.status in ACTIVE:
         state = ACTIVE[inv.status]
-    elif inv.status == "succeeded" and reply is not None:
-        state = "done"
+    elif inv.status == "unknown":
+        state = "unconfirmed"  # may still be running: not a failure, not retryable
+    elif inv.status == "succeeded":
+        state = "done" if reply is not None else "no_result"
     else:
         state = "failed"
     return {"state": state, "attempts": attempts, "invocation_id": inv.id if inv else None,
@@ -91,7 +110,7 @@ def plan_view(session: Session, plan: CollabPlanRow) -> dict[str, Any]:
         deps_done = all(states[d]["state"] == "done" for d in item.depends_on or [])
         out.append({"item_id": item.id, "index": item.idx, "agent_id": item.agent_id, "goal": item.goal,
                     "depends_on": list(item.depends_on or []), **s,
-                    "ready": s["state"] in ("pending", "failed") and deps_done
+                    "ready": s["state"] in RETRYABLE and deps_done
                     and s["attempts"] < MAX_ATTEMPTS_PER_ITEM})
     return {"plan_id": plan.id, "conversation_id": plan.conversation_id, "source": plan.source,
             "items": out, "all_done": bool(out) and all(i["state"] == "done" for i in out)}
@@ -125,6 +144,10 @@ def check_dispatch(session: Session, cid: str, item: CollabItemRow) -> None:
     mine = states[item.idx]
     if mine["state"] in ("awaiting", "running"):
         raise QuotaError("item_in_progress", "this sub-task already has a call in progress")
+    if mine["state"] == "unconfirmed":
+        raise QuotaError("item_unconfirmed",
+                         "this sub-task's last call is unknown and may still be running: confirm how it "
+                         "ended (recovery or adjudication) before dispatching it again")
     if mine["state"] == "done":
         raise QuotaError("item_done", "this sub-task is already done")
     if mine["attempts"] >= MAX_ATTEMPTS_PER_ITEM:
@@ -154,8 +177,9 @@ def collected_replies(session: Session, cid: str, plan_id: int) -> list[tuple[Ch
 
 
 def record_attempt(session: Session, item: CollabItemRow, invocation_id: str) -> int:
-    attempt = (session.scalar(select(func.max(CollabAttemptRow.attempt))
-                              .where(CollabAttemptRow.item_id == item.id)) or 0) + 1
+    """Number this dispatch by the calls on the item's sub-task (adjudication retries included)."""
+    attempt = session.scalar(select(func.count()).select_from(InvocationRow)
+                             .where(InvocationRow.task_id == item.task_id)) or 1
     session.add(CollabAttemptRow(invocation_id=invocation_id, item_id=item.id, attempt=attempt))
     session.flush()
     return attempt

@@ -8,8 +8,10 @@ its own depth-1 call with its own approval; nothing runs by itself.
 from sqlalchemy import func, select
 
 from agenthub.collab import COLLECT_INSTRUCTION
+from agenthub_adapters.appserver_stub import InMemoryStubFactory
 from agenthub_kernel.db import ChatMessageRow, InvocationRow, TaskRow
 from tests.http import test_multi_agent as multi
+from tests.http.test_conversation_stream import held_slots, make_client  # noqa: F401  (fixture)
 from tests.http.test_conversations import USER
 from tests.http.test_multi_agent import CC_REPLY, hub  # noqa: F401  (fixture)
 
@@ -119,6 +121,33 @@ def test_a_failed_item_may_be_retried_once(hub):
         assert plan_of(client, cid)["plans"][0]["items"][0]["state"] == "failed"
     r = dispatch(client, cid, pid, 1, "a3")
     assert r.status_code == 409 and r.json()["detail"]["code"] == "retry_limit"
+
+
+def test_an_unknown_call_is_unconfirmed_and_not_retried_until_adjudicated(make_client):
+    client = make_client(InMemoryStubFactory("slow-terminal"), timeout_seconds=0.5)
+    cid = multi.conversation(client)
+    assert client.post(f"/api/conversations/{cid}/invocations", headers=USER, json={
+        "text": "start", "agent_id": "codex", "client_request_id": "k0"}).status_code == 200  # creates the task
+    set_policy(client, client.get(f"/api/conversations/{cid}/messages", headers=USER).json()["root_task_id"])
+    pid = save_plan(client, cid, items=[{"agent_id": "codex", "goal": "Do it"}]).json()["plan_id"]
+    turn = dispatch(client, cid, pid, 1, "u1").json()
+    assert approve_run(client, turn).json()["status"] == "unknown"
+    item = plan_of(client, cid)["plans"][0]["items"][0]
+    assert item["state"] == "unconfirmed" and item["ready"] is False  # neither a failure nor retryable
+    adapter = client.app.state.worker.adapter
+    starts, before, slots = adapter.start_count, calls(client), held_slots(client)
+    r = dispatch(client, cid, pid, 1, "u2")
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "item_unconfirmed"
+    assert calls(client) == before and adapter.start_count == starts
+    assert held_slots(client) == slots  # the unknown call keeps its slot
+    # Only once the user confirms how it ended may it be dispatched again.
+    r = client.post(f"/api/invocations/{turn['invocation_id']}/reconcile", headers=USER,
+                    json={"action": "settle", "outcome": "failed"})
+    assert r.status_code == 200, r.text
+    item = plan_of(client, cid)["plans"][0]["items"][0]
+    assert item["state"] == "failed" and item["ready"] is True
+    again = dispatch(client, cid, pid, 1, "u3").json()
+    assert again["status"] == "awaiting_approval" and again["plan_item"]["attempt"] == 2
 
 
 def test_the_sub_agent_limits_still_apply_when_it_runs(hub):
