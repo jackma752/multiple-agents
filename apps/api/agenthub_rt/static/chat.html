@@ -1434,6 +1434,14 @@ async function saveBudget(policy, rootTaskId) {
   const val = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
   const body = { ...policy, token_budget_total: val("budgetTotal"), token_budget_per_call: val("budgetPerCall"),
                  token_budget_warn_percent: val("budgetWarn") ?? 80, token_budget_mode: $("budgetMode").value };
+  // Say why before the server's 422 does (in English); the server still checks.
+  const { token_budget_total: total, token_budget_per_call: perCall } = body;
+  if ([total, perCall].some((n) => n != null && !(Number.isInteger(n) && n > 0))) {
+    toast("预算未保存：总预算和单次预算须为正整数，或留空表示不限"); return;
+  }
+  if (total != null && perCall != null && perCall > total) {
+    toast(`预算未保存：单次预算 ${fmtN(perCall)} 不能大于总预算 ${fmtN(total)}`); return;
+  }
   await guarded("budget", async () => {
     const r = await api("PATCH", `/api/tasks/${enc(rootTaskId)}/policy`, body);
     toast(`预算已保存为策略 v${r.version}；撤销了 ${r.revoked_approvals} 个未消费的审批`);
