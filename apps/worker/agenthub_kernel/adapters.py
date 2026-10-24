@@ -233,4 +233,6 @@ def describe(adapter: Any) -> dict:
         info["binding_identity"] = adapter_binding(adapter)
     supports = getattr(adapter, "supports_native_resume", None)
     info["native_resume"] = bool(supports()) if callable(supports) else False
+    # Strict token budgets refuse agents that cannot report usage (T-1c).
+    info["usage_reporting"] = callable(getattr(adapter, "usage_report", None))
     return info

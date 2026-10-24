@@ -582,3 +582,100 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
   - 未知和未记录的调用都计入次数，不算 0；
   - 日期过滤与 422；鉴权；页面元素。
 - 浏览器在 `t1-usage-demo` 离线桩上核对：会话栏和左栏的数字与账本一致；修正了一处页面缺陷（`replaceChildren` 把 null 显示成文本）；重新加载后没有失败的请求。
+
+## T-1c：token 预算与原子准入（2026-10-24，离线）
+
+### 策略字段（`Policy`，契约变更）
+
+- `token_budget_total`：根任务的总预算（整棵任务树），单位是账本 token，即 `input_total`（含缓存读写）+ `output_total`。`null` 表示不限。
+- `token_budget_per_call`：单次预算，也是每次调用对总预算的**预留量**。
+  - 与需求中“单次输入预算”的差异：这里同时包含输出，因为总预算也同时计算输入和输出。
+  - **不是硬上限**：没有适配器能在第 N 个 token 处停下回合，超出的部分只能在事后记为 `overrun`。
+- `token_budget_warn_percent`：提醒阈值，1–100，默认 80。
+- `token_budget_mode`：`strict`（默认）或 `soft`。
+- 旧策略没有这些字段时，按不限处理，行为与以前完全相同。
+- 修改预算走现有的 `PATCH /api/tasks/{id}/policy`：版本号加 1，并撤销这棵树中未消费的审批。字段整体替换，省略即清空。不合法时返回 422，不写入，也不升版本：
+  - 不是正整数；
+  - 单次预算大于总预算；
+  - 模式不是 strict 或 soft；
+  - 阈值不在 1–100 之间。
+
+### 规则（`agenthub.budget`）
+
+- **估算**：只估 Hub 自己发送的文本：ASCII 约 4 个字符算 1 token，其他字符每个算 1 token。provider 侧的指令、工具定义和 thread 历史一律标为“未知”，不并入估算，也不拿 T-0 的历史观测值当预估。
+- **两种模式都会拒绝**：
+  - 估算已经超过单次预算（`estimate_exceeds_per_call_budget`）；
+  - 已知用量 ≥ 总预算（`token_budget_exhausted`）。
+- **严格模式另外拒绝**：
+  - 该 Agent 不报告用量（`budget_unmeterable`，没有 `usage_report`）；
+  - 树中有用量未知、又没有预留可抵的调用（`budget_unknown_unbounded`）；
+  - 设了总预算却没有单次预留量（`budget_needs_per_call`）；
+  - 已知 + 未结算 + 在途 + 本次预留 > 总预算（`token_budget_exceeded`）。
+- **软模式**：除了上面两种情况都放行，并给出提醒：
+  - `unmeterable`、`unknown_unbounded`；
+  - `reservation_is_estimate`：没有单次预算时，按估算预留；
+  - `projected_over_budget`、`warn_threshold`。
+- **结算**（`settle`）：
+  - complete：按已知数字计；
+  - partial：已知部分，再加上预留中尚未被已知部分用掉的余量（记为未结算）；
+  - unknown：整笔预留都保留为未结算，**不归零**；
+  - 没有预留又未知的调用，记为 unbounded。
+
+### 内核（`agenthub_kernel/budget.py`）
+
+- 新表：
+  - `tree_token_budget`：每棵树一行，记 known、unsettled、reserved、unbounded；
+  - `token_budget_items`：每次调用一行。
+  - 用新表而不是在 `tree_quota` 上加列，因为 `create_all` 只建新表、不改旧表。
+- 计数器在第一次需要预算时，按树中已有的账本行惰性建立，所以设置预算之前的用量也计入。
+- **准入**在 `PolicyService.consume` 中进行：先占名额，然后做预算判断和预留，最后才消费审批。
+  - 预留是一条条件 UPDATE，WHERE 中写明总预算，两个调用不能一起越过同一笔余量。
+  - 拒绝时**先回滚**再抛出 `QuotaError`：Worker 在 QuotaError 后会提交，用来保存拒绝的副作用；不回滚的话，已占的名额会被提交。
+  - 结果：不占名额、不预留、审批保持 approved、适配器启动次数为 0，接口返回 409 和拒绝码。
+- Worker 把“该 Agent 是否报告用量”（适配器有没有 `usage_report`）传给 `consume(metered=...)`。
+- **结算**：`record_usage` 写账本时，在同一事务中调用 `settle_budget`，在途预留转为按账本计的用量。之后账本行变好时，按差额重新结算。计数器始终等于各调用行之和。重启后，`recover()` 把遗留的在途预留转为未结算。
+- **视图**：
+  - `turn_view.budget`：审批卡用。包括策略、本次估算、`provider_context: "unknown"`、树的已知、未结算、在途、unbounded 和剩余，以及本次调用的预留与结算结果；未准入时附带 `preview`，即现在执行会得到的判断。`preview` 假定该 Agent 报告用量，实际在执行时原子地重新判断。
+  - `/api/conversations/{cid}/usage` 增加 `budget` 字段，含当前策略，供页面表单使用。
+  - `describe()` 增加 `usage_reporting`。
+
+### 页面
+
+- 审批卡显示：
+  - 预算行：模式、总预算、单次预留、已知、未结算、在途、unbounded、剩余；
+  - 本次估算，并注明 provider 侧上下文未知；
+  - “按当前预算，执行时会被拒绝：…”，或者“执行时预留 N token；提示：…”；
+  - 严格模式下，Agent 不报告用量时另有提示。
+- 已执行的调用显示预留、已知实耗、未结算，以及是否超出单次预留。
+- 会话用量栏增加预算行和预算表单（总、单次、提醒、模式）。保存会生成新的策略版本，并撤销未消费的审批。表单在输入时不会被重绘覆盖。
+- `task.policy_updated` 显示为“策略已更新为 vN（配额或预算变更）；撤销了 M 个未消费的审批”，并重新读取用量。
+
+### 未做与未验证
+
+- 没有硬上限：需求中的“硬限制”只在适配器支持并验证了输出或总量上限时才能显示。目前两家都没有，所以单次预算只能事后标为 overrun。
+- 估算不使用分词器（T-1d 可以按 provider 增加）；金额预算未做。
+- 用户怎样处理 unbounded（用量未知又没有预留的调用）：目前只能切换为软预算，或者等 recover 补上用量。没有“人工确认用量”的入口。
+- 真实 Codex 和 Claude Code 上的预算准入未验证（T-1h）。
+
+### 验证
+
+- `tests/test_budget_rules.py` 共 33 项：估算、各种拒绝码、软模式提醒、结算（unknown 不归零）、策略校验、旧策略兼容。
+- `tests/http/test_budget_admission.py` 共 17 项，覆盖：
+  - 拒绝时启动次数为 0、审批未消费、不占名额、`total_invocations` 不变、计数器不变；
+  - 读到过期数字时，条件 UPDATE 仍然拒绝；
+  - 两个并发调用只启动一个；
+  - 不报告用量的 Agent：严格拒绝、软模式放行；
+  - 严格模式需要单次预算；
+  - 软模式下用量已知耗尽也拒绝；
+  - 预算设置之前的用量计入；
+  - unknown 保留预留；
+  - unbounded 在严格模式下拒绝，切换为软模式后放行；
+  - 重启后预留转为未结算；
+  - 审批卡字段、422、`describe`。
+- 变异检查：去掉拒绝时的回滚，7 项失败；去掉条件 UPDATE 中的总预算条件，“过期读取”一项失败。两处都已还原。
+- 浏览器在 `t1-usage-demo` 离线桩上走了一遍：
+  - 设置严格预算（总 50,000、单次 40,000）；
+  - 审批卡显示估算、已用 30,633、剩余 19,367，以及“执行时会被拒绝”；
+  - 点击同意后返回 409 `token_budget_exceeded`，调用保持“已同意，待执行”；
+  - 切换为软预算后（v3，撤销 1 个），新的调用被放行，审批卡显示预留 40,000、已知实耗 30,618，剩余为负；
+  - 修正了两处页面问题：保存按钮获得焦点时预算行不刷新；策略更新的横幅显示原始事件名。

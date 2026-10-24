@@ -251,7 +251,7 @@ function absorbMessage(m) {
       status: inv.status, approval_id: inv.approval_id, approval_status: inv.approval_status,
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
-      handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage,
+      handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
     });
   }
 }
@@ -387,8 +387,11 @@ function apply(ev, gen = S.viewGen) {
         const names = { "task.tree_stop": "任务树已停止：不会再调度新调用",
                         "task.tree_pause": "任务树已暂停", "task.tree_resume": "任务树已恢复",
                         "task.local_stop_requested": "已请求停止本地进程（远端停止未确认）",
-                        "task.unknown_settled": "未知状态已人工裁决" };
+                        "task.unknown_settled": "未知状态已人工裁决",
+                        "task.policy_updated": `策略已更新为 v${p.version}（配额或预算变更）；` +
+                                               `撤销了 ${p.revoked_approvals ?? 0} 个未消费的审批` };
         S.banner = names[ev.type] || ev.type;
+        if (ev.type === "task.policy_updated") needUsage(gen);  // the budget shown changed
       }
   }
   scheduleRender();
@@ -731,6 +734,7 @@ function renderCall(c) {
     notes.push(`provider 报告回合结束：${c.ended.turn_status || "无状态"}` +
                (c.ended.terminal ? "" : "（未确认终态，名额保留）"));
   }
+  notes.push(...budgetNotes(c, awaiting || c.status === "queued"));
   if (c.declined.length) notes.push(`已自动拒绝 ${c.declined.length} 个非本回合或无法登记的请求`);
   if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，名额保留`);
   if (c.interrupt) {
@@ -859,6 +863,85 @@ function summaryText(t) {
   return extra.length ? `${text}（${extra.join("，")}）` : text;
 }
 
+const BUDGET_WARN = {
+  unmeterable: "该 Agent 不报告用量", unknown_unbounded: "本任务有用量未知且没有预留的调用",
+  reservation_is_estimate: "未设单次预算，按估算预留", projected_over_budget: "预计会超过总预算",
+  warn_threshold: "已达到提醒阈值",
+};
+const MODE_LABEL = { strict: "严格", soft: "软" };
+
+/* The tree's token budget in one line (latest numbers from the usage view when loaded). */
+function budgetLine(b) {
+  const parts = [`${MODE_LABEL[b.mode] || b.mode}预算`];
+  if (b.total != null) parts.push(`总 ${fmtN(b.total)}`);
+  if (b.per_call != null) parts.push(`单次预留 ${fmtN(b.per_call)}`);
+  parts.push(`已用（已知）${fmtN(b.known)}`);
+  if (b.unsettled) parts.push(`未结算 ${fmtN(b.unsettled)}`);
+  if (b.reserved) parts.push(`在途预留 ${fmtN(b.reserved)}`);
+  if (b.unbounded) parts.push(`${b.unbounded} 次未知且无预留`);
+  if (b.remaining != null) parts.push(`剩余 ${fmtN(b.remaining)}`);
+  return parts.join(" · ");
+}
+
+/* What the approval card says about budgets: estimate, used, reserved, unknown, and
+   the decision this call would get now. The Worker decides again, atomically. */
+function budgetNotes(c, pending) {
+  const b = c.budget;
+  if (!b) return [];
+  const notes = [];
+  const tree = (S.usageConv && S.usageConv.budget && S.usageConv.budget.active) ? S.usageConv.budget : b;
+  if (pending && b.active) {
+    notes.push(`预算：${budgetLine({ ...b, ...pick(tree, ["known", "unsettled", "reserved", "unbounded", "remaining"]) })}`);
+    notes.push(`本次估算：Hub 发送部分约 ${fmtN(b.estimate_visible)} token；provider 侧上下文（指令、工具、历史）未知，不含在估算内`);
+    const p = b.preview;
+    if (p && !p.allowed) notes.push(`按当前预算，执行时会被拒绝：${p.message || p.code}`);
+    else if (p) notes.push(`执行时预留 ${fmtN(p.reserve)} token` +
+      (p.warnings.length ? `；提示：${p.warnings.map((w) => BUDGET_WARN[w] || w).join("；")}` : ""));
+    if (b.mode === "strict" && agentInfo(c.agent_id).usage_reporting === false)
+      notes.push("该 Agent 不报告用量：严格预算模式下不会启动");
+  } else if (pending && b.estimate_visible != null) {
+    notes.push(`本次估算：Hub 发送部分约 ${fmtN(b.estimate_visible)} token（provider 侧上下文未知）；未设预算`);
+  }
+  const t = b.this_call;
+  if (t && t.reservation) {
+    notes.push(`预算：预留 ${fmtN(t.reservation)}` +
+      (t.state === "reserved" ? "（在途）" : `，已知实耗 ${fmtN(t.known)}` +
+        (t.unsettled ? `，未结算 ${fmtN(t.unsettled)}` : "")) +
+      (t.overrun ? "；超出单次预留（provider 不能中途停在预算上）" : ""));
+  }
+  return notes;
+}
+
+const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+
+/* Budget form under the conversation usage bar. Saving replaces the tree's policy
+   (a new version); unconsumed approvals of this conversation are revoked. */
+function budgetForm(b, rootTaskId) {
+  const num = (id, value, ph) => el("input", { id, type: "number", min: "1", step: "1", placeholder: ph,
+                                               value: value == null ? "" : String(value), style: "width:110px" });
+  const mode = el("select", { id: "budgetMode" },
+    el("option", { value: "strict", selected: b.mode === "strict" ? "selected" : null }, "严格"),
+    el("option", { value: "soft", selected: b.mode === "soft" ? "selected" : null }, "软"));
+  return el("div", { class: "usage-line budget-form" },
+    "预算：总 ", num("budgetTotal", b.total, "不限"), " 单次 ", num("budgetPerCall", b.per_call, "不限"),
+    " 提醒 ", num("budgetWarn", b.warn_percent, "80"), "% ", mode, " ",
+    el("button", { class: "mini", disabled: S.busy.has("budget") ? "disabled" : null,
+                   title: "保存为新的策略版本；本会话未消费的审批会被撤销，需要重新提交",
+                   onclick: () => saveBudget(b.policy, rootTaskId) }, "保存预算"));
+}
+
+async function saveBudget(policy, rootTaskId) {
+  const val = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+  const body = { ...policy, token_budget_total: val("budgetTotal"), token_budget_per_call: val("budgetPerCall"),
+                 token_budget_warn_percent: val("budgetWarn") ?? 80, token_budget_mode: $("budgetMode").value };
+  await guarded("budget", async () => {
+    const r = await api("PATCH", `/api/tasks/${enc(rootTaskId)}/policy`, body);
+    toast(`预算已保存为策略 v${r.version}；撤销了 ${r.revoked_approvals} 个未消费的审批`);
+    needUsage();
+    needMessages();
+  });
+}
+
 function agentLines(groups) {
   return Object.entries(groups || {}).map(([agent, t]) =>
     el("div", { class: "usage-line" }, el("span", { class: "chip" }, agent), " ", summaryText(t)));
@@ -869,15 +952,22 @@ function agentLines(groups) {
 function renderUsage() {
   const bar = $("usageConv");
   const u = S.usageConv;
-  bar.hidden = !S.cid || !u || !u.total.calls;
-  if (!bar.hidden) {
+  const rootId = u && u.root_task && u.root_task.root_task_id;
+  bar.hidden = !S.cid || !u || (!u.total.calls && !rootId);
+  // Keep a half-typed budget form while events re-render the page.
+  const active = document.activeElement;
+  const editing = bar.contains(active) && active.matches(".budget-form input, .budget-form select");
+  if (!bar.hidden && !editing) {
     const root = u.root_task && u.root_task.total;
+    const b = u.budget || {};
     // replaceChildren() would print a null as text: only real nodes go in.
     bar.replaceChildren(...[
       el("div", { class: "usage-line" }, el("strong", {}, "本会话用量 "), summaryText(u.total)),
       ...(Object.keys(u.by_agent || {}).length > 1 ? agentLines(u.by_agent) : []),
       root && root.calls !== u.total.calls
         ? el("div", { class: "usage-line" }, "根任务（含子任务调用）：" + summaryText(root)) : null,
+      b.active ? el("div", { class: "usage-line" }, budgetLine(b)) : null,
+      rootId ? budgetForm(b, rootId) : null,
     ].filter(Boolean));
     bar.title = u.mapping_note || "";
   }

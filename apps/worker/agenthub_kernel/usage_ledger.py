@@ -26,6 +26,7 @@ from agenthub.usage import (
     not_launched_usage, unknown_usage,
 )
 from agenthub_kernel.adapters import adapter_for
+from agenthub_kernel.budget import budget_view, settle_budget
 from agenthub_kernel.db import ChatMessageRow, ConversationRow, InvocationRow, TaskRow, UsageLedgerRow
 
 #: Invocation statuses that mean the call was handed to its adapter and ended
@@ -90,6 +91,7 @@ def record_usage(session: Session, adapter: Any, invocation_id: str, *,
         )
         session.add(row)
     elif completeness_rank(rec.completeness) < completeness_rank(row.completeness) or _same(row, rec):
+        settle_budget(session, invocation_id)  # idempotent: the counters follow the row
         return row  # what is known is never replaced by less
     row.mapping, row.mapping_version = rec.mapping, rec.mapping_version
     row.completeness, row.source = rec.completeness, rec.source
@@ -97,6 +99,8 @@ def record_usage(session: Session, adapter: Any, invocation_id: str, *,
         setattr(row, name, getattr(rec, name))
     row.notes, row.raw, row.model = list(rec.notes), dict(rec.raw), rec.model
     session.flush()
+    # Same transaction: the call's budget reservation is settled against this row (T-1c).
+    settle_budget(session, invocation_id)
     return row
 
 
@@ -184,7 +188,9 @@ def conversation_usage(session: Session, conversation_id: str) -> dict[str, Any]
     root = conversation.root_task_id if conversation is not None else None
     return {"conversation_id": conversation_id, "mapping_note": MAPPING_NOTE,
             "calls": calls, "total": summarize(calls), "by_agent": by_agent(calls),
-            "root_task": root_task_usage(session, root) if root else None}
+            "root_task": root_task_usage(session, root) if root else None,
+            # The tree's token budget and spend (T-1c); its policy for editing.
+            "budget": budget_view(session, root)}
 
 
 def root_task_usage(session: Session, root_task_id: str) -> dict[str, Any]:

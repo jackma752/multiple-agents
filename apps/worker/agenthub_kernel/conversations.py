@@ -16,6 +16,7 @@ from agenthub_kernel.db import (
     ApprovalRow, ChatMessageRow, ConversationRow, InvocationRow, TaskRow,
 )
 from agenthub_kernel.service import PolicyService, QuotaError
+from agenthub_kernel.budget import budget_view
 from agenthub_kernel.usage_ledger import usage_view
 
 
@@ -55,7 +56,14 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "sent_text": inv.snapshot["task_input"] if inv.snapshot.get("handoff") else None,
         # Normalized ledger row (T-1a); None until the call is settled.
         "usage": usage_view(session, inv),
+        # Token budget of its tree as the approval card shows it (T-1c).
+        "budget": budget_view(session, _root_of_task(session, inv.task_id), inv=inv),
     }
+
+
+def _root_of_task(session: Session, task_id: str) -> Optional[str]:
+    task = session.get(TaskRow, task_id)
+    return task.root_task_id if task is not None else None
 
 
 def handoff_block(source: ChatMessageRow, agent_id: str) -> str:

@@ -844,7 +844,9 @@ class Worker:
                 }
 
             try:
-                plan = svc.consume(invocation_id)
+                # Token budgets need to know whether this agent reports usage.
+                plan = svc.consume(invocation_id,
+                                   metered=callable(getattr(target, "usage_report", None)))
             except QuotaError as exc:
                 # Persist denial side effects (e.g. expired/invalid marking)
                 # and stop: the adapter must not be started.

@@ -22,6 +22,7 @@ from agenthub.contracts import (
     RUNNING_OR_STARTING,
     TERMINAL_STATUSES,
 )
+from agenthub_kernel.budget import admit as admit_budget
 from agenthub_kernel.db import (
     ApprovalRow,
     ChatMessageRow,
@@ -451,12 +452,16 @@ class PolicyService:
     # The atomic consume gate
     # ------------------------------------------------------------------ #
 
-    def consume(self, invocation_id: str) -> dict[str, Any]:
+    def consume(self, invocation_id: str, *, metered: Optional[bool] = None) -> dict[str, Any]:
         """Atomically validate + consume approval, reserve a slot.
 
         Returns a dict the caller uses to start the adapter. Raises
         :class:`QuotaError` (and rolls back) on any failure, so the adapter is
         never started for an unapproved/expired/denied/quota-exceeded call.
+
+        ``metered``: whether the serving adapter reports usage (the Worker
+        knows the adapter; this service does not). Only token budgets read it;
+        ``None`` counts as not metered.
         """
         inv = self.session.get(InvocationRow, invocation_id)
         if inv is None:
@@ -577,6 +582,16 @@ class PolicyService:
                 "quota_exceeded",
                 f"quota reservation failed for tree {task.root_task_id}",
             )
+
+        # 6b. Token budget (T-1c): decide and reserve with a CAS of its own.
+        # The slot above is already reserved in this transaction, and the
+        # Worker commits after a QuotaError to keep denial side effects - so a
+        # budget refusal rolls back first: no slot, no reservation, approval
+        # untouched. Nothing before this point needs to persist.
+        decision = admit_budget(self.session, inv, task.root_task_id, policy, metered=metered)
+        if decision is not None and not decision.allowed:
+            self.session.rollback()
+            raise QuotaError(decision.code, decision.message or decision.code)
 
         # 7. Atomic consume + reserve slot
         # 7. Atomic consume + reserve slot.

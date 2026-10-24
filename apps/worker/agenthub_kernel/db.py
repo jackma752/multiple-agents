@@ -10,7 +10,8 @@ The approval & quota kernel and persistent local chat use these tables:
 ``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
 ``conversations``, ``chat_messages``, ``conversation_events``,
 ``conversation_event_cursors``, ``stream_chunks``, ``tool_approvals``,
-``tool_gate_closures`` and ``usage_ledger``.
+``tool_gate_closures``, ``usage_ledger``, ``tree_token_budget`` and
+``token_budget_items``.
 """
 
 from __future__ import annotations
@@ -328,6 +329,55 @@ class UsageLedgerRow(Base):
     notes = Column(JSON, nullable=False, default=list)
     raw = Column(JSON, nullable=False, default=dict)
     model = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class TreeTokenBudgetRow(Base):
+    """Per-tree token counters for atomic budget admission (T-1c).
+
+    A strict reservation is taken with one conditional UPDATE whose WHERE
+    clause encodes the total budget, as :class:`TreeQuotaRow` does for slots,
+    so concurrent calls cannot together cross the remaining budget. A new
+    table (not new columns on ``tree_quota``): ``create_all`` adds tables but
+    never alters existing ones. Always equal to the sums over
+    :class:`TokenBudgetItemRow`; created lazily from the tree's ledger rows.
+    """
+
+    __tablename__ = "tree_token_budget"
+
+    root_task_id = Column(String, primary_key=True)
+    known = Column(Integer, nullable=False, default=0)
+    unsettled = Column(Integer, nullable=False, default=0)
+    reserved = Column(Integer, nullable=False, default=0)
+    unbounded = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class TokenBudgetItemRow(Base):
+    """One call's part of its tree's token counters.
+
+    ``reservation`` is what the call reserved at admission (0 when admitted
+    without a budget); ``reserved`` is what it still holds in flight (0 once
+    settled). After settlement ``known`` / ``unsettled`` / ``unbounded`` say
+    what it charges (``agenthub.budget.settle``); a later, better ledger row
+    re-settles it by the difference.
+    """
+
+    __tablename__ = "token_budget_items"
+
+    invocation_id = Column(ForeignKey("invocations.id"), primary_key=True)
+    root_task_id = Column(String, index=True, nullable=False)
+    estimate = Column(Integer, nullable=False, default=0)
+    reservation = Column(Integer, nullable=False, default=0)
+    reserved = Column(Integer, nullable=False, default=0)
+    known = Column(Integer, nullable=False, default=0)
+    unsettled = Column(Integer, nullable=False, default=0)
+    unbounded = Column(Integer, nullable=False, default=0)
+    overrun = Column(Boolean, nullable=False, default=False)
+    state = Column(String, nullable=False, default="reserved")
+    mode = Column(String, nullable=True)
+    warnings = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 

@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, StrictBool
+from pydantic import BaseModel, StrictBool, StrictInt
 
 from agenthub.contracts import InvocationSnapshot, Policy
 from agenthub_kernel import Worker
@@ -80,6 +80,12 @@ class PolicyIn(BaseModel):
     max_depth: int = 1
     max_agent_invocations: int = 10
     collaboration_enabled: StrictBool = False
+    # Token budgets (T-1c). A full replacement like the fields above: leaving
+    # them out clears the budget.
+    token_budget_total: Optional[StrictInt] = None
+    token_budget_per_call: Optional[StrictInt] = None
+    token_budget_warn_percent: StrictInt = 80
+    token_budget_mode: Literal["strict", "soft"] = "strict"
 
 
 class ReconcileIn(BaseModel):
@@ -310,6 +316,10 @@ def create_app(
                 max_depth=body.max_depth,
                 max_agent_invocations=body.max_agent_invocations,
                 collaboration_enabled=body.collaboration_enabled,
+                token_budget_total=body.token_budget_total,
+                token_budget_per_call=body.token_budget_per_call,
+                token_budget_warn_percent=body.token_budget_warn_percent,
+                token_budget_mode=body.token_budget_mode,
             )
         except ValueError as exc:
             raise HTTPException(

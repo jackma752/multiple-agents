@@ -225,10 +225,34 @@ class Policy:
     run_time_limit_seconds: int = 600
     root_task_ttl_seconds: int = 3600
     collaboration_enabled: bool = False
+    #: Token budgets (T-1c, ``agenthub.budget``), counted in ledger tokens:
+    #: ``input_total`` (cache included) + ``output_total``. ``None`` = no
+    #: budget, so stored policies without these keys behave as before. The
+    #: per-call budget is what each call reserves against the tree; no adapter
+    #: can stop a turn at N tokens, so it is never a hard per-call limit.
+    token_budget_total: Optional[int] = None
+    token_budget_per_call: Optional[int] = None
+    token_budget_warn_percent: int = 80
+    #: ``strict``: refuse calls that cannot be reliably metered or reserved, and
+    #: any reservation that would cross the total. ``soft``: only a known
+    #: exhausted budget refuses; the rest is a warning.
+    token_budget_mode: str = "strict"
 
     def __post_init__(self) -> None:
         if type(self.collaboration_enabled) is not bool:
             raise ValueError("collaboration_enabled must be a boolean")
+        for name in ("token_budget_total", "token_budget_per_call"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+                raise ValueError(f"{name} must be a positive integer or null, got {value!r}")
+        warn = self.token_budget_warn_percent
+        if not isinstance(warn, int) or isinstance(warn, bool) or not 1 <= warn <= 100:
+            raise ValueError(f"token_budget_warn_percent must be 1-100, got {warn!r}")
+        if self.token_budget_mode not in {"strict", "soft"}:
+            raise ValueError("token_budget_mode must be strict or soft")
+        if (self.token_budget_total is not None and self.token_budget_per_call is not None
+                and self.token_budget_per_call > self.token_budget_total):
+            raise ValueError("token_budget_per_call cannot exceed token_budget_total")
         # Validate the whole policy up front so an illegal update is rejected
         # before anything is persisted (the caller rolls back on ValueError).
         for name in (
@@ -269,6 +293,10 @@ class Policy:
             "run_time_limit_seconds": self.run_time_limit_seconds,
             "root_task_ttl_seconds": self.root_task_ttl_seconds,
             "collaboration_enabled": self.collaboration_enabled,
+            "token_budget_total": self.token_budget_total,
+            "token_budget_per_call": self.token_budget_per_call,
+            "token_budget_warn_percent": self.token_budget_warn_percent,
+            "token_budget_mode": self.token_budget_mode,
             "version": self.version,
         }
 
