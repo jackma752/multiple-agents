@@ -47,6 +47,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -143,6 +144,9 @@ SUPERVISED_REASON = (
 
 #: How much of an error text the record keeps (CLI messages, not replies).
 ERROR_TEXT_LIMIT = 300
+
+_FIELD = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
 class ClaudeLaunchFailed(RuntimeError):
@@ -549,6 +553,21 @@ def parse_result(text: str) -> ParsedResult:
                         model_usage=numbers_only(obj.get("modelUsage")))
 
 
+def result_meta(obj: Optional[dict]) -> dict:
+    """The rest of the result, for diagnosis: numbers, flags, UUIDs and field names.
+
+    No text: every other string, and every list, is dropped. ``usage`` and
+    ``modelUsage`` are kept on their own.
+    """
+    fields = {k: v for k, v in (obj or {}).items() if isinstance(k, str) and _FIELD.match(k)}
+    return {
+        "numbers": {k: v for k, v in numbers_only(fields).items() if k not in ("usage", "modelUsage")},
+        "flags": {k: v for k, v in fields.items() if isinstance(v, bool)},
+        "ids": {k: v for k, v in fields.items() if isinstance(v, str) and _UUID.match(v)},
+        "fields": sorted(fields),
+    }
+
+
 def classify(run: ClaudeRun, parsed: ParsedResult) -> tuple[str, bool, str]:
     """``(verdict, terminal, detail)``; ``terminal=False`` keeps the quota slot.
 
@@ -780,6 +799,7 @@ class ClaudeCodeAdapter(AdapterContract):
             "usage": parsed.usage,
             "usage_raw": parsed.usage_raw,
             "model_usage": parsed.model_usage,
+            "result_meta": result_meta(parsed.result),
             "cost_usd_estimate": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "models": sorted(model_usage) if isinstance(model_usage, dict) else [],
             "num_turns": result.get("num_turns") if isinstance(result.get("num_turns"), int) else None,

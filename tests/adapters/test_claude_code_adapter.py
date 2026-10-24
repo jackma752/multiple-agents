@@ -128,6 +128,21 @@ def test_success_records_reply_usage_and_session(tmp_path):
     assert "native_session" not in adapter.last_result("inv-1")
 
 
+def test_the_rest_of_the_result_keeps_numbers_flags_and_ids_only(tmp_path):
+    obj = {**result_object(reply="REPLY-TEXT"), "num_turns": 2, "stop_reason": "end_turn",
+           "fast_mode": False, "notes": ["NOTE-TEXT"], "extra": {"n": 1, "why": "WHY-TEXT"},
+           "parent_id": "not-a-uuid"}
+    adapter = fake_adapter(tmp_path, scripted(obj))
+    adapter.start("inv-1", snap(adapter), gate_token="t")
+    meta = payload(adapter, "inv-1")["result_meta"]
+    assert meta["numbers"] == {"duration_ms": 1200, "duration_api_ms": 1100, "num_turns": 2,
+                               "total_cost_usd": 0.0123, "extra": {"n": 1}}
+    assert meta["flags"] == {"is_error": False, "fast_mode": False}
+    assert meta["ids"] == {"session_id": obj["session_id"], "uuid": obj["uuid"]}
+    assert {"result", "stop_reason", "notes", "parent_id", "usage", "modelUsage"} <= set(meta["fields"])
+    assert not any(t in json.dumps(meta) for t in ("REPLY-TEXT", "NOTE-TEXT", "WHY-TEXT", "end_turn", "not-a-uuid"))
+
+
 def test_success_without_usage_has_empty_usage(tmp_path):
     adapter = fake_adapter(tmp_path, scripted(result_object(with_usage=False)))
     assert adapter.start("inv-1", snap(adapter), gate_token="t").ok

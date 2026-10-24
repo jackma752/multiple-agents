@@ -492,6 +492,7 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - Claude Code：执行记录新增 `usage_raw`（整个 `usage` 的数字部分，包括 `server_tool_use`、`cache_creation` 和 `service_tier`）以及 `model_usage`（`modelUsage` 的数字部分）。原来的 4 个字段保留不变。
   - `ClaudeLaunchFailed` 记 `launched: false`，报告已知零值；
   - 有多个模型时记 `multi_model_usage_unverified`。
+  - 2026-10-25 新增 `result_meta`，保存 result 中其余字段的数字（如 `duration_api_ms`、`num_turns`）、布尔标志、UUID 形式的标识，以及字段名列表，只供排查用，不参与用量计算。其他字符串和所有列表都不保存，回复文本只保存在原有的 `final_message` 中。
 - exec：同样提供 `usage_report`，至多为 partial。
 
 ### 内核账本（D-T0-3）
