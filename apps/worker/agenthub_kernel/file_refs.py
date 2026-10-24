@@ -78,6 +78,19 @@ def read_lines(real: str, display: str) -> tuple[list[str], str]:
     return lines, hashlib.sha256(data).hexdigest()
 
 
+def file_blocks(root: Optional[str], specs) -> list[list[tuple]]:
+    """One block of context segments per merged range, or FileRefError/ValueError."""
+    blocks, block = [], []
+    for segment in file_segments(root, specs):
+        if segment[0] == SEPARATOR:
+            if block:
+                blocks.append(block)
+            block = []
+        else:
+            block.append(segment)
+    return blocks + ([block] if block else [])
+
+
 def file_segments(root: Optional[str], specs) -> list[tuple]:
     """Context segments for the referenced files, merged per file, or FileRefError/ValueError."""
     order: list[str] = []

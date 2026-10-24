@@ -48,8 +48,9 @@ SUMMARY_FRAME = "summary_frame"      # the Hub's fixed lines around a stage summ
 SUMMARY_CONTENT = "summary_content"  # the stage summary itself
 HISTORY_FRAME = "history_frame"      # the Hub's fixed line before a past message (summary drafting)
 HISTORY_CONTENT = "history_content"  # a past message of this conversation
+OUTPUT_HINT = "output_hint"          # the Hub's fixed output preference (agenthub.output)
 PART_KINDS = frozenset({USER_INPUT, HANDOFF_FRAME, HANDOFF_CONTENT, SEPARATOR, FILE_FRAME, FILE_SNIPPET,
-                        SUMMARY_FRAME, SUMMARY_CONTENT, HISTORY_FRAME, HISTORY_CONTENT})
+                        SUMMARY_FRAME, SUMMARY_CONTENT, HISTORY_FRAME, HISTORY_CONTENT, OUTPUT_HINT})
 #: Keys a part may carry besides its numbers: where its text came from. File
 #: parts carry the root-relative path, the line range and the whole file's hash;
 #: summary parts the summary's id and version; history parts the message and role.

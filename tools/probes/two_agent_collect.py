@@ -96,8 +96,9 @@ def collect(data_dir: Path, *, code: str, codex_binding: str = CODEX_BINDING,
     c2 = claude_records.get(second.get("id"), {})
     handoff = s2.get("handoff") or []
     source_text = codex_reply.get("text", "")
-    expected_input = "\n\n".join([user_text, FRAME.format(agent="codex", mid=codex_reply.get("id"),
-                                                           text=source_text)]) if codex_reply else None
+    frame = FRAME.format(agent="codex", mid=codex_reply.get("id"), text=source_text) if codex_reply else None
+    # Message first (runs before T-3) or context first (T-3 on): either is the fixed composition.
+    expected_inputs = ("\n\n".join([user_text, frame]), "\n\n".join([frame, user_text])) if frame else ()
     descendants = c1.get("descendants")
 
     facts = {
@@ -134,7 +135,7 @@ def collect(data_dir: Path, *, code: str, codex_binding: str = CODEX_BINDING,
         "handoff_points_at_codex_reply": len(handoff) == 1 and handoff[0].get("message_id") == codex_reply.get("id")
         and handoff[0].get("agent_id") == "codex"
         and handoff[0].get("sha256") == hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
-        "sent_input_is_text_plus_frame": expected_input is not None and s2.get("task_input") == expected_input,
+        "sent_input_is_text_plus_frame": s2.get("task_input") in expected_inputs,
         "code_in_user_text": bool(code) and code in user_text,
         "claude_reply_exact": claude_reply.get("text", "").strip() == code,
         "claude_reply_contains": code in claude_reply.get("text", ""),

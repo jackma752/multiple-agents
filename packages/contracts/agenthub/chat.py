@@ -12,6 +12,7 @@ from typing import Optional
 
 from agenthub.contracts import CONTEXT_MODES, INDEPENDENT
 from agenthub.files import MAX_REFS, parse_ref
+from agenthub.output import OUTPUT_STYLES
 
 
 CONTEXT_MODE = INDEPENDENT
@@ -38,8 +39,12 @@ class ConversationTurn:
     summary_id: Optional[int] = None
     #: Send this conversation's recent messages with this one (summary drafting).
     include_history: bool = False
+    #: Output preference added as a visible hint (``agenthub.output``); "" = none.
+    output_style: str = ""
 
     def __post_init__(self) -> None:
+        if self.output_style not in OUTPUT_STYLES:
+            raise ValueError("output_style must be '', 'concise' or 'detailed'")
         if self.summary_id is not None and (type(self.summary_id) is not int or self.summary_id < 1):
             raise ValueError("summary_id must be a positive integer")
         if type(self.include_history) is not bool:
@@ -79,7 +84,7 @@ class ConversationTurn:
             data["file_refs"] = list(data["file_refs"])
         else:
             del data["file_refs"]
-        for key in ("summary_id", "include_history"):  # likewise, absent unless used
+        for key in ("summary_id", "include_history", "output_style"):  # likewise, absent unless used
             if not data[key]:
                 del data[key]
         return hashlib.sha256(

@@ -64,12 +64,12 @@ def test_a_handoff_is_split_into_frame_and_content_and_claude_code_receives_the_
                         handoff_message_ids=[source["message_id"]]).json()
     p = turn["context_preview"]
     assert [x["kind"] for x in p["parts"]] == [
-        "user_input", "separator", "handoff_frame", "handoff_content", "handoff_frame"]
+        "handoff_frame", "handoff_content", "handoff_frame", "separator", "user_input"]  # context first
     texts = part_texts(turn["sent_text"], p)
-    assert texts[:2] == ["Review.", "\n\n"] and texts[3] == "OK"
-    assert all(x["message_id"] == source["message_id"] and x["agent_id"] == "codex" for x in p["parts"][2:])
-    assert p["parts"][3]["chars"] == turn["handoff"][0]["chars"]
-    assert p["parts"][3]["sha256"] == turn["handoff"][0]["sha256"]
+    assert texts[-2:] == ["\n\n", "Review."] and texts[1] == "OK"
+    assert all(x["message_id"] == source["message_id"] and x["agent_id"] == "codex" for x in p["parts"][:3])
+    assert p["parts"][1]["chars"] == turn["handoff"][0]["chars"]
+    assert p["parts"][1]["sha256"] == turn["handoff"][0]["sha256"]
     assert [o["input_total"] for o in p["provider_hidden"]["observed"]] == [1752, 1798]
     assert multi.approve_and_run(client, turn).json()["status"] == "succeeded"
     assert prompts == ["".join(texts)]  # exactly the parts, nothing more

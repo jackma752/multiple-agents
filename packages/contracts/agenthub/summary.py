@@ -38,7 +38,7 @@ MAX_HISTORY_CHARS = 30_000
 
 #: The fixed request a drafting call sends with the history.
 SUMMARY_INSTRUCTION = (
-    "Write a stage summary of the conversation history below so that work can continue in a fresh "
+    "Write a stage summary of the conversation history in this message so that work can continue in a fresh "
     "session without it. Use exactly these headings, each on its own line followed by its content: "
     "Goal:, Constraints:, Done:, Open issues:, Next steps:, Files:. Under Files:, list only file "
     "references that are needed, one per line as '- path' or '- path:L10-20'. Keep decisions, "

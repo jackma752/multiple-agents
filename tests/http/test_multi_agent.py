@@ -245,8 +245,9 @@ def test_a_handoff_sends_exactly_the_chosen_reply_and_the_approval_shows_it(hub)
     assert turn["handoff"] == [{"message_id": source["message_id"], "agent_id": "codex", "chars": 2,
                                 "sha256": __import__("hashlib").sha256(b"OK").hexdigest()}]
     sent = turn["sent_text"]
-    assert sent.startswith("Review this answer.\n\n--- Handoff: reply of codex (Hub message ")
-    assert "\nOK\n--- End of handoff ---" in sent
+    # Context first (T-3): the handed-over reply, then the user's message last.
+    assert sent.startswith("--- Handoff: reply of codex (Hub message ")
+    assert sent.endswith("\nOK\n--- End of handoff ---\n\nReview this answer.")
     # The approval binds the composed input; the user's message keeps only what was typed.
     snap = snapshot_of(client, turn)
     assert snap["task_input"] == sent and snap["handoff"] == turn["handoff"]

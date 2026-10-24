@@ -73,6 +73,8 @@ class TurnIn(MessageIn):
     # A stage summary sent instead of history; recent history (summary drafting).
     summary_id: Optional[int] = None
     include_history: bool = False
+    # Output preference added as a visible, approved hint (agenthub.output).
+    output_style: Literal["", "concise", "detailed"] = ""
 
     @field_validator("agent_id", "client_request_id")
     @classmethod
@@ -93,6 +95,7 @@ class PreviewIn(BaseModel):
     file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
     summary_id: Optional[int] = None
     include_history: bool = False
+    output_style: Literal["", "concise", "detailed"] = ""
 
 
 class SummaryIn(BaseModel):
@@ -365,7 +368,7 @@ def register_conversations(app, db) -> None:
         request = SimpleNamespace(text=body.text, context_mode=body.context_mode,
                                   handoff_message_ids=tuple(body.handoff_message_ids),
                                   file_refs=tuple(body.file_refs), summary_id=body.summary_id,
-                                  include_history=body.include_history)
+                                  include_history=body.include_history, output_style=body.output_style)
         with db.session() as session:
             conversation = None
             if body.conversation_id is not None:

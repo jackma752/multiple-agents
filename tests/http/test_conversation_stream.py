@@ -604,7 +604,8 @@ def test_turn_request_hash_unchanged_for_independent_turns():
     # The fields a turn had before context_mode (and later handoff_message_ids, file_refs,
     # summary_id, include_history) existed.
     legacy = {k: v for k, v in asdict(turn).items()
-              if k not in ("context_mode", "handoff_message_ids", "file_refs", "summary_id", "include_history")}
+              if k not in ("context_mode", "handoff_message_ids", "file_refs", "summary_id", "include_history",
+                           "output_style")}
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True, ensure_ascii=False)
                               .encode("utf-8")).hexdigest()
     assert turn.request_hash() == expected

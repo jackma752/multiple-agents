@@ -56,12 +56,14 @@ def test_a_summary_goes_out_instead_of_the_history(hub):
     turn = submit(client, cid, key="b", text="Continue.", summary_id=summary["summary_id"])
     p = turn["context_preview"]
     kinds = [x["kind"] for x in p["parts"]]
-    assert kinds[:5] == ["user_input", "separator", "summary_frame", "summary_content", "summary_frame"]
-    assert "file_snippet" in kinds  # the summary's file reference, read now
+    # Context first (T-3): the summary, then its file snippet, the user's message last.
+    assert kinds == ["summary_frame", "summary_content", "summary_frame", "separator",
+                     "file_frame", "file_snippet", "file_frame", "separator", "user_input"]
     assert all(x["summary_id"] == summary["summary_id"] and x["summary_version"] == 1
                for x in p["parts"] if x["kind"].startswith("summary"))
     texts = part_texts(turn["sent_text"], p)
-    assert "Line 12 crashes" in texts[3] and "line 10\nline 11\nline 12" in turn["sent_text"]
+    assert "Line 12 crashes" in texts[1] and texts[-1] == "Continue."
+    assert "line 10\nline 11\nline 12" in turn["sent_text"]
     assert EARLIER not in turn["sent_text"]
     approve(client, turn)
     assert run(client, turn).json()["status"] == "succeeded"

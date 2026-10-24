@@ -133,6 +133,13 @@
             <option value="supervised">用户监督模式</option>
           </select>
         </label>
+        <label title="作为可见的说明加在消息前，随审批绑定；是软目标，不会截断回复">输出
+          <select id="outputStyle" aria-label="输出偏好">
+            <option value="" selected>默认</option>
+            <option value="concise">简洁</option>
+            <option value="detailed">详细</option>
+          </select>
+        </label>
         <label title="把上一轮 Agent 回复所在的 provider thread 绑定进本次审批，续接其上下文">
           <input type="checkbox" id="resume" aria-label="续接上一轮（原生 thread）" /> 续接上一轮（原生 thread）
         </label>
@@ -589,6 +596,7 @@ async function send(event) {
       handoff_message_ids: S.handoff.slice(),
       file_refs: S.refs.slice(),
       summary_id: S.attachSummary, include_history: S.includeHistory,
+      output_style: $("outputStyle").value,
     });
     if (current(gen)) patch(call(turn.invocation_id), turn);
     $("text").value = "";
@@ -607,7 +615,7 @@ async function send(event) {
 /* What the composer would send now (nothing is created): the same composition the
    server will bind into the approval when the message is sent. */
 async function previewSend(refs = S.refs) {
-  if (!refs.length && !S.handoff.length && S.attachSummary == null && !S.includeHistory) {
+  if (!refs.length && !S.handoff.length && S.attachSummary == null && !S.includeHistory && !$("outputStyle").value) {
     S.sendPreview = null; renderComposer(); return true;
   }
   try {
@@ -616,6 +624,7 @@ async function previewSend(refs = S.refs) {
       context_mode: $("resume").checked ? "native_resume" : "independent",
       handoff_message_ids: S.handoff.slice(), file_refs: refs,
       summary_id: S.attachSummary, include_history: S.includeHistory,
+      output_style: $("outputStyle").value,
     });
     renderComposer();
     return true;
@@ -1043,7 +1052,15 @@ function contextLines(p) {
                                       { chars: 0, estimate: 0 });
   const size = (s) => `${fmtN(s.chars)} 字 ≈ ${fmtN(s.estimate)} token`;
   const of = (kind) => p.parts.filter((x) => x.kind === kind);
-  const lines = [`你的消息：${size(sum(of("user_input")))}`];
+  const lines = [`你的消息（放在最后）：${size(sum(of("user_input")))}`];
+  // The stable lead (summary, files, output hint): what a provider's prompt cache could reuse.
+  const STABLE = new Set(["summary_frame", "summary_content", "file_frame", "file_snippet", "output_hint", "separator"]);
+  let lead = 0;
+  while (lead < p.parts.length && STABLE.has(p.parts[lead].kind)) lead += 1;
+  const stable = p.parts.slice(0, lead).filter((x) => x.kind !== "separator");
+  if (stable.length) lines.push(`稳定前缀（摘要、文件、输出偏好按固定顺序在前，可供 provider 缓存复用）：${size(sum(stable))}；是否命中以结算后的缓存读为准`);
+  const hint = of("output_hint")[0];
+  if (hint) lines.push(`输出偏好：${size(hint)}（软目标，不会截断回复）`);
   const summary = of("summary_content")[0];
   if (summary) lines.push(`阶段摘要 v${summary.summary_version}：正文 ${size(summary)}，Hub 框架 ${size(sum(of("summary_frame")))}`);
   const history = of("history_content");
@@ -1130,8 +1147,20 @@ function usageText(u) {
   if (u.cache_write) cache.push("写 " + fmtN(u.cache_write));
   let text = `输入 ${fmtN(u.input_total)}${cache.length ? "（" + cache.join(" / ") + "）" : ""}` +
              ` / 输出 ${fmtN(u.output_total)}`;
+  if (u.input_total && Number.isInteger(u.cache_read)) text += ` · 缓存命中 ${pct(u.cache_read / u.input_total)}`;
   if (u.completeness === "partial") text += `（不完整：${why.join("；") || "原因未知"}）`;
   return text;
+}
+
+const pct = (x) => `${(x * 100).toFixed(x < 0.1 ? 1 : 0)}%`;
+
+/* Cache hit rate on its own line: the share of input the provider served from its
+   cache (where it was reported), never a saving and never mixed with totals. */
+function cacheLine(t) {
+  const c = t && t.cache;
+  if (!c || c.rate == null) return null;
+  return el("div", { class: "usage-line dim" },
+    `缓存命中率 ${pct(c.rate)}（${fmtN(c.cache_read)} / ${fmtN(c.input_total)}，按 ${c.calls} 次报告了缓存读的调用；表示 provider 从缓存读入的比例，不是节省量）`);
 }
 
 /* A ledger summary: known sums only, and how many calls are partial / unknown. */
@@ -1257,6 +1286,7 @@ function renderUsage() {
     // replaceChildren() would print a null as text: only real nodes go in.
     bar.replaceChildren(...[
       el("div", { class: "usage-line" }, el("strong", {}, "本会话用量 "), summaryText(u.total)),
+      cacheLine(u.total),
       ...(Object.keys(u.by_agent || {}).length > 1 ? agentLines(u.by_agent) : []),
       root && root.calls !== u.total.calls
         ? el("div", { class: "usage-line" }, "根任务（含子任务调用）：" + summaryText(root)) : null,
@@ -1462,6 +1492,7 @@ $("text").addEventListener("keydown", (e) => {
 });
 $("agent").addEventListener("change", () => { renderAgentPosture(); renderComposer(); });
 $("mode").addEventListener("change", renderComposer);
+$("outputStyle").addEventListener("change", () => previewSend());
 window.addEventListener("hashchange", () => {
   const cid = location.hash.slice(1);
   if (cid && cid !== S.cid) select(cid);

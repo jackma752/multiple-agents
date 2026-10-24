@@ -163,7 +163,20 @@ def summarize(views: list[dict[str, Any]]) -> dict[str, Any]:
                 missing[name] += 1
     return {"calls": len(views), "complete_calls": counts[COMPLETE],
             "partial_calls": counts[PARTIAL], "unknown_calls": counts[UNKNOWN],
-            "known": known, "calls_missing": missing}
+            "known": known, "calls_missing": missing, "cache": cache_rate(views)}
+
+
+def cache_rate(views: list[dict[str, Any]]) -> dict[str, Any]:
+    """Cache read as a share of total input, over the calls where BOTH are known (T-3).
+
+    Shown apart from totals and cost: it says how much input the provider
+    served from its cache, not how much was saved. ``rate`` is None without
+    any such call.
+    """
+    basis = [v for v in views if isinstance(v.get("cache_read"), int) and isinstance(v.get("input_total"), int)]
+    read, total = sum(v["cache_read"] for v in basis), sum(v["input_total"] for v in basis)
+    return {"calls": len(basis), "cache_read": read, "input_total": total,
+            "rate": round(read / total, 4) if total else None}
 
 
 def by_agent(views: list[dict[str, Any]]) -> dict[str, Any]:

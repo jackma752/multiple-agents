@@ -7,8 +7,11 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
 from agenthub.chat import CONTEXT_MODE, MAX_HANDOFF_CHARS, MAX_MESSAGE_CHARS, ConversationTurn
-from agenthub.context import FILE_SNIPPET, HANDOFF_CONTENT, HANDOFF_FRAME, SEPARATOR, USER_INPUT, compose
+from agenthub.context import (
+    FILE_SNIPPET, HANDOFF_CONTENT, HANDOFF_FRAME, OUTPUT_HINT, SEPARATOR, USER_INPUT, compose,
+)
 from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
+from agenthub.output import OUTPUT_HINTS
 
 #: Statuses in which a provider thread may still be executing a turn.
 THREAD_BUSY_STATUSES = ("starting", "running", "unknown")
@@ -18,7 +21,7 @@ from agenthub_kernel.db import (
 )
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.budget import budget_view
-from agenthub_kernel.file_refs import FileRefError, file_segments
+from agenthub_kernel.file_refs import FileRefError, file_blocks
 from agenthub_kernel.summaries import (
     history_segments, link_view, summary_segments, tree_owner, usable_summary,
 )
@@ -199,29 +202,43 @@ def compose_turn(session: Session, cid: str, request: Any, *, context_profile: O
     T-2: ``include_history`` adds this conversation's recent messages (for
     drafting a summary) and ``summary_id`` a stage summary, whose file
     references are read with the call's own.
+
+    T-3, context first: the blocks go out in a fixed order - stage summary,
+    file snippets, output hint, handoffs, history - and the user's message
+    LAST. What repeats from call to call (summary, files) forms a stable
+    prefix a provider's prompt cache can reuse; nothing time- or
+    random-dependent is put in front of it. Whether a provider actually hits
+    its cache is only observed afterwards (``usage.cache_read``).
     """
-    segments, handoff = [(USER_INPUT, request.text)], ()
+    blocks, handoff = [], ()
     refs = list(getattr(request, "file_refs", ()) or ())
-    if getattr(request, "include_history", False) and cid is not None:
-        segments += [(SEPARATOR, "\n\n"), *history_segments(session, cid)]
     summary_id = getattr(request, "summary_id", None)
     if summary_id is not None:
         if cid is None:
             raise QuotaError("summary_not_found", "a summary needs its conversation")
         summary = usable_summary(session, cid, summary_id)
-        segments += [(SEPARATOR, "\n\n"), *summary_segments(summary)]
+        blocks.append(summary_segments(summary))
         refs = list(dict.fromkeys([*(summary.file_refs or []), *refs]))
-    if request.handoff_message_ids:
-        blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
-        for block in blocks:
-            segments += [(SEPARATOR, "\n\n"), *block]
     if refs:
         try:
-            segments += file_segments(files_root, refs)
+            blocks += file_blocks(files_root, refs)
         except FileRefError as exc:
             raise QuotaError(exc.code, exc.message) from None
         except ValueError as exc:
             raise QuotaError("invalid_file_ref", str(exc)) from None
+    style = getattr(request, "output_style", "") or ""
+    if style:
+        blocks.append([(OUTPUT_HINT, OUTPUT_HINTS[style])])
+    if request.handoff_message_ids:
+        handoff_blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
+        blocks += handoff_blocks
+    if getattr(request, "include_history", False) and cid is not None:
+        blocks.append(history_segments(session, cid))
+    if request.text:
+        blocks.append([(USER_INPUT, request.text)])
+    segments = []
+    for i, block in enumerate(blocks):
+        segments += ([(SEPARATOR, "\n\n")] if i else []) + list(block)
     task_input, preview = compose(segments, context_mode=request.context_mode, profile=context_profile)
     if len(task_input) > MAX_MESSAGE_CHARS:
         raise QuotaError("handoff_too_large" if not (refs or summary_id or request.include_history)
