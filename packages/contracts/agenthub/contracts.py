@@ -417,6 +417,14 @@ class AdapterContract:
     #   Only ``approved`` may be answered with ``accept``, once, for that exact
     #   request; every other outcome is answered ``decline`` (or not at all
     #   when the request is gone). Approving a run never approves its tools.
+    # * ``usage_report(invocation_id) -> dict | None`` - this call's usage for
+    #   the kernel ledger (T-1a): ``{"mapping", "usage", "source", "notes",
+    #   "model"}`` as defined in :mod:`agenthub.usage` (numbers and machine
+    #   codes only). ``None`` means the adapter has no record of the call; an
+    #   adapter offering this records every call BEFORE launching anything, so
+    #   right after its own definitive refusal ``None`` proves nothing ran.
+    #   Missing usage is reported as such, never as zero. Without this method
+    #   the ledger records ``adapter_reports_no_usage`` (unknown).
     # * ``interrupt_invocation(invocation_id) -> dict`` - ask the provider to
     #   interrupt a turn this process is driving. Returns at least
     #   ``interrupt_requested`` / ``interrupt_accepted``. It NEVER settles or

@@ -9,8 +9,8 @@ The approval & quota kernel and persistent local chat use these tables:
 ``tasks`` (the root-task tree), ``invocations``, ``approvals``,
 ``policy_versions``, ``events``, ``quota_reservations``, ``tree_quota``,
 ``conversations``, ``chat_messages``, ``conversation_events``,
-``conversation_event_cursors``, ``stream_chunks``, ``tool_approvals`` and
-``tool_gate_closures``.
+``conversation_event_cursors``, ``stream_chunks``, ``tool_approvals``,
+``tool_gate_closures`` and ``usage_ledger``.
 """
 
 from __future__ import annotations
@@ -295,6 +295,41 @@ class ToolGateClosureRow(Base):
     reason = Column(String, nullable=False)
     closed_by = Column(String, nullable=False)
     closed_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class UsageLedgerRow(Base):
+    """One call's token usage in Hub terms (T-1a, ``agenthub.usage``).
+
+    One row per invocation that reached its adapter, written in the same
+    transaction as its settlement, failures and interrupts included. A number
+    that is not known is NULL, never 0; ``completeness`` and ``notes`` (machine
+    codes) say why. ``raw`` holds the provider's numbers only - no prompt,
+    reply or tool text. Conversation, root-task and per-agent totals are
+    queries over this table, never a second copy.
+    """
+
+    __tablename__ = "usage_ledger"
+
+    invocation_id = Column(ForeignKey("invocations.id"), primary_key=True)
+    root_task_id = Column(String, index=True, nullable=False)
+    task_id = Column(String, nullable=False)
+    agent_id = Column(String, index=True, nullable=False)
+    conversation_id = Column(String, index=True, nullable=True)
+    mapping = Column(String, nullable=False)
+    mapping_version = Column(Integer, nullable=False)
+    completeness = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    input_total = Column(Integer, nullable=True)
+    input_uncached = Column(Integer, nullable=True)
+    cache_read = Column(Integer, nullable=True)
+    cache_write = Column(Integer, nullable=True)
+    output_total = Column(Integer, nullable=True)
+    reasoning = Column(Integer, nullable=True)
+    notes = Column(JSON, nullable=False, default=list)
+    raw = Column(JSON, nullable=False, default=dict)
+    model = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class ConversationEventCursorRow(Base):

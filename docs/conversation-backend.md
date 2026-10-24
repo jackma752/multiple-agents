@@ -441,3 +441,106 @@ Windows `.venv` 实际输出：新文件 **22 passed**，连续 4 次（约 5.7 
 - 直接调用适配器时，快照需要带绑定身份；
 - 真实 factory 在监督模式下的拒绝码改为 `appserver_supervised_conditions`；
 - `thread/resume` 的参数多了 cwd 和固定设置。
+
+## T-1a：用量归一化与账本（2026-10-24，离线）
+
+依据 [T-0 基线](t0-usage-baseline.md) 第 3、5、6、7 节，修复缺陷 D-T0-1 到 D-T0-7。分支 `feat/t1-usage-ledger`，全程只用离线桩，没有真实调用。
+
+### 契约 `agenthub.usage`（新模块）
+
+- `UsageRecord`：`mapping`、`mapping_version`、`completeness`、`source`，以及 `input_total`、`input_uncached`、`cache_read`、`cache_write`、`output_total`、`reasoning`，再加 `notes`、`raw`、`model`。
+  - 不知道的数字是 `None`，永远不写成 0。
+- `normalize_usage(report)`：按映射版本 1 计算：
+  - Codex：输入已含缓存，输出已含推理；`total` 不等于输入加输出，或者缓存比输入还大，记 `mapping_mismatch`；`cacheWriteInputTokens` 不为 0 时记 `mapping_unverified`，不参与减法。
+  - Claude Code：总输入 = `input_tokens` + 缓存写 + 缓存读；缺少缓存字段时，总输入为 `None`，并记 `cache_fields_missing`。
+  - exec：一律带 `exec_usage_semantics_unverified`。
+- 完整性由说明代码决定：`UNKNOWN_NOTES` 中的任何一个都判为 unknown，此时数字全部清空；`PARTIAL_NOTES` 中的任何一个都判为 partial。
+- `notes` 只能是机器代码，正则为 `[a-z0-9_.:-]{1,64}`，其余一律替换为 `invalid_note_dropped`。`raw` 只保留数字和嵌套数字；字符串只保留 `service_tier` 这种短枚举值。
+- `not_launched_usage()`：适配器确认没有启动时的已知零值。
+- 适配器的可选扩展 `usage_report(invocation_id)`，说明写在 `contracts.py` 的扩展注释中：
+  - 返回 `None` 表示适配器没有这次调用的记录；
+  - 提供这个方法的适配器必须在启动之前就写下记录。
+
+### app-server：一个回合的用量（D-T0-1、4、6、7）
+
+- 新模块 `agenthub_adapters/appserver_usage.py`。本回合用量 = 回合结束时 thread 的 `total` − 回合开始前的 `total`：
+  - 新 thread 从 0 开始；
+  - 续接从那一条重放的 `total` 开始。
+- 各条 `last` 之和作为第二种推导：
+  - 两者一致时为 complete；
+  - 不一致时记 `last_sum_mismatch`，取 `total` 的差；
+  - 续接时没有可用的重放，记 `resume_baseline_unknown`，取各条 `last` 之和；
+  - `total` 变小时记 `total_decreased`，取各条 `last` 之和。
+- 同一 `total` 的更新重复投递只算一次（`duplicate_usage_update`）。格式不对的更新跳过（`usage_update_malformed`）。
+- 终态之后才到的、属于本回合的用量：
+  - 照常计入 `late_events`；
+  - 同时保留并计入用量，记 `late_usage`，判为 partial。
+- 不再读取 `turn/completed.turn.usage`（schema 中没有这个字段）。
+- 执行记录新增 `usage_source`、`usage_notes`、`usage_updates`（只有数字）、`replayed_usage_total`、`native_child_usage`、`model`。`usage` 现在是推导出的本回合用量。
+- 子 thread 的用量通知记入 `native_child_usage`，仍然计为异常，不计入父回合。只要观测到子 Agent，就记 `native_children_not_metered`。
+- 其他情况：
+  - 没有发 `turn/start` 就被拒绝：已知零值（`no_turn_requested`）；
+  - 回合没有终态：记 `turn_not_terminal`；
+  - 续接复用了上一回合的 ID：记 `turn_id_reused`，判为 unknown。
+- T-1a 之前的执行记录只有最后一次请求的用量，按 `legacy_last`（partial）报告，不重新推导。
+- 桩：普通回合改为在 `turn/completed` 之前发 `thread/tokenUsage/updated`，`total` 跨续接累计；被中断的回合不发。新场景：
+  - `usage-multi-request`、`usage-missed-update`：S3 第三次的两组真实数字；
+  - `usage-duplicate`、`usage-none`、`usage-late`、`usage-cache-write`、`native-spawn-usage`。
+
+### Claude Code 与 exec（D-T0-5）
+
+- Claude Code：执行记录新增 `usage_raw`（整个 `usage` 的数字部分，包括 `server_tool_use`、`cache_creation` 和 `service_tier`）以及 `model_usage`（`modelUsage` 的数字部分）。原来的 4 个字段保留不变。
+  - `ClaudeLaunchFailed` 记 `launched: false`，报告已知零值；
+  - 有多个模型时记 `multi_model_usage_unverified`。
+- exec：同样提供 `usage_report`，至多为 partial。
+
+### 内核账本（D-T0-3）
+
+- 新表 `usage_ledger`（`UsageLedgerRow`），以 `invocation_id` 为主键，带 `root_task_id`、`task_id`、`agent_id`、`conversation_id`。启动时 `create_all` 增量建表，不改旧表。
+- 写入点 `agenthub_kernel/usage_ledger.record_usage`，与结算在同一个事务中：
+  - Worker 的正常结算，不论有没有回复；
+  - 启动时抛出异常（`adapter_start_raised`）；
+  - 并发停止已标为 unknown 的分支；
+  - `recover()` 的已结算和 unknown 分支；
+  - 重启补记 `restore_usage`，摘要中返回 `usage_restored`。
+- 只能提升，不能降级：unknown → partial → complete，已知的不会被更少的覆盖。数据相同时不重写。每次调用最多一行，所以 SSE 重放、重启补回、重复结算都不会重复入账。
+- 在本进程中，适配器刚给出确定的拒绝，又没有记录：判为已知零值（`not_launched`）。重启之后不做这个推断。
+- 视图：
+  - `turn_view` 增加 `usage` 字段：账本行的公开形状，不含 `raw`；
+  - 已结算但没有账本行时，返回 `not_recorded`（unknown），不返回 0；
+  - 没有结算时为 `null`。
+- `GET /api/conversations/{cid}/usage`：
+  - 按调用、按 Agent 和合计返回；
+  - 合计只加已知的数字，同时给出 complete、partial、unknown 各有多少次调用，以及每个字段缺失的调用数；
+  - 鉴权与其他会话接口相同：未登录 401，Agent token 403，他人的会话 404。
+  - 根任务的合计（`root_task_usage`）也是对账本的查询，暂时没有对外接口。
+- 事件流**没有**新增事件类型。页面在调用进入 succeeded、failed、canceled、timed_out 或 unknown 之后，以及读取消息之后，重新读取 `/usage`。
+
+### 页面（D-T0-2）
+
+- 用量一律按归一化后的口径显示，例如：
+  - “输入 1,798（缓存读 1,161 / 写 635）/ 输出 15”；
+  - 不完整时附上原因：“（不完整：按各次请求相加；续接起点未知）”；
+  - 未知时显示“未知（provider 未报告用量；回合未正常结束）”。
+- 调用卡在结算后都会显示用量，没有回复的调用也一样；回复行显示同一个值。
+
+### 未做与未验证
+
+- 预算、准入预留和审批卡上的估算（T-1c）；按根任务和项目的页面汇总（T-1b）；金额。
+- 真实验证（T-1h 单独申请）：
+  - 重放中的 `total` 就是上一回合结束时的累计：离线由两种推导互相印证，真实情况只有 `last` 的记录；
+  - 多请求回合经过 Hub 的入账；
+  - Claude Code 的账本口径。
+- 在 T-1a 之前就已结算、又不在执行库中的调用，补记时为 `no_adapter_record`（unknown）。
+
+### 验证
+
+- 新测试共 60 项，全部离线：
+  - `tests/test_usage_normalization.py`：28 项，用 T-0 的真实数字作为测试数据；
+  - `tests/adapters/test_usage_reports.py`：19 项；
+  - `tests/http/test_usage_ledger.py`：13 项。
+- 浏览器在 `t1-usage-demo` 离线桩（端口 8175）上核对：
+  - Codex 调用卡和回复都显示“输入 30,539（缓存读 24,832）/ 输出 79”，修复前只会显示最后一次请求的值；
+  - Claude Code 桩显示“输入 12 / 输出 3”；
+  - 控制台没有错误。
+- 全量结果见交接文档和提交说明。

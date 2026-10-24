@@ -17,6 +17,7 @@ from agenthub_kernel.conversations import (
     conversation_view, owned_conversation, submit_turn, turn_view,
 )
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
+from agenthub_kernel.usage_ledger import conversation_usage
 
 SSE_RETRY_MS = 3000
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -135,6 +136,17 @@ def register_conversations(app, db) -> None:
                 "has_more": len(rows) > limit,
                 "next_after_id": messages[-1]["message_id"] if messages else after_id,
             }
+
+    @app.get("/api/conversations/{cid}/usage")
+    def get_conversation_usage(cid: str, principal: Principal = Depends(authenticate)):
+        """Ledger rows of this conversation's calls, per agent and in total.
+
+        Totals add known numbers only and count partial / unknown calls; an
+        unknown call is never shown as zero (T-1a).
+        """
+        with db.session() as session:
+            require_conversation(session, cid, principal)
+            return conversation_usage(session, cid)
 
     def read_page(session, cid, after: int, limit: int):
         """Stored events (IDs/statuses only) plus server-attached chunk text.

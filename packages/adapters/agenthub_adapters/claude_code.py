@@ -63,9 +63,13 @@ from agenthub.contracts import (
     InvocationSnapshot,
     execution_admission,
 )
+from agenthub.usage import MAPPING_CLAUDE_CODE, numbers_only
 from agenthub_adapters.store import FAILED, FINISHED, RUNNING, ExecutionStore
 
 TRANSPORT = "claude-code-cli"
+#: A launch that provably never started a process spent nothing.
+NOT_LAUNCHED_USAGE = {"input_tokens": 0, "output_tokens": 0,
+                      "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}
 AGENT_ID = "claude-code"
 
 #: The reviewed Claude Code identity. Static inspection only (2026-10-23):
@@ -155,6 +159,10 @@ class ParsedResult:
     empty: bool = False
     malformed: bool = False
     usage: dict = field(default_factory=dict)
+    #: The whole ``usage`` and ``modelUsage`` objects, numbers only (D-T0-5),
+    #: so the ledger can be re-normalized later; no text is kept.
+    usage_raw: dict = field(default_factory=dict)
+    model_usage: dict = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -523,7 +531,8 @@ def parse_result(text: str) -> ParsedResult:
     if isinstance(raw_usage, dict):
         usage = {k: raw_usage[k] for k in USAGE_FIELDS
                  if isinstance(raw_usage.get(k), (int, float)) and not isinstance(raw_usage.get(k), bool)}
-    return ParsedResult(result=obj, usage=usage)
+    return ParsedResult(result=obj, usage=usage, usage_raw=numbers_only(raw_usage),
+                        model_usage=numbers_only(obj.get("modelUsage")))
 
 
 def classify(run: ClaudeRun, parsed: ParsedResult) -> tuple[str, bool, str]:
@@ -729,7 +738,7 @@ class ClaudeCodeAdapter(AdapterContract):
         except ClaudeLaunchFailed as exc:
             # Provably nothing is running: definitive, the slot may be freed.
             self.store.set_payload(invocation_id, {**facts, "verdict": FAILED, "terminal": True,
-                                                   "detail": str(exc)[:200]})
+                                                   "launched": False, "detail": str(exc)[:200]})
             self.store.set_status(invocation_id, FAILED, str(exc)[:400])
             return AdapterStartResult("", ok=False, terminal=True, detail=str(exc)[:200])
         except Exception as exc:  # noqa: BLE001 - a process may exist
@@ -755,6 +764,8 @@ class ClaudeCodeAdapter(AdapterContract):
             # Only a confirmed success carries a reply; an error text is the CLI's own message.
             "final_message": result.get("result", "") if verdict == FINISHED else "",
             "usage": parsed.usage,
+            "usage_raw": parsed.usage_raw,
+            "model_usage": parsed.model_usage,
             "cost_usd_estimate": cost if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
             "models": sorted(model_usage) if isinstance(model_usage, dict) else [],
             "num_turns": result.get("num_turns") if isinstance(result.get("num_turns"), int) else None,
@@ -819,3 +830,28 @@ class ClaudeCodeAdapter(AdapterContract):
         # No native_session: this adapter cannot resume, so nothing may bind one.
         return {"status": record.get("status"), "thread_id": payload.get("thread_id", ""),
                 "final_message": payload.get("final_message", ""), "usage": payload.get("usage", {})}
+
+    def usage_report(self, invocation_id: str) -> Optional[dict[str, Any]]:
+        """This call's usage for the kernel ledger; ``None`` without a record.
+
+        Each call is its own process and session (``--no-session-persistence``),
+        so the result's ``usage`` is this call's. Whether it also covers the
+        CLI's helper requests under several models is unverified.
+        """
+        record = self.store.get(invocation_id)
+        if not record:
+            return None
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if payload.get("launched") is False:
+            return {"mapping": MAPPING_CLAUDE_CODE, "usage": dict(NOT_LAUNCHED_USAGE),
+                    "source": "not_launched", "notes": []}
+        # Records from before T-1a hold the four documented fields only.
+        usage = payload.get("usage_raw") or payload.get("usage") or {}
+        notes: list[str] = []
+        models = payload.get("models") if isinstance(payload.get("models"), list) else []
+        if len(models) > 1:
+            notes.append("multi_model_usage_unverified")
+        if not usage:
+            notes.append("no_usage_reported")
+        return {"mapping": MAPPING_CLAUDE_CODE, "usage": usage, "source": "cli_result",
+                "notes": notes, "model": models[0] if len(models) == 1 else None}

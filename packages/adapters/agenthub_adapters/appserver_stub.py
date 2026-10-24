@@ -59,6 +59,13 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``recall-replay-twice`` the resume sends the previous turn's usage twice
 ``recall-failed``    the resumed turn answers the code word, then ends failed
 ``recall-failed-nocode`` the resumed turn answers UNKNOWN, then ends failed
+``usage-multi-request`` two model requests in one turn (S3 run 3's real numbers)
+``usage-missed-update`` the same two requests; the first one's update never comes
+``usage-duplicate``  the turn's one usage update is delivered twice
+``usage-none``       a completed turn with no usage update at all
+``usage-late``       the usage update arrives after turn/completed
+``usage-cache-write`` a non-zero ``cacheWriteInputTokens`` (meaning unverified)
+``native-spawn-usage`` ``native-spawn`` plus a usage update of the child thread
 ===================  ==========================================================
 
 Thread answers echo the requested cwd and report ``sandbox`` as the object the
@@ -67,6 +74,13 @@ tested build returns (``{"type": "readOnly", "networkAccess": false}``) when
 earlier on the thread and, like the tested build (S5), one restored
 ``thread/tokenUsage/updated`` owned by the previous turn. The stub keeps no
 conversation content.
+
+Usage follows the real protocol (docs/t0-usage-baseline.md): one
+``thread/tokenUsage/updated`` per model request, before ``turn/completed``,
+with ``last`` (that request) and ``total`` (the thread so far, continued
+across a resume); ``turn/completed`` carries none. An interrupted turn reports
+none (the one real interrupt, S4, had none). Numbers are synthetic except the
+S3 pair.
 
 :class:`InMemoryStubFactory` and :class:`StdioStubFactory` are the two trusted
 transport factories the app-server adapter admits as offline simulation.
@@ -140,6 +154,13 @@ SCENARIOS = (
     "recall-replay-twice",
     "recall-failed",
     "recall-failed-nocode",
+    "usage-multi-request",
+    "usage-missed-update",
+    "usage-duplicate",
+    "usage-none",
+    "usage-late",
+    "usage-cache-write",
+    "native-spawn-usage",
 )
 
 #: Two-call memory scenarios (S6-3): the first call plants, the resumed one recalls.
@@ -154,9 +175,42 @@ RECALL_SCENARIOS = frozenset({
 DEFAULT_DECISIONS = ["accept", "cancel"]
 WRAPPED_COMMAND = ('"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" '
                    "-Command 'Get-ChildItem -Name'")
-#: Usage the tested build restores on resume (shape of thread/tokenUsage/updated).
-REPLAY_USAGE = {"inputTokens": 7, "cachedInputTokens": 0, "outputTokens": 3,
-                "reasoningOutputTokens": 0, "totalTokens": 10}
+USAGE_FIELDS = ("inputTokens", "cachedInputTokens", "cacheWriteInputTokens",
+                "outputTokens", "reasoningOutputTokens", "totalTokens")
+
+
+def stub_turn_usage(n: int) -> dict:
+    """Synthetic usage of a stub thread's n-th turn (TokenUsageBreakdown shape)."""
+    inp, out = 100 + 10 * n, 2 + n
+    return {"inputTokens": inp, "cachedInputTokens": 64, "cacheWriteInputTokens": 0,
+            "outputTokens": out, "reasoningOutputTokens": 0, "totalTokens": inp + out}
+
+
+def add_usage(a: dict, b: dict) -> dict:
+    return {k: a.get(k, 0) + b.get(k, 0) for k in USAGE_FIELDS}
+
+
+def stub_thread_total(turns: int) -> dict:
+    """The thread total after ``turns`` stub turns (all zero for none)."""
+    total = {k: 0 for k in USAGE_FIELDS}
+    for n in range(1, turns + 1):
+        total = add_usage(total, stub_turn_usage(n))
+    return total
+
+
+#: What a resume after one earlier turn restores as ``last`` (the tested build
+#: replays the previous turn's usage, S5).
+REPLAY_USAGE = stub_turn_usage(1)
+#: S3 run 3: one turn, two model requests (rollout token_count, T-0 §4.1).
+S3_REQUESTS = (
+    {"inputTokens": 15211, "cachedInputTokens": 12416, "cacheWriteInputTokens": 0,
+     "outputTokens": 72, "reasoningOutputTokens": 0, "totalTokens": 15283},
+    {"inputTokens": 15328, "cachedInputTokens": 12416, "cacheWriteInputTokens": 0,
+     "outputTokens": 7, "reasoningOutputTokens": 0, "totalTokens": 15335},
+)
+#: ``native-spawn-usage``: what the child thread reports (never the parent's).
+CHILD_USAGE = {"inputTokens": 900, "cachedInputTokens": 0, "cacheWriteInputTokens": 0,
+               "outputTokens": 9, "reasoningOutputTokens": 0, "totalTokens": 909}
 
 #: Deltas of the ``stream`` scenario; the final item text is their join.
 STREAM_PIECES = ("Hel", "lo, ", "流式", " world")
@@ -391,10 +445,36 @@ class ScriptedAppServer:
         self.reply(request_id, {})
 
     def _replay_usage(self, turn_id: str) -> None:
+        """The restored usage of the previous turn: its ``last``, the thread total."""
+        earlier = len(self.history)
+        self._usage(stub_turn_usage(earlier), stub_thread_total(earlier), turn_id=turn_id)
+
+    def _usage(self, last: dict, total: dict, *, turn_id: Optional[str] = None,
+               thread_id: Optional[str] = None) -> None:
         self.notify("thread/tokenUsage/updated", {
-            "threadId": self.thread_id, "turnId": turn_id,
-            "tokenUsage": {"last": dict(REPLAY_USAGE), "total": dict(REPLAY_USAGE)},
+            "threadId": thread_id or self.thread_id, "turnId": turn_id or self.turn_id,
+            "tokenUsage": {"last": dict(last), "total": dict(total), "modelContextWindow": 475000},
         })
+
+    def _report_usage(self) -> None:
+        """This turn's usage updates (one per model request), per scenario."""
+        scenario = self.scenario
+        if scenario in ("usage-none", "usage-late"):
+            return
+        base = stub_thread_total(len(self.history)) if self.resumed else stub_thread_total(0)
+        if scenario in ("usage-multi-request", "usage-missed-update", "approval-default"):
+            first, second = S3_REQUESTS
+            after_first = add_usage(base, first)
+            if scenario != "usage-missed-update":
+                self._usage(first, after_first)
+            self._usage(second, add_usage(after_first, second))
+            return
+        own = stub_turn_usage(len(self.history) + 1 if self.resumed else 1)
+        if scenario == "usage-cache-write":
+            own = {**own, "cacheWriteInputTokens": 5}
+        self._usage(own, add_usage(base, own))
+        if scenario == "usage-duplicate":
+            self._usage(own, add_usage(base, own))
 
     def _load_state(self) -> list[dict]:
         if not self.state_path:
@@ -460,15 +540,17 @@ class ScriptedAppServer:
     def _finish_turn(self, status: str) -> None:
         self._save_turn(status)
         self.turn_status = status
+        if status != TURN_STATUS_INTERRUPTED:
+            self._report_usage()
+        # Schema: Turn has no usage field; usage only ever comes as tokenUsage/updated.
         self.notify(TURN_COMPLETED, {
             "threadId": self.thread_id,
-            "turn": {
-                "id": self.turn_id,
-                "items": [],
-                "status": status,
-                "usage": {"inputTokens": 11, "outputTokens": 2},
-            },
+            "turn": {"id": self.turn_id, "items": [], "status": status},
         })
+        if self.scenario == "usage-late":
+            own = stub_turn_usage(len(self.history) + 1 if self.resumed else 1)
+            base = stub_thread_total(len(self.history)) if self.resumed else stub_thread_total(0)
+            self._usage(own, add_usage(base, own))
 
     def _emit_item(self, item_id: str, kind: str) -> None:
         payload = {"id": item_id, "type": kind}
@@ -558,7 +640,7 @@ class ScriptedAppServer:
             self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
                                               "threadId": self.thread_id, "delta": "working"})
             return
-        if scenario in ("native-spawn", "native-spawn-finished"):
+        if scenario in ("native-spawn", "native-spawn-finished", "native-spawn-usage"):
             spawn = {"id": "item-collab-1", "type": "collabAgentToolCall", "tool": "spawnAgent",
                      "senderThreadId": self.thread_id, "receiverThreadIds": ["child-thread-1"],
                      "agentsStates": {}, "status": "inProgress",
@@ -573,6 +655,9 @@ class ScriptedAppServer:
                             "kind": "completed"}
                 self.notify(ITEM_COMPLETED, {"item": activity, "threadId": self.thread_id,
                                              "turnId": self.turn_id})
+            if scenario == "native-spawn-usage":
+                # The child's own spending, on the parent's connection.
+                self._usage(CHILD_USAGE, CHILD_USAGE, thread_id="child-thread-1", turn_id="child-turn-1")
             self.notify(DELTA_AGENT_MESSAGE, {"turnId": self.turn_id, "itemId": "item-1",
                                               "threadId": self.thread_id, "delta": "OK"})
             self._emit_item("item-1", "agentMessage")

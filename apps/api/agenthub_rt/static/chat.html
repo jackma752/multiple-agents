@@ -219,7 +219,7 @@ function call(id) {
           execution_mode: "strict", context_mode: "independent", resume_thread_id: null,
           handoff: [], sent_text: null,
           stream: "", gap: false, turn: null, ended: null, declined: [], cards: [], stop: null,
-          interrupt: null, native: [] };
+          interrupt: null, native: [], usage: null };
     S.calls.set(id, c);
   }
   return c;
@@ -242,9 +242,27 @@ function absorbMessage(m) {
       status: inv.status, approval_id: inv.approval_id, approval_status: inv.approval_status,
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
-      handoff: inv.handoff, sent_text: inv.sent_text,
+      handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage,
     });
   }
+}
+
+/* Ledger rows of this conversation's calls (normalized; unknown is never 0). */
+async function loadUsage(gen = S.viewGen) {
+  if (!S.cid || !current(gen)) return;
+  const cid = S.cid;
+  const page = await api("GET", `/api/conversations/${enc(cid)}/usage`);
+  if (!current(gen) || cid !== S.cid) return;
+  for (const u of page.calls || []) call(u.invocation_id).usage = u;
+  S.usageTotal = page.total || null;
+  render();
+}
+
+function needUsage(gen = S.viewGen) {
+  clearTimeout(S.usageTimer);
+  S.usageTimer = setTimeout(() => loadUsage(gen).catch((e) => {
+    if (current(gen)) toast("读取用量失败：" + e.message);
+  }), 120);
 }
 
 async function loadMessages(gen = S.viewGen) {
@@ -258,6 +276,7 @@ async function loadMessages(gen = S.viewGen) {
     if (!page.has_more) break;
   }
   render();
+  needUsage(gen);
 }
 
 function needMessages(gen = S.viewGen) {
@@ -295,6 +314,8 @@ function apply(ev, gen = S.viewGen) {
       break;
     case "invocation.status":
       patch(call(p.invocation_id), { status: p.to, approval_status: p.approval_status });
+      // Settled (also failed / interrupted / unknown): its ledger row now exists.
+      if (SETTLED.includes(p.to)) needUsage(gen);
       break;
     case "stream.turn_started":
       call(p.invocation_id).turn = { thread_id: p.thread_id, turn_id: p.turn_id, resumed: p.resumed };
@@ -737,6 +758,9 @@ function renderCall(c) {
       c.approval_status ? chip("审批：" + c.approval_status, "") : null,
       c.context_mode === "native_resume" ? chip("续接 " + short(c.resume_thread_id), "info") : null,
       ...handoff.map((h) => chip(`交接：${h.agent_id} #${h.message_id}（${h.chars} 字）`, "info")),
+      // Every settled call shows its usage, with or without a reply (D-T0-3).
+      SETTLED.includes(c.status) && usageText(c.usage)
+        ? chip("用量 " + usageText(c.usage), c.usage.completeness === "complete" ? "" : "warn") : null,
       el("span", { class: "grow" }), actions),
     consentBox,
     sent,
@@ -770,14 +794,36 @@ function toggleHandoff(m) {
 
 function short(id) { return id ? String(id).slice(0, 8) : "?"; }
 
-/* Provider token counts as reported (key names differ between transports). */
-function usageText(usage) {
-  if (!usage || typeof usage !== "object") return "";
-  const pick = (...keys) => keys.map((k) => usage[k]).find((v) => typeof v === "number");
-  const input = pick("inputTokens", "input_tokens");
-  const output = pick("outputTokens", "output_tokens");
-  if (input === undefined && output === undefined) return "";
-  return `输入 ${input ?? "?"} / 输出 ${output ?? "?"}`;
+const SETTLED = ["succeeded", "failed", "canceled", "timed_out", "unknown"];
+
+/* Why a ledger row is unknown or partial (machine codes from agenthub.usage). */
+const USAGE_NOTE = {
+  no_usage_reported: "provider 未报告用量", usage_malformed: "用量格式不合规",
+  turn_id_reused: "续接复用了回合 ID，无法归属", adapter_reports_no_usage: "适配器不提供用量",
+  no_adapter_record: "适配器没有本次调用的记录", adapter_start_raised: "启动时出错",
+  not_recorded: "结算时未记录", sum_of_last: "按各次请求相加", resume_baseline_unknown: "续接起点未知",
+  last_sum_mismatch: "累计值与逐次请求不一致", total_decreased: "累计值下降",
+  late_usage: "用量在回合结束后才到", turn_not_terminal: "回合未正常结束",
+  native_children_not_metered: "原生子 Agent 的消耗不在其中", legacy_last: "旧记录只含最后一次请求",
+  mapping_unverified: "含含义未验证的字段", mapping_mismatch: "provider 数字自相矛盾",
+  cache_fields_missing: "缺少缓存字段", exec_usage_semantics_unverified: "exec 用量口径未验证",
+  multi_model_usage_unverified: "多个模型，汇总口径未验证", usage_update_malformed: "部分用量更新不可读",
+};
+const fmtN = (n) => typeof n === "number" ? n.toLocaleString("en-US") : "?";
+
+/* A normalized ledger row as text. Input totals include cache reads/writes for
+   every provider; an unknown is shown as unknown, never as 0. */
+function usageText(u) {
+  if (!u || typeof u !== "object" || !u.completeness) return "";
+  const why = (u.notes || []).filter((n) => USAGE_NOTE[n]).map((n) => USAGE_NOTE[n]);
+  if (u.completeness === "unknown") return `未知（${why.join("；") || "原因未知"}）`;
+  const cache = [];
+  if (u.cache_read) cache.push("缓存读 " + fmtN(u.cache_read));
+  if (u.cache_write) cache.push("写 " + fmtN(u.cache_write));
+  let text = `输入 ${fmtN(u.input_total)}${cache.length ? "（" + cache.join(" / ") + "）" : ""}` +
+             ` / 输出 ${fmtN(u.output_total)}`;
+  if (u.completeness === "partial") text += `（不完整：${why.join("；") || "原因未知"}）`;
+  return text;
 }
 
 function render() {
@@ -825,10 +871,11 @@ function renderNow() {
     } else {
       const meta = m.result || {};
       const chosen = S.handoff.includes(m.message_id);
+      const used = m.invocation ? usageText(call(m.invocation.invocation_id).usage) : "";
       tl.append(el("div", { class: "msg assistant" },
         el("div", { class: "who" }, (m.invocation && m.invocation.agent_id) || "Agent",
            meta.native_session ? chip("thread " + short(meta.native_session.thread_id), "") : null,
-           usageText(meta.usage) ? chip("用量 " + usageText(meta.usage), "") : null,
+           used ? chip("用量 " + used, "") : null,
            el("button", { class: "mini" + (chosen ? " on" : ""), "data-handoff": m.message_id,
                           title: "把这条回复附在下一次调用里交给所选 Agent；发送前会在审批卡里完整显示",
                           onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent")),

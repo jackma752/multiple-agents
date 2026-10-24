@@ -1,4 +1,19 @@
-# 当前交接：T-0 能力与用量基线（2026-10-24，分支 `feat/t0-usage-baseline`，离线）
+# 当前交接：T-1a 用量归一化与账本（2026-10-24，分支 `feat/t1-usage-ledger`，离线）
+
+- 基于 `feat/t0-usage-baseline` @ `22e34ec`。没有真实调用，没有读取凭据；S5 没有改动。
+- D-T0-1 到 D-T0-7 已在离线桩上修复，说明见 [会话后端契约](conversation-backend.md) 末节：
+  - 新契约 `agenthub.usage`（映射版本 1，未知不写 0）；
+  - app-server 回合用量按 thread `total` 之差计算，并与各次请求之和交叉核对；
+  - 内核新表 `usage_ledger`：每次调用一行，与结算同一事务，失败、中断也写；只能提升、不能降级；重启时补记；
+  - `GET /api/conversations/{cid}/usage`；
+  - 页面按归一化口径显示，未知显示原因。
+- 验证：新增离线测试 60 项；全量结果见本轮提交说明；浏览器在离线桩 `t1-usage-demo`（8175）上核对。
+- 未验证：真实 Codex 和 Claude Code 上的入账，T-1h 单独申请。
+- 下一步：T-1b（用量视图：根任务、按 Agent），然后是 T-1c（预算与原子准入）。
+
+---
+
+# 历史交接：T-0 能力与用量基线（2026-10-24，分支 `feat/t0-usage-baseline`，离线）
 
 - 基于 `feat/p3-two-agent` @ `44a5dcd`，只改文档。没有真实调用，没有改代码，没有读取凭据；已收口的 S5 没有改动。
 - 交付：[T-0 基线](t0-usage-baseline.md)，包括能力表、字段口径与归一化、Codex 16 行和 Claude Code 2 行的用量基线、去重规则、未知标记规则、缺陷 D-T0-1 到 D-T0-7，以及 T-1 拆分（T-1a 到 T-1h）。能力矩阵顶部加了摘要。

@@ -16,6 +16,7 @@ from agenthub_kernel.db import (
     ApprovalRow, ChatMessageRow, ConversationRow, InvocationRow, TaskRow,
 )
 from agenthub_kernel.service import PolicyService, QuotaError
+from agenthub_kernel.usage_ledger import usage_view
 
 
 def owned_conversation(session: Session, cid: str, user_id: str) -> ConversationRow:
@@ -52,6 +53,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "handoff": inv.snapshot.get("handoff") or [],
         # With a handoff, what is sent differs from the user's own text: show it all.
         "sent_text": inv.snapshot["task_input"] if inv.snapshot.get("handoff") else None,
+        # Normalized ledger row (T-1a); None until the call is settled.
+        "usage": usage_view(session, inv),
     }
 
 

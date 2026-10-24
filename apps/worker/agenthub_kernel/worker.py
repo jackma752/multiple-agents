@@ -36,6 +36,7 @@ from agenthub_kernel.conversations import (
     capture_reply, native_resume_blocker, restore_replies,
 )
 from agenthub_kernel.tool_approvals import ToolGate, close_decisions, void_pending
+from agenthub_kernel.usage_ledger import record_usage, restore_usage
 
 #: External run states the Mock adapter records (see agenthub_adapters.mock).
 MOCK_RUNNING_STATE = "running"
@@ -666,6 +667,7 @@ class Worker:
                 # Cannot confirm: mark unknown, keep the slot, do not restart.
                 with self.db.session() as session:
                     PolicyService(session).mark_unknown(invocation_id)
+                    record_usage(session, self.adapter, invocation_id)
                 summary["unknown"].append(invocation_id)
                 continue
 
@@ -695,6 +697,7 @@ class Worker:
                 # An unrecognised external state must not be guessed at.
                 with self.db.session() as session:
                     PolicyService(session).mark_unknown(invocation_id)
+                    record_usage(session, self.adapter, invocation_id)
                 summary["unknown"].append(invocation_id)
                 continue
 
@@ -708,9 +711,11 @@ class Worker:
                     inv.adapter_invocation_id = inv.adapter_invocation_id or adapter_id
                 svc.release(invocation_id, term)
                 capture_reply(session, self.adapter, invocation_id)
+                record_usage(session, self.adapter, invocation_id)
             summary["settled"].append({"invocation_id": invocation_id, "status": term.value})
 
         summary["replies_restored"] = restore_replies(self.db, self.adapter)
+        summary["usage_restored"] = restore_usage(self.db, self.adapter)
         return summary
 
     def drain_once(self, max_calls: int = 100) -> list[dict[str, Any]]:
@@ -923,6 +928,8 @@ class Worker:
             reason = f"adapter start raised {type(exc).__name__}: {exc}"
             with self.db.session() as session:
                 PolicyService(session).mark_unknown(invocation_id, reason=reason[:400])
+                # Whatever the adapter recorded before raising; else unknown.
+                record_usage(session, self.adapter, invocation_id, fallback_note="adapter_start_raised")
             return {
                 "invocation_id": invocation_id,
                 "ok": False,
@@ -952,7 +959,9 @@ class Worker:
             if inv is not None and start.adapter_invocation_id:
                 inv.adapter_invocation_id = start.adapter_invocation_id
             if inv is not None and inv.status == InvocationStatus.UNKNOWN.value:
-                # A concurrent stop/reaper already recorded uncertainty.
+                # A concurrent stop/reaper already recorded uncertainty. The
+                # adapter has returned, so what it spent is still recorded.
+                record_usage(session, self.adapter, invocation_id)
                 return {"invocation_id": invocation_id, "ok": False,
                         "terminal": False, "adapter_invocation_id": inv.adapter_invocation_id,
                         "adapter_start_attempted": True,
@@ -982,6 +991,9 @@ class Worker:
                     reason=f"adapter outcome unconfirmed: {start.detail}",
                 )
             capture_reply(session, self.adapter, invocation_id)
+            # Usage is recorded whether or not there is a reply (D-T0-3).
+            record_usage(session, self.adapter, invocation_id,
+                         refused_before_launch=not start.ok and getattr(start, "terminal", True))
 
         outcome = {
             "invocation_id": invocation_id,

@@ -53,6 +53,7 @@ from agenthub.contracts import (
     execution_admission,
 )
 
+from agenthub.usage import MAPPING_CODEX_EXEC
 from agenthub_adapters.store import (
     CANCELLED,
     FAILED,
@@ -839,3 +840,19 @@ class CodexAdapter(AdapterContract):
             "event_types": payload.get("event_types", {}),
             "workdir_entries_after": payload.get("workdir_entries_after", []),
         }
+
+    def usage_report(self, invocation_id: str) -> Optional[dict[str, Any]]:
+        """This call's usage for the kernel ledger; ``None`` without a record.
+
+        ``turn.completed.usage`` was only ever observed on single-request,
+        new-thread turns; whether it is per turn or per thread is unverified
+        (docs/t0-usage-baseline.md), so a record is at best ``partial``.
+        """
+        rec = self.store.get(invocation_id)
+        if not rec:
+            return None
+        payload = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+        usage = payload.get("usage") or {}
+        notes = ["exec_usage_semantics_unverified"] if usage else ["no_usage_reported"]
+        return {"mapping": MAPPING_CODEX_EXEC, "usage": usage, "source": "exec_turn_completed",
+                "notes": notes}

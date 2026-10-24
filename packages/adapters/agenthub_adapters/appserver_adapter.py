@@ -38,6 +38,9 @@ Rules this adapter enforces:
   kernel keeps the quota slot and marks the call ``unknown``. Events count only
   with this thread's and this turn's ids (D8); the one usage replay a resume
   sends for the previous turn is recorded apart (D9);
+* a turn's usage is the thread total at its end minus the total before it,
+  cross-checked against the per-request updates (:mod:`appserver_usage`,
+  T-1a); ``turn/completed`` carries no usage on the real protocol (D-T0-4);
 * ``interrupt_invocation`` sends ``turn/interrupt`` for a live turn only; an
   acknowledgement proves nothing and a slow one is "not yet acknowledged" (D5)
   - the call settles ``canceled`` only when this turn's ``turn/completed`` says
@@ -73,7 +76,9 @@ from agenthub.contracts import (
     InvocationSnapshot,
     execution_admission,
 )
+from agenthub.usage import MAPPING_CODEX_APPSERVER
 from agenthub_adapters import proc_tree
+from agenthub_adapters.appserver_usage import turn_usage, update_record
 from agenthub_adapters.appserver import (
     DELTA_AGENT_MESSAGE,
     ITEM_COMPLETED,
@@ -123,6 +128,9 @@ THREAD_SETTINGS = {"sandbox": "read-only", "approvalPolicy": "on-request", "appr
 #: Policy repeated on every turn/start.
 TURN_POLICY = {"approvalPolicy": "on-request", "approvalsReviewer": "user",
                "sandboxPolicy": {"type": "readOnly", "networkAccess": False}}
+#: The usage of a call that never sent turn/start: known zero, not unknown.
+NO_TURN_USAGE = {"inputTokens": 0, "cachedInputTokens": 0, "cacheWriteInputTokens": 0,
+                 "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 0}
 #: What a decline-only card offers: the user can refuse, nothing else (plan §4.4).
 DECLINE_ONLY = ["decline"]
 
@@ -430,9 +438,14 @@ class _Turn:
         self.previous_turn_id = previous_turn_id
         self.deltas: dict[str, list[str]] = {}
         self.final_message = ""
-        self.usage: dict = {}
+        #: This turn's ``thread/tokenUsage/updated`` (numbers only), in order.
+        self.usage_updates: list[dict] = []
         self.replayed_usage: Optional[dict] = None
+        #: The replay's thread total: where a resumed turn's usage starts.
+        self.replayed_total: Optional[dict] = None
         self.usage_anomalies = 0
+        #: child thread id -> its latest usage update; never this turn's usage.
+        self.native_child_usage: dict[str, dict] = {}
         self.turn_started_seen = False
         self.turn_status = ""
         self.terminal_seen = False
@@ -480,8 +493,18 @@ class _Turn:
             "completed": False, "status": "", "lifecycle_seen": False, "output_events": 0})
 
     def count_late(self, notes: list) -> None:
-        """Bound events already received after this turn's terminal (§4.8)."""
-        self.late_events += sum(1 for n in notes if (n.params or {}).get("threadId") == self.thread_id)
+        """Bound events already received after this turn's terminal (§4.8).
+
+        A late usage update of this turn is still this turn's spending: it is
+        kept (marked late, so the record is partial), not dropped.
+        """
+        for note in notes:
+            params = note.params or {}
+            if params.get("threadId") != self.thread_id:
+                continue
+            self.late_events += 1
+            if note.method == TOKEN_USAGE_UPDATED and params.get("turnId") == self.turn_id:
+                self.usage_updates.append(update_record(params.get("tokenUsage"), late=True))
 
     def ours(self, params: dict, *, turn_from_payload: bool = False) -> bool:
         """Exact binding: both this thread's and this turn's id must be present (D8)."""
@@ -728,6 +751,7 @@ class AppServerCodexAdapter(AdapterContract):
         facts: dict[str, Any] = {
             "process_id": pid if isinstance(pid, int) and not isinstance(pid, bool) else None,
             "opening_method": "", "input_sha256": "", "resume_check": None, "turn_id_reused": False,
+            "model": None,
         }
         try:
             client.start()
@@ -746,6 +770,8 @@ class AppServerCodexAdapter(AdapterContract):
             if not thread_id:
                 raise _Refused("server returned no thread id")
             self.store.set_adapter_id(invocation_id, thread_id)
+            model = result.get("model") if isinstance(result, dict) else None
+            facts["model"] = model if isinstance(model, str) and len(model) <= 80 else None
             problems = settings_problems(result, workdir)
             if problems:
                 raise _Refused("appserver_settings_mismatch: " + ",".join(problems))
@@ -875,9 +901,7 @@ class AppServerCodexAdapter(AdapterContract):
                 return False
             turn.turn_status = turn_status_of(note)
             turn.terminal_seen = True
-            usage = (params.get("turn") or {}).get("usage")
-            if isinstance(usage, dict) and not turn.usage:
-                turn.usage = dict(usage)
+            # No usage here: the schema's Turn has no usage field (D-T0-4).
             return True
         if note.method == DELTA_AGENT_MESSAGE:
             if not turn.ours(params):
@@ -901,17 +925,24 @@ class AppServerCodexAdapter(AdapterContract):
                 turn.final_message = text
             return False
         if note.method == TOKEN_USAGE_UPDATED:
-            last = (params.get("tokenUsage") or {}).get("last")
+            token = params.get("tokenUsage") or {}
+            last = token.get("last") if isinstance(token, dict) else None
             if turn.ours(params):
-                if isinstance(last, dict):
-                    turn.usage = dict(last)
+                # One update per model request; the turn is derived at settlement.
+                turn.usage_updates.append(update_record(token))
             elif (turn.previous_turn_id and params.get("threadId") == turn.thread_id
                   and params.get("turnId") == turn.previous_turn_id
                   and not turn.turn_started_seen and turn.replayed_usage is None):
                 # The one restored usage a resume sends for the previous turn
-                # (S5): recorded apart, never this turn's usage (D9).
+                # (S5): recorded apart, never this turn's usage (D9). Its total
+                # is where this turn's usage starts.
                 turn.replayed_usage = dict(last) if isinstance(last, dict) else {}
+                turn.replayed_total = update_record(token)["total"]
             else:
+                if params.get("threadId") in turn.child_state:
+                    # A native child's spending: kept apart (D-T0-7), still an
+                    # event this call cannot attribute to itself.
+                    turn.native_child_usage[str(params.get("threadId"))] = update_record(token)
                 turn.usage_anomalies += 1
                 turn.foreign_events += 1
         return False
@@ -1221,6 +1252,7 @@ class AppServerCodexAdapter(AdapterContract):
                        "(recorded only; Hub does not end them)")
         if verdict == FINISHED and not local_exit_confirmed:
             detail += "; local app-server exit unconfirmed"
+        usage, usage_source, usage_notes = self._turn_usage(turn, turn_requested, resume_id, facts)
 
         payload = {
             "transport": TRANSPORT,
@@ -1232,8 +1264,13 @@ class AppServerCodexAdapter(AdapterContract):
             "turn_requested": turn_requested,
             "turn_status": turn.turn_status if turn else "",
             "final_message": turn.final_message if turn else "",
-            "usage": turn.usage if turn else {},
+            "usage": usage,
+            "usage_source": usage_source,
+            "usage_notes": usage_notes,
+            "usage_updates": list(turn.usage_updates) if turn else [],
             "replayed_usage": turn.replayed_usage if turn else None,
+            "replayed_usage_total": turn.replayed_total if turn else None,
+            "native_child_usage": dict(turn.native_child_usage) if turn else {},
             "usage_anomalies": turn.usage_anomalies if turn else 0,
             "declined_requests": list(turn.declined) if turn else [],
             "unanswered_requests": list(turn.unanswered) if turn else [],
@@ -1273,6 +1310,49 @@ class AppServerCodexAdapter(AdapterContract):
         if verdict == FAILED:
             return AdapterStartResult(thread_id, ok=False, terminal=True, detail=detail[:200])
         return AdapterStartResult(thread_id, ok=False, terminal=False, detail=detail[:200])
+
+    @staticmethod
+    def _turn_usage(turn: Optional[_Turn], turn_requested: bool, resume_id: Optional[str],
+                    facts: Optional[dict]) -> tuple[dict, str, list[str]]:
+        """This turn's usage, its derivation and notes (T-1a; see appserver_usage)."""
+        if not turn_requested:
+            # turn/start was never sent: no model request can have been made.
+            return dict(NO_TURN_USAGE), "no_turn_requested", []
+        if turn is None:
+            return {}, "none", ["no_usage_reported"]  # turn/start sent, no turn id back
+        usage, source, notes = turn_usage(turn.usage_updates, resumed=bool(resume_id),
+                                          replay_total=turn.replayed_total)
+        if (facts or {}).get("turn_id_reused"):
+            notes.append("turn_id_reused")  # the replay and this turn are indistinguishable
+        if not turn.terminal_seen:
+            notes.append("turn_not_terminal")
+        if turn.child_state:
+            notes.append("native_children_not_metered")
+        if turn.native_child_usage:
+            notes.append("native_child_usage_seen")
+        return usage, source, notes
+
+    def usage_report(self, invocation_id: str) -> Optional[dict[str, Any]]:
+        """This call's usage for the kernel ledger; ``None`` without a record.
+
+        Records written before T-1a kept only the last request's usage: they
+        are reported as ``legacy_last`` (partial), never re-derived.
+        """
+        record = self.store.get(invocation_id)
+        if not record:
+            return None
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if "usage_source" in payload:
+            usage, source = payload.get("usage") or {}, payload.get("usage_source")
+            notes = list(payload.get("usage_notes") or [])
+        elif payload:
+            usage, source = payload.get("usage") or {}, "legacy_last"
+            notes = ["legacy_last"]
+        else:
+            # Started, nothing settled (yet): the process may have spent.
+            usage, source, notes = {}, "none", ["no_usage_reported", "turn_not_terminal"]
+        return {"mapping": MAPPING_CODEX_APPSERVER, "usage": usage, "source": source,
+                "notes": notes, "model": payload.get("model")}
 
     # -- stop / cancel / status --------------------------------------------
 
