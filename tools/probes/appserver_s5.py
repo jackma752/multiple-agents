@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE))
 import appserver_s2 as S2
 import appserver_s3 as S3
 import appserver_s4 as S4
+from agenthub_adapters import proc_tree
 from agenthub_adapters.appserver_s5_evidence import (
     PLANT_PROMPT, RECALL_PROMPT, TurnEvidence, digest, inspect_resume, judge, make_code_word, plant_health)
 
@@ -41,6 +42,9 @@ STUB = S2.REPO / "tools/demo/stub_appserver_s5.py"
 MAX_MODEL_TURNS = 2
 #: How long a descendant may take to exit after its parent was closed.
 CLOSE_GRACE_SECONDS = 3.0
+#: Stub-mode deadline per phase. It includes starting the Python stub, which a
+#: loaded machine can delay by seconds; only "plant-timeout" waits it out.
+STUB_TIMEOUT_SECONDS = 10
 
 
 class S5Client(S2.S2Client):
@@ -192,34 +196,24 @@ class S5Client(S2.S2Client):
 
         A descendant counts as surviving only if it is still there after a
         bounded grace period: a child that is merely mid-exit is not a survivor.
+        Creation times keep a stale parent id (an older process whose dead
+        parent's id was reused by our child) and a reused id out (proc_tree).
         """
         root = getattr(self.transport, "pid", None)
-        before_table = S4.process_table() if root else None
-        before = S4.descendants(root, before_table) if before_table is not None else None
+        before = proc_tree.snapshot_descendants(root, proc_tree.creation_time) if root else None
         try:
             super().close()
         finally:
-            survivors, waited, available = [], 0.0, before is not None
-            if available and before:
-                start = time.monotonic()
-                while True:
-                    after = S4.process_table()
-                    if after is None:
-                        available = False
-                        break
-                    alive = {(pid, name) for pid, _, name in after}
-                    survivors = [n for p, n in before if (p, n) in alive]
-                    waited = time.monotonic() - start
-                    if not survivors or waited >= CLOSE_GRACE_SECONDS:
-                        break
-                    time.sleep(0.1)
-            if not available:
+            start = time.monotonic()
+            left = proc_tree.survivors(before, CLOSE_GRACE_SECONDS, proc_tree.creation_time) if before else []
+            waited = time.monotonic() - start
+            if before is None or left is None:
                 self.process_tree = {"available": False}
             else:
                 self.process_tree = {"available": True, "grace_seconds": CLOSE_GRACE_SECONDS,
                                      "waited_seconds": round(waited, 2),
-                                     "descendants_before_close": sorted(n for _, n in before),
-                                     "descendants_after_close": sorted(survivors)}
+                                     "descendants_before_close": sorted(e[1] for e in before),
+                                     "descendants_after_close": sorted(e[1] for e in left)}
 
 
 def pid_alive(pid):
@@ -291,7 +285,7 @@ def run_probe(*, real=False, approved=False, acknowledge_risk=False, codex_home=
             stub_home.mkdir()
             argv = [sys.executable, str(STUB), "--scenario", scenario]
             env = {**os.environ, "CODEX_HOME": str(stub_home)}
-            timeout = 3
+            timeout = STUB_TIMEOUT_SECONDS
         common = dict(argv=argv, env=env, workdir=workdir, timeout=timeout, code_word=code_word)
         plant = run_phase("plant", stderr_path=run_dir / "stderr-plant.log", **common)
         result["phases"]["plant"] = plant

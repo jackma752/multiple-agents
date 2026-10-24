@@ -25,6 +25,9 @@ def run(monkeypatch, tmp_path, scenario, *, plant_exit=(0, None)):
     monkeypatch.setattr(S5, "RUN_ROOT", tmp_path / "evidence")
     monkeypatch.setattr(S5.S2, "WORK_ROOT", tmp_path)
     monkeypatch.setattr(S5.S1, "preflight", lambda *_: pytest.fail("offline only"))
+    # Under load the stub's own clean exit after EOF can take longer than the
+    # transport's 1 s before it terminates (exit code 1); the stub's code is still checked.
+    monkeypatch.setattr(S5.A.StdioTransport, "_EOF_TIMEOUT", 10.0)
     code = S5.run_probe(scenario=scenario, _code_word=CODE)
     raw = next((tmp_path / "evidence").glob("*/result.json")).read_text(encoding="utf-8")
     assert CODE not in raw and "SYNTHETIC" not in raw, "neither the code word nor any reply text is stored"
@@ -237,12 +240,25 @@ class Transport500:
 ])
 def test_descendants_get_a_bounded_grace_period(monkeypatch, afters, grace, survivors):
     tables = iter([[(500, 1, "codex.exe"), (501, 500, "helper.exe")], *afters])
-    monkeypatch.setattr(S5.S4, "process_table", lambda: next(tables))
+    monkeypatch.setattr(S5.proc_tree, "process_table", lambda: next(tables))
+    monkeypatch.setattr(S5.proc_tree, "creation_time", {500: 100, 501: 101}.get)
     monkeypatch.setattr(S5, "CLOSE_GRACE_SECONDS", grace)
     c = S5.S5Client(Transport500(), workdir=str(ROOT), timeout=5, phase="plant", code_word=CODE)
     c.close()
     assert c.process_tree["available"] and c.process_tree["descendants_before_close"] == ["helper.exe"]
     assert c.process_tree["descendants_after_close"] == survivors
+
+
+def test_an_older_process_naming_a_reused_parent_id_is_not_a_descendant(monkeypatch):
+    # Seen in a full run: a tray program whose dead parent's id was reused by the stub launcher.
+    tables = iter([[(500, 1, "python.exe"), (501, 500, "python.exe"), (502, 500, "wallpaper64.exe")],
+                   [(502, 500, "wallpaper64.exe")]])
+    monkeypatch.setattr(S5.proc_tree, "process_table", lambda: next(tables))
+    monkeypatch.setattr(S5.proc_tree, "creation_time", {500: 100, 501: 101, 502: 5}.get)
+    c = S5.S5Client(Transport500(), workdir=str(ROOT), timeout=5, phase="plant", code_word=CODE)
+    c.close()
+    assert c.process_tree["descendants_before_close"] == ["python.exe"]
+    assert c.process_tree["descendants_after_close"] == []
 
 
 def test_phase_one_close_error_is_part_of_the_gate(monkeypatch, tmp_path):

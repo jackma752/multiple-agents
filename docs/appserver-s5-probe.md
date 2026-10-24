@@ -86,6 +86,8 @@
 
 后代进程的“残留”指：关闭后 3 秒宽限期结束时仍然存在。正在退出、宽限期内消失的进程不算残留。结果中记录 `grace_seconds` 和 `waited_seconds`。
 
+Windows 会复用进程号，进程也会保留已退出父进程的号。因此后代按创建时间认定：子进程早于父进程创建的父子关系视为陈旧号，不计入；“残留”须是同一进程（进程号、映像名、创建时间都相同）。创建时间读不到时仍按后代计（与 S6 的 `proc_tree` 相同）。离线全量测试曾出现一个常驻托盘程序因父进程号被桩启动器复用而被误计为残留。
+
 ## 恢复时的用量重放（判定修订，2026-10-22 深夜）
 
 **起因**：第一次真实运行中，被测版本在进程 B 恢复 thread 时，向该连接发了一条重放的 `thread/tokenUsage/updated`。依据是 [token_usage_replay.rs @ alpha.11](https://github.com/openai/codex/blob/rust-v0.163.0-alpha.11/codex-rs/app-server/src/request_processors/token_usage_replay.rs)：这是生命周期重放，turn ID 取最近一次 TokenCount 时的活动回合，也就是阶段 1 的回合。旧规则把它判为 `foreign_turn`，回忆回合被提前中止。见 [第一次实录](appserver-s5-2026-10-22-run1.md)。
