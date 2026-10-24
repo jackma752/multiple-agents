@@ -15,7 +15,9 @@ from agenthub.budget import BudgetDecision
 from agenthub_adapters.appserver_stub import InMemoryStubFactory
 from agenthub_kernel import budget as budget_module
 from agenthub_kernel.adapters import describe
-from agenthub_kernel.db import ApprovalRow, TokenBudgetItemRow, TreeQuotaRow, TreeTokenBudgetRow
+from agenthub_kernel.db import (
+    ApprovalRow, InvocationRow, TokenBudgetItemRow, TreeQuotaRow, TreeTokenBudgetRow, UsageLedgerRow,
+)
 from agenthub_kernel.service import PolicyService
 from tests.http.test_conversation_stream import (  # noqa: F401  (make_client is a fixture)
     held_slots, make_client, submit, turn_and_run,
@@ -68,9 +70,12 @@ def adapter(client):
     return client.app.state.worker.adapter
 
 
-def refused(client, cid, key, code, text=PROMPT):
+def refused(client, cid, key, code, text=PROMPT, *, previewed=False):
     turn = submit(client, cid, key=key, text=text)
     approve(client, turn)
+    if previewed:  # the approval card said so before the run
+        p = card(client, cid, turn["invocation_id"])["preview"]
+        assert p["allowed"] is False and p["code"] == code, p
     starts, slots, before = adapter(client).start_count, held_slots(client), counters(client, cid)
     invocations = tree_invocations(client, cid)
     r = run(client, turn)
@@ -94,6 +99,52 @@ def spend(client, cid):
     """The tree's spend as the views compute it (no write)."""
     b = client.get(f"/api/conversations/{cid}/usage", headers=USER).json()["budget"]
     return b["known"], b["unsettled"], b["reserved"], b["unbounded"]
+
+
+def running_unreserved(client, cid):
+    return client.get(f"/api/conversations/{cid}/usage", headers=USER).json()["budget"]["unreserved_in_flight"]
+
+
+def card(client, cid, invocation_id):
+    msgs = client.get(f"/api/conversations/{cid}/messages", headers=USER).json()["messages"]
+    return next(m["invocation"]["budget"] for m in msgs
+                if m["invocation"] and m["invocation"]["invocation_id"] == invocation_id)
+
+
+def claim(client, turn):
+    """Approve and claim a call: approval consumed, slot held, ``starting``; not executed yet."""
+    approve(client, turn)
+    claimed = client.app.state.worker._claim(target_id=turn["invocation_id"])
+    assert claimed is not None and not isinstance(claimed, dict), claimed
+    return claimed
+
+
+def finish(client, claimed):
+    return client.app.state.worker._execute(claimed)
+
+
+def admitted(client, cid, key, text=PROMPT):
+    """A call the card says will run, and runs with the warnings the card showed."""
+    turn = submit(client, cid, key=key, text=text)
+    approve(client, turn)
+    p = card(client, cid, turn["invocation_id"])["preview"]
+    assert p["allowed"] is True, p
+    r = run(client, turn)
+    assert r.status_code == 200 and r.json()["status"] == "succeeded", r.text
+    assert item(client, turn["invocation_id"])["warnings"] == p["warnings"]
+    return turn, p
+
+
+def ledger_matches_counters(client, cid):
+    """Counters equal the per-call items, and known spend equals the complete ledger rows once each."""
+    root = root_of(client, cid)
+    with client.app.state.db.session() as s:
+        items = s.scalars(select(TokenBudgetItemRow).where(TokenBudgetItemRow.root_task_id == root)).all()
+        rows = s.scalars(select(UsageLedgerRow).where(UsageLedgerRow.root_task_id == root,
+                                                      UsageLedgerRow.completeness == "complete")).all()
+    sums = tuple(sum(getattr(i, k) for i in items) for k in ("known", "unsettled", "reserved", "unbounded"))
+    assert sums == counters(client, cid)
+    assert sums[0] == sum(r.input_total + r.output_total for r in rows)
 
 
 def test_strict_refuses_a_reservation_that_would_cross_the_total(make_client):
@@ -198,6 +249,96 @@ def test_unknown_spend_without_a_reservation_blocks_strict_until_soft(make_clien
     turn, _ = turn_and_run(client, cid, "c", text=PROMPT)
     assert "unknown_unbounded" in item(client, turn["invocation_id"])["warnings"]
     assert counters(client, cid)[3] == 1  # the first call is still unbounded, now on record
+
+
+def test_first_switch_on_counts_a_running_call_that_reserved_nothing(make_client):
+    client = make_client(InMemoryStubFactory("usage-multi-request"))
+    cid = conversation(client)
+    old_turn = submit(client, cid, key="old", text=PROMPT)
+    old = claim(client, old_turn)  # admitted with no budget: running, nothing reserved
+    with client.app.state.db.session() as s:
+        old_version = s.get(InvocationRow, old.invocation_id).snapshot.get("policy_version")
+    result = set_budget(client, root_of(client, cid), total=200000, per_call=40000)
+    assert result["revoked_approvals"] == 0             # a consumed approval is not rewritten
+    assert approval_status(client, old_turn) == "consumed"
+    # The views count it before anything is on record; its own card says why.
+    assert spend(client, cid) == (0, 0, 0, 1) and running_unreserved(client, cid) == 1
+    assert counters(client, cid) is None
+    assert card(client, cid, old.invocation_id)["this_call"]["state"] == "unreserved"
+
+    refused(client, cid, "b", "budget_unknown_unbounded", previewed=True)
+    assert counters(client, cid) is None                 # the refusal rolled the reconciliation back
+
+    set_budget(client, root_of(client, cid), total=200000, per_call=40000, mode="soft")
+    _, p = admitted(client, cid, "c")
+    assert p["warnings"] == ["unreserved_in_flight"]
+    assert counters(client, cid) == (S3_TOKENS, 0, 0, 1)  # now on record, still unbounded
+    assert item(client, old.invocation_id)["state"] == "unreserved"
+    _, p = admitted(client, cid, "d")                     # reconciling again records nothing twice
+    assert p["warnings"] == ["unreserved_in_flight"] and counters(client, cid) == (2 * S3_TOKENS, 0, 0, 1)
+
+    assert finish(client, old)["ok"] is True              # the old call ran on, under its own approval
+    with client.app.state.db.session() as s:
+        inv = s.get(InvocationRow, old.invocation_id)
+        assert inv.status == "succeeded" and inv.snapshot.get("policy_version") == old_version
+    assert approval_status(client, old_turn) == "consumed"
+    # Settled: the risk is lifted and its real spend is charged once.
+    assert counters(client, cid) == (3 * S3_TOKENS, 0, 0, 0) and running_unreserved(client, cid) == 0
+    assert item(client, old.invocation_id)["state"] == "settled"
+    ledger_matches_counters(client, cid)
+    client.post("/api/worker/recover", headers=USER)      # re-settling changes nothing
+    assert counters(client, cid) == (3 * S3_TOKENS, 0, 0, 0)
+
+    set_budget(client, root_of(client, cid), total=200000, per_call=40000)
+    _, p = admitted(client, cid, "e")                     # strict admits again
+    assert p["warnings"] == [] and counters(client, cid) == (4 * S3_TOKENS, 0, 0, 0)
+    ledger_matches_counters(client, cid)
+
+
+def test_switching_off_and_on_again_counts_a_call_admitted_in_between(make_client):
+    client = make_client(InMemoryStubFactory("usage-multi-request"))
+    cid = budgeted(client, total=200000, per_call=40000)
+    root = root_of(client, cid)
+    admitted(client, cid, "a")
+    assert counters(client, cid) == (S3_TOKENS, 0, 0, 0)  # the tree already has counters
+    set_budget(client, root)                              # switched off
+    old_turn = submit(client, cid, key="old", text=PROMPT)
+    old = claim(client, old_turn)
+    assert item(client, old.invocation_id) is None        # admitted without a budget: no item
+    assert counters(client, cid) == (S3_TOKENS, 0, 0, 0)
+    set_budget(client, root, total=200000, per_call=40000)  # on again
+    assert approval_status(client, old_turn) == "consumed"
+    assert spend(client, cid) == (S3_TOKENS, 0, 0, 1) and running_unreserved(client, cid) == 1
+
+    refused(client, cid, "b", "budget_unknown_unbounded", previewed=True)
+    assert counters(client, cid) == (S3_TOKENS, 0, 0, 0)  # nothing recorded by the refusal
+
+    # It settles before any admission recorded it: counted once, from the ledger.
+    assert finish(client, old)["ok"] is True
+    assert spend(client, cid) == (2 * S3_TOKENS, 0, 0, 0) and running_unreserved(client, cid) == 0
+    assert counters(client, cid) == (2 * S3_TOKENS, 0, 0, 0)
+    assert item(client, old.invocation_id)["state"] == "settled"
+    _, p = admitted(client, cid, "c")                     # strict admits again
+    assert p["warnings"] == [] and counters(client, cid) == (3 * S3_TOKENS, 0, 0, 0)
+    ledger_matches_counters(client, cid)
+
+
+def test_a_running_unreserved_call_that_ends_unknown_stays_unbounded(make_client):
+    client = make_client(InMemoryStubFactory("slow-terminal"), timeout_seconds=0.5)
+    cid = conversation(client)
+    old = claim(client, submit(client, cid, key="old", text=PROMPT))
+    set_budget(client, root_of(client, cid), total=100000, per_call=1000, mode="soft")
+    turn = submit(client, cid, key="b", text=PROMPT)
+    approve(client, turn)
+    assert card(client, cid, turn["invocation_id"])["preview"]["warnings"] == ["unreserved_in_flight"]
+    finish(client, old)
+    with client.app.state.db.session() as s:
+        assert s.get(InvocationRow, old.invocation_id).status == "unknown"
+    # Its spend is still unknown with nothing reserved: no longer running, still unbounded.
+    assert spend(client, cid) == (0, 0, 0, 1) and running_unreserved(client, cid) == 0
+    assert card(client, cid, turn["invocation_id"])["preview"]["warnings"] == ["unknown_unbounded"]
+    set_budget(client, root_of(client, cid), total=100000, per_call=1000)
+    refused(client, cid, "c", "budget_unknown_unbounded", previewed=True)
 
 
 def test_a_reservation_survives_a_restart_as_unsettled(make_client):

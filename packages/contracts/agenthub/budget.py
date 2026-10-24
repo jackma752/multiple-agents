@@ -16,6 +16,11 @@ What a budget can and cannot do here:
 * **Unknown is never zero.** A settled call whose usage is unknown keeps its
   reservation as an unsettled charge; one with no reservation behind it is
   "unbounded". Strict mode refuses new calls while anything is unbounded.
+* **A budget switched on mid-flight.** A call admitted while the tree had no
+  budget (never set, or switched off) reserved nothing. While it still runs,
+  its spend is unknown with no reservation behind it, so it counts as
+  unbounded too (``unreserved_in_flight``) until it settles; it keeps running
+  and its approval is untouched.
 
 Modes (``Policy.token_budget_mode``):
 
@@ -78,13 +83,16 @@ class BudgetPolicy:
 class TreeSpend:
     """Where a tree stands. ``known`` is settled known spend; ``unsettled`` the
     reservations kept by calls whose spend is not (fully) known; ``reserved``
-    the reservations of calls still in flight; ``unbounded`` how many settled
-    calls have unknown spend with no reservation behind it."""
+    the reservations of calls still in flight; ``unbounded`` how many calls
+    have unknown spend with no reservation behind it - settled ones, plus the
+    ``unreserved_in_flight`` ones still running that were admitted before the
+    tree had a budget."""
 
     known: int = 0
     unsettled: int = 0
     reserved: int = 0
     unbounded: int = 0
+    unreserved_in_flight: int = 0
 
     @property
     def charged(self) -> int:
@@ -125,8 +133,7 @@ def decide(budget: BudgetPolicy, spend: TreeSpend, *, estimate: int,
             return BudgetDecision(False, "budget_unmeterable",
                                   message="该 Agent 不报告用量：严格预算模式下不启动")
         if spend.unbounded:
-            return BudgetDecision(False, "budget_unknown_unbounded",
-                                  message=f"本任务有 {spend.unbounded} 次调用用量未知且没有预留：严格模式下先处理或切换为软预算")
+            return BudgetDecision(False, "budget_unknown_unbounded", message=_unbounded_message(spend))
         if budget.per_call is None:
             return BudgetDecision(False, "budget_needs_per_call",
                                   message="严格模式需要单次预算作为每次调用的预留量")
@@ -138,8 +145,10 @@ def decide(budget: BudgetPolicy, spend: TreeSpend, *, estimate: int,
     else:
         if not metered:
             warnings.append("unmeterable")
-        if spend.unbounded:
+        if spend.unbounded > spend.unreserved_in_flight:
             warnings.append("unknown_unbounded")
+        if spend.unreserved_in_flight:
+            warnings.append("unreserved_in_flight")
         reserve = budget.per_call if budget.per_call is not None else estimate
         if budget.per_call is None:
             warnings.append("reservation_is_estimate")
@@ -148,6 +157,17 @@ def decide(budget: BudgetPolicy, spend: TreeSpend, *, estimate: int,
     if budget.total is not None and (spend.charged + reserve) * 100 >= budget.total * budget.warn_percent:
         warnings.append("warn_threshold")
     return BudgetDecision(True, "admitted", reserve=reserve, warnings=tuple(warnings))
+
+
+def _unbounded_message(spend: TreeSpend) -> str:
+    running = spend.unreserved_in_flight
+    settled = spend.unbounded - running
+    parts = []
+    if settled:
+        parts.append(f"{settled} 次已结束的调用用量未知且没有预留")
+    if running:
+        parts.append(f"{running} 次在预算开启前已获准的调用仍在执行、没有预留（结算后解除）")
+    return f"本任务有{'，'.join(parts)}：严格模式下先处理或切换为软预算"
 
 
 @dataclass(frozen=True)

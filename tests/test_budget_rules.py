@@ -71,6 +71,22 @@ def test_soft_admits_with_warnings():
     assert d.allowed and d.reserve == 50
     assert set(d.warnings) >= {"unmeterable", "unknown_unbounded", "reservation_is_estimate",
                                "projected_over_budget", "warn_threshold"}
+    assert "unreserved_in_flight" not in d.warnings
+
+
+def test_a_running_call_without_reservation_is_unbounded_risk():
+    # Admitted before the budget was switched on: still running, nothing reserved.
+    running = TreeSpend(unbounded=1, unreserved_in_flight=1)
+    d = decide(budget(total=1000, per_call=100), running, estimate=1, metered=True)
+    assert not d.allowed and d.code == "budget_unknown_unbounded"
+    assert "仍在执行" in d.message and "已结束" not in d.message
+    d = decide(budget(total=1000, per_call=100, mode=SOFT), running, estimate=1, metered=True)
+    assert d.allowed and d.warnings == ("unreserved_in_flight",)
+    both = TreeSpend(unbounded=3, unreserved_in_flight=1)
+    d = decide(budget(total=1000, per_call=100), both, estimate=1, metered=True)
+    assert "2 次已结束" in d.message and "1 次在预算开启前" in d.message
+    d = decide(budget(total=1000, per_call=100, mode=SOFT), both, estimate=1, metered=True)
+    assert d.warnings == ("unknown_unbounded", "unreserved_in_flight")
 
 
 # ---------------------------------------------------------------- settlement

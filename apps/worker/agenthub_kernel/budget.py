@@ -13,6 +13,13 @@
 * The counters of a tree are created lazily, the first time a budget applies,
   from the tree's existing ledger rows: spend before the budget was set
   counts too.
+* Every budgeted admission first reconciles the tree (:func:`ensure_counters`):
+  a call with no item yet - settled, or still running because it was admitted
+  while the tree had no budget (first switch-on, or switched off and on
+  again) - is brought onto the counters. A running one reserved nothing, so
+  it counts as unbounded (state ``unreserved``) until it settles. Views
+  compute the same reconciliation without writing (:func:`spend_preview`),
+  so the approval card's preview and the admission see the same numbers.
 
 Nothing here reads prompt or reply text; the estimate is computed from the
 approved snapshot's input length only and stored as a number.
@@ -22,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from agenthub.budget import (
@@ -35,6 +42,10 @@ from agenthub_kernel.db import (
 
 #: Statuses after which a call's spend is settled into the counters.
 SETTLED_STATUSES = ("succeeded", "failed", "canceled", "timed_out", "unknown")
+#: Approval consumed, not settled yet: the call is spending now.
+IN_FLIGHT_STATUSES = ("starting", "running")
+#: Item state of a running call admitted without a budget (nothing reserved).
+UNRESERVED = "unreserved"
 
 
 def tree_policy(session: Session, root_task_id: str) -> Policy:
@@ -57,39 +68,69 @@ def _counters(session: Session, root_task_id: str) -> Optional[TreeSpend]:
         TreeTokenBudgetRow.known, TreeTokenBudgetRow.unsettled,
         TreeTokenBudgetRow.reserved, TreeTokenBudgetRow.unbounded,
     ).where(TreeTokenBudgetRow.root_task_id == root_task_id)).first()
-    return TreeSpend(*row) if row is not None else None
+    if row is None:
+        return None
+    running = session.scalar(select(func.count()).select_from(TokenBudgetItemRow).where(
+        TokenBudgetItemRow.root_task_id == root_task_id, TokenBudgetItemRow.state == UNRESERVED))
+    return TreeSpend(*row, unreserved_in_flight=running or 0)
 
 
-def _tree_invocations(session: Session, root_task_id: str) -> list[InvocationRow]:
+def _unrecorded(session: Session, root_task_id: str) -> list[InvocationRow]:
+    """The tree's settled or running calls that have no budget item yet."""
     return session.scalars(
         select(InvocationRow).join(TaskRow, TaskRow.id == InvocationRow.task_id)
-        .where(TaskRow.root_task_id == root_task_id)
+        .outerjoin(TokenBudgetItemRow, TokenBudgetItemRow.invocation_id == InvocationRow.id)
+        .where(TaskRow.root_task_id == root_task_id, TokenBudgetItemRow.invocation_id.is_(None),
+               InvocationRow.status.in_(SETTLED_STATUSES + IN_FLIGHT_STATUSES))
+        .order_by(InvocationRow.created_at, InvocationRow.id)
     ).all()
 
 
 def ensure_counters(session: Session, root_task_id: str) -> None:
-    """Create the tree's counters once, settling the calls it already made."""
-    if session.get(TreeTokenBudgetRow, root_task_id) is not None:
-        return
-    session.add(TreeTokenBudgetRow(root_task_id=root_task_id, known=0, unsettled=0,
-                                   reserved=0, unbounded=0))
-    session.flush()
-    for inv in _tree_invocations(session, root_task_id):
-        if inv.status in SETTLED_STATUSES and session.get(TokenBudgetItemRow, inv.id) is None:
+    """Create the tree's counters if needed and bring every unrecorded call onto them.
+
+    Settled calls charge what the ledger knows. Running calls were admitted
+    while the tree had no budget and reserved nothing: each is recorded as
+    ``unreserved`` and counts as unbounded until it settles, when
+    :func:`settle_budget` replaces that with its real charge (once). Runs in
+    the claim's ``BEGIN IMMEDIATE`` transaction, so no settlement can slip
+    between this reconciliation and the reservation CAS.
+    """
+    if session.get(TreeTokenBudgetRow, root_task_id) is None:
+        session.add(TreeTokenBudgetRow(root_task_id=root_task_id, known=0, unsettled=0,
+                                       reserved=0, unbounded=0))
+        session.flush()
+    for inv in _unrecorded(session, root_task_id):
+        if inv.status in SETTLED_STATUSES:
             _settle_item(session, root_task_id, inv.id)
+        else:
+            _record_unreserved(session, root_task_id, inv.id)
+
+
+def _record_unreserved(session: Session, root_task_id: str, invocation_id: str) -> None:
+    # Accounting only: the call keeps running and its approval is not touched.
+    session.add(TokenBudgetItemRow(invocation_id=invocation_id, root_task_id=root_task_id,
+                                   estimate=0, reservation=0, reserved=0, known=0, unsettled=0,
+                                   unbounded=1, overrun=False, state=UNRESERVED, warnings=[]))
+    session.execute(
+        update(TreeTokenBudgetRow).where(TreeTokenBudgetRow.root_task_id == root_task_id)
+        .values(unbounded=TreeTokenBudgetRow.unbounded + 1)
+        .execution_options(synchronize_session=False))
+    session.flush()
 
 
 def spend_preview(session: Session, root_task_id: str) -> TreeSpend:
-    """The tree's spend without writing anything (for views)."""
-    counters = _counters(session, root_task_id)
-    if counters is not None:
-        return counters
-    known = unbounded = 0
-    for inv in _tree_invocations(session, root_task_id):
+    """The tree's spend after :func:`ensure_counters`, without writing anything (for views)."""
+    base = _counters(session, root_task_id) or TreeSpend()
+    known, unbounded, running = base.known, base.unbounded, base.unreserved_in_flight
+    for inv in _unrecorded(session, root_task_id):
         if inv.status in SETTLED_STATUSES:
             s = settle(0, _usage(session, inv.id))
             known, unbounded = known + s.known, unbounded + s.unbounded
-    return TreeSpend(known=known, unbounded=unbounded)
+        else:
+            unbounded, running = unbounded + 1, running + 1
+    return TreeSpend(known=known, unsettled=base.unsettled, reserved=base.reserved,
+                     unbounded=unbounded, unreserved_in_flight=running)
 
 
 def admit(session: Session, inv: InvocationRow, root_task_id: str, policy: Policy, *,
@@ -196,11 +237,16 @@ def budget_view(session: Session, root_task_id: Optional[str], *,
         return view  # a card without a budget needs no tree arithmetic
     spend = spend_preview(session, root_task_id)
     view.update({"known": spend.known, "unsettled": spend.unsettled, "reserved": spend.reserved,
-                 "unbounded": spend.unbounded,
+                 "unbounded": spend.unbounded, "unreserved_in_flight": spend.unreserved_in_flight,
                  "remaining": budget.total - spend.charged if budget.total is not None else None})
     if inv is not None:
         item = session.get(TokenBudgetItemRow, inv.id)
         view["this_call"] = item_view(item)
+        if item is None and inv.status in IN_FLIGHT_STATUSES:
+            # What ensure_counters will record for it (spend_preview counts it already).
+            view["this_call"] = {"estimate_visible": 0, "reservation": 0, "reserved": 0, "known": 0,
+                                 "unsettled": 0, "unbounded": 1, "overrun": False,
+                                 "state": UNRESERVED, "mode": None, "warnings": []}
         if item is None and inv.status in ("awaiting_approval", "queued") and budget.active:
             view["preview"] = decide(budget, spend, estimate=estimate or 0, metered=True).to_dict()
             view["assumes_usage_reporting"] = True
