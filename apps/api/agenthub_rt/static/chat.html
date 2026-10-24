@@ -676,7 +676,7 @@ function renderSendPreview() {
   if (!p) { $("sendPreview").replaceChildren(); return; }
   const warn = budgetWarning(S.sendPreview.budget);
   $("sendPreview").replaceChildren(
-    warn ? el("div", { class: "note" }, el("span", { class: "chip bad" }, "预算"), " " + warn) : null,
+    ...(warn ? [el("div", { class: "note" }, el("span", { class: "chip bad" }, "预算"), " " + warn)] : []),
     el("details", { class: "sent" },
       el("summary", {}, "发送前预览：" + contextSummary(p).replace(/^上下文预览：/, "")),
       contextLines(p).map((t) => el("div", { class: "note" }, t)),
