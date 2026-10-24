@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import date
+from types import SimpleNamespace
 from typing import Literal, Optional
 
 from fastapi import Depends, Header, HTTPException, Query, Request
@@ -13,10 +14,12 @@ from sqlalchemy import select, text
 from starlette.concurrency import run_in_threadpool
 
 from agenthub.chat import MAX_MESSAGE_CHARS, ConversationTurn
+from agenthub.files import MAX_REFS
 from agenthub_kernel.adapters import adapter_binding, adapter_context_profile
 from agenthub_kernel.conversations import (
-    conversation_view, owned_conversation, submit_turn, turn_view,
+    compose_turn, conversation_view, owned_conversation, submit_turn, turn_view,
 )
+from agenthub_kernel.file_refs import FileRefError, list_files
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
 from agenthub_kernel.usage_ledger import conversation_usage, instance_usage
 
@@ -59,6 +62,8 @@ class TurnIn(MessageIn):
     context_mode: Literal["independent", "native_resume"] = "independent"
     # Manual handoff: replies of this conversation the user chose to pass on.
     handoff_message_ids: list[int] = Field(default_factory=list, max_length=3)
+    # Files or line ranges the Hub reads and sends (agenthub.files syntax).
+    file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
 
     @field_validator("agent_id", "client_request_id")
     @classmethod
@@ -66,6 +71,38 @@ class TurnIn(MessageIn):
         if not value.strip():
             raise ValueError("identifier cannot be blank")
         return value
+
+
+class PreviewIn(BaseModel):
+    """What the composer would send: nothing is created, nothing is approved."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    conversation_id: Optional[str] = None  # needed only to preview a handoff
+    text: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
+    agent_id: str = Field(min_length=1, max_length=200)
+    context_mode: Literal["independent", "native_resume"] = "independent"
+    handoff_message_ids: list[int] = Field(default_factory=list, max_length=3)
+    file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
+
+
+def _turn_of(data: dict) -> ConversationTurn:
+    try:
+        return ConversationTurn(**{**data, "handoff_message_ids": tuple(data["handoff_message_ids"]),
+                                   "file_refs": tuple(data["file_refs"])})
+    except ValueError as exc:
+        raise HTTPException(422, detail={"code": "invalid_turn", "message": str(exc)})
+
+
+def _http_error(exc: QuotaError) -> HTTPException:
+    status = 404 if exc.code in ("no_conversation", "handoff_not_found") else (
+        422 if exc.code in FILE_REF_INPUT_ERRORS else 409)
+    return HTTPException(status, detail={"code": exc.code, "message": exc.message})
+
+
+#: File-reference refusals caused by what was asked for (not by server state).
+FILE_REF_INPUT_ERRORS = frozenset({
+    "invalid_file_ref", "file_outside_root", "file_excluded", "file_not_found", "file_too_large",
+    "file_not_text", "range_out_of_bounds", "snippet_too_large", "files_too_large", "context_too_large",
+})
 
 
 def register_conversations(app, db) -> None:
@@ -261,11 +298,7 @@ def register_conversations(app, db) -> None:
     @app.post("/api/conversations/{cid}/invocations")
     def create_turn(cid: str, body: TurnIn, principal: Principal = Depends(authenticate)):
         require_approver(principal)
-        data = body.model_dump()
-        try:
-            request = ConversationTurn(**{**data, "handoff_message_ids": tuple(data["handoff_message_ids"])})
-        except ValueError as exc:
-            raise HTTPException(422, detail={"code": "invalid_turn", "message": str(exc)})
+        request = _turn_of(body.model_dump())
         with db.session() as session:
             session.execute(text("BEGIN IMMEDIATE"))
             try:
@@ -275,12 +308,45 @@ def register_conversations(app, db) -> None:
                 adapter = app.state.worker.adapter
                 return submit_turn(session, cid, principal.identity, request,
                                    adapter_version=adapter_binding(adapter, request.agent_id),
-                                   context_profile=adapter_context_profile(adapter, request.agent_id))
+                                   context_profile=adapter_context_profile(adapter, request.agent_id),
+                                   files_root=app.state.files_root)
             except QuotaError as exc:
-                raise HTTPException(
-                    404 if exc.code in ("no_conversation", "handoff_not_found") else 409,
-                    detail={"code": exc.code, "message": exc.message},
-                )
+                raise _http_error(exc)
+
+    @app.post("/api/context-preview")
+    def preview_turn(body: PreviewIn, principal: Principal = Depends(authenticate)):
+        """The text a message would send and its context preview; creates nothing.
+
+        The submitted call composes again from the files as they are then; the
+        approval card shows (and binds) that result.
+        """
+        require_approver(principal)
+        request = SimpleNamespace(text=body.text, context_mode=body.context_mode,
+                                  handoff_message_ids=tuple(body.handoff_message_ids),
+                                  file_refs=tuple(body.file_refs))
+        with db.session() as session:
+            if body.conversation_id is not None:
+                require_conversation(session, body.conversation_id, principal)
+            elif request.handoff_message_ids:
+                raise HTTPException(422, detail={"code": "invalid_turn",
+                                                  "message": "a handoff needs its conversation_id"})
+            try:
+                sent, preview, _handoff = compose_turn(
+                    session, body.conversation_id, request, files_root=app.state.files_root,
+                    context_profile=adapter_context_profile(app.state.worker.adapter, body.agent_id))
+            except QuotaError as exc:
+                raise _http_error(exc)
+        return {"sent_text": sent, "context_preview": preview}
+
+    @app.get("/api/files")
+    def files(q: str = Query("", max_length=200), limit: int = Query(50, ge=1, le=200),
+              principal: Principal = Depends(authenticate)):
+        """Paths under the files root that a message may reference (for the picker)."""
+        require_approver(principal)
+        try:
+            return list_files(app.state.files_root, q, limit)
+        except FileRefError as exc:
+            raise HTTPException(409, detail={"code": exc.code, "message": exc.message})
 
     @app.post("/api/invocations/{invocation_id}/run")
     def run_invocation(

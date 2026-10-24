@@ -42,10 +42,12 @@ USER_INPUT = "user_input"
 HANDOFF_FRAME = "handoff_frame"      # the Hub's fixed lines around a handed-over reply
 HANDOFF_CONTENT = "handoff_content"  # the handed-over reply itself
 SEPARATOR = "separator"              # blank lines between blocks
-FILE_SNIPPET = "file_snippet"        # reserved: produced from T-1f on
-PART_KINDS = frozenset({USER_INPUT, HANDOFF_FRAME, HANDOFF_CONTENT, SEPARATOR, FILE_SNIPPET})
-#: Keys a part may carry besides its numbers: where its text came from.
-SOURCE_KEYS = frozenset({"message_id", "agent_id"})
+FILE_FRAME = "file_frame"            # the Hub's fixed lines around a file snippet
+FILE_SNIPPET = "file_snippet"        # text the Hub read from a referenced file (agenthub.files)
+PART_KINDS = frozenset({USER_INPUT, HANDOFF_FRAME, HANDOFF_CONTENT, SEPARATOR, FILE_FRAME, FILE_SNIPPET})
+#: Keys a part may carry besides its numbers: where its text came from. File
+#: parts carry the root-relative path, the line range and the whole file's hash.
+SOURCE_KEYS = frozenset({"message_id", "agent_id", "path", "start_line", "end_line", "file_sha256"})
 
 #: What the provider adds on its own side (labels only; sizes unknown).
 PROVIDER_FIXED = "instructions_and_tools"

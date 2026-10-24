@@ -10,6 +10,7 @@ import hashlib
 import json
 
 from agenthub.contracts import CONTEXT_MODES, INDEPENDENT
+from agenthub.files import MAX_REFS, parse_ref
 
 
 CONTEXT_MODE = INDEPENDENT
@@ -28,6 +29,9 @@ class ConversationTurn:
     context_mode: str = INDEPENDENT
     #: Earlier assistant replies of this conversation to pass on, chosen by the user.
     handoff_message_ids: tuple = ()
+    #: Files (or line ranges) the Hub reads and sends with this message
+    #: (``agenthub.files`` syntax), chosen by the user.
+    file_refs: tuple = ()
 
     def __post_init__(self) -> None:
         ids = self.handoff_message_ids
@@ -35,6 +39,10 @@ class ConversationTurn:
                 or len(set(ids)) != len(ids)
                 or not all(type(i) is int and i > 0 for i in ids)):
             raise ValueError(f"handoff_message_ids: up to {MAX_HANDOFF_MESSAGES} distinct message ids")
+        if not isinstance(self.file_refs, tuple) or len(self.file_refs) > MAX_REFS:
+            raise ValueError(f"file_refs: up to {MAX_REFS} references")
+        for spec in self.file_refs:
+            parse_ref(spec)
         for value, maximum in (
             (self.text, MAX_MESSAGE_CHARS),
             (self.agent_id, 200),
@@ -57,6 +65,10 @@ class ConversationTurn:
             data["handoff_message_ids"] = list(data["handoff_message_ids"])
         else:
             del data["handoff_message_ids"]  # likewise for keys stored before handoff existed
+        if data["file_refs"]:
+            data["file_refs"] = list(data["file_refs"])
+        else:
+            del data["file_refs"]
         return hashlib.sha256(
             json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()

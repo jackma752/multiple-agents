@@ -112,6 +112,14 @@
     <form id="composer" autocomplete="off">
       <textarea id="text" placeholder="输入消息（Ctrl+Enter 发送）"></textarea>
       <div class="row">
+        <input id="fileRef" list="fileList" aria-label="引用文件" style="flex:1;min-width:200px"
+               placeholder="引用文件：路径，或 路径:L10-20（带空格的路径可加引号）" />
+        <datalist id="fileList"></datalist>
+        <button type="button" id="addRefBtn">添加引用</button>
+        <span id="refChips"></span>
+      </div>
+      <div id="sendPreview"></div>
+      <div class="row">
         <label>Agent <select id="agent"></select></label>
         <label title="每次创建调用都要明确选择；不会沿用上一次的选择">执行模式
           <select id="mode" aria-label="执行模式">
@@ -160,6 +168,8 @@ const S = {
   cards: new Map(),   // tool_approval_id -> card view
   consent: new Map(), // invocation_id -> boundary consent ticked for THIS call only
   handoff: [],        // reply message_ids chosen to pass on with the NEXT call only
+  refs: [],           // file references (agenthub.files syntax) for the NEXT call only
+  sendPreview: null,  // what the composer would send now: {sent_text, context_preview}
   busy: new Set(),    // actions in flight (keys), to disable double clicks
   viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
   createPromise: null, // the one conversation creation in flight, shared by every caller
@@ -567,14 +577,72 @@ async function send(event) {
       client_request_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())),
       context_mode: $("resume").checked ? "native_resume" : "independent",
       handoff_message_ids: S.handoff.slice(),
+      file_refs: S.refs.slice(),
     });
     if (current(gen)) patch(call(turn.invocation_id), turn);
     $("text").value = "";
     $("resume").checked = false;
     S.handoff = [];  // a handoff belongs to one call; the next one chooses again
+    S.refs = []; S.sendPreview = null;  // likewise the referenced files
     $("mode").value = "";  // the next call needs its own explicit choice
     if (current(gen)) needMessages(gen);
   });
+}
+
+/* ------------------------------------------------- file references --- */
+
+/* What the composer would send now (nothing is created): the same composition the
+   server will bind into the approval when the message is sent. */
+async function previewSend(refs = S.refs) {
+  if (!refs.length && !S.handoff.length) { S.sendPreview = null; renderComposer(); return true; }
+  try {
+    S.sendPreview = await api("POST", "/api/context-preview", {
+      conversation_id: S.cid || null, text: $("text").value, agent_id: $("agent").value,
+      context_mode: $("resume").checked ? "native_resume" : "independent",
+      handoff_message_ids: S.handoff.slice(), file_refs: refs,
+    });
+    renderComposer();
+    return true;
+  } catch (err) {
+    toast(err.message);
+    return false;
+  }
+}
+
+async function addRef() {
+  const spec = $("fileRef").value.trim();
+  if (!spec) return;
+  if (S.refs.includes(spec)) { toast("已经引用了这一项"); return; }
+  if (S.refs.length >= 8) { toast("一次最多引用 8 项"); return; }
+  if (await previewSend([...S.refs, spec])) { S.refs.push(spec); $("fileRef").value = ""; renderComposer(); }
+}
+
+function removeRef(spec) {
+  S.refs = S.refs.filter((s) => s !== spec);
+  previewSend();
+}
+
+async function suggestFiles() {
+  const q = $("fileRef").value.replace(/^@/, "").replace(/^"|"?(:L?\d+(-L?\d+)?)?$/gi, "");
+  if (!S.token) return;
+  try {
+    const data = await api("GET", "/api/files", undefined, { q, limit: 30 });
+    $("fileList").replaceChildren(...data.files.map((f) => el("option", { value: f })));
+  } catch (_) { $("fileList").replaceChildren(); /* no files root: adding explains why */ }
+}
+
+function debounced(fn, ms) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+function renderSendPreview() {
+  const p = S.sendPreview && S.sendPreview.context_preview;
+  if (!p) { $("sendPreview").replaceChildren(); return; }
+  $("sendPreview").replaceChildren(el("details", { class: "sent" },
+    el("summary", {}, "发送前预览：" + contextSummary(p).replace(/^上下文预览：/, "")),
+    contextLines(p).map((t) => el("div", { class: "note" }, t)),
+    el("pre", { class: "mono" }, S.sendPreview.sent_text)));
 }
 
 /* ----------------------------------------------------- conversations --- */
@@ -722,9 +790,11 @@ function renderCall(c) {
   }
   const notes = [];
   const handoff = c.handoff || [];
+  const fileCount = ((c.context_preview || {}).parts || []).filter((x) => x.kind === "file_snippet").length;
   if (c.status === "awaiting_approval")
     notes.push(`同意后将调用 ${c.agent_id || "Agent"} 一次，发送` +
-               (handoff.length ? `下面的完整内容（你的消息 + ${handoff.length} 段交接）` : "本条消息原文") +
+               (handoff.length || fileCount ? `下面的完整内容（你的消息` + (handoff.length ? ` + ${handoff.length} 段交接` : "") +
+                                              (fileCount ? ` + ${fileCount} 段文件` : "") + "）" : "本条消息原文") +
                (c.context_mode === "native_resume" ? `，并续接 thread ${short(c.resume_thread_id)} 的上下文。` : "。"));
   if (c.turn) notes.push(c.turn.resumed ? `模型回合已开始（续接 thread ${short(c.turn.thread_id)}）` : "模型回合已开始");
   if (c.ended && c.ended.native_unfinished && c.ended.native_unfinished.length) {
@@ -769,7 +839,7 @@ function renderCall(c) {
     " 我已了解并同意本次调用的用户监督边界：" + supervisedBoundaryText(c.agent_id)) : null;
   // A handoff sends more than the user's own text: the exact composed input is
   // what the approval binds, so it is shown in full (open while awaiting).
-  const sent = handoff.length && c.sent_text ? el("details", { class: "sent", open: awaiting ? "open" : null },
+  const sent = c.sent_text ? el("details", { class: "sent", open: awaiting ? "open" : null },
     el("summary", {}, "将发送的完整内容（" + c.sent_text.length + " 字）"),
     el("pre", { class: "mono" }, c.sent_text)) : null;
   // What the approval binds, part by part (T-1d): open while it can still be approved.
@@ -819,7 +889,11 @@ function contextLines(p) {
   const seps = of("separator");
   if (seps.length) lines.push(`分隔空行：${size(sum(seps))}`);
   const files = of("file_snippet");
-  lines.push(files.length ? `文件片段：${files.length} 段，${size(sum(files))}` : "文件片段：无");
+  if (!files.length) lines.push("文件片段：无");
+  for (const f of files) {
+    const frame = p.parts.filter((x) => x.kind === "file_frame" && x.path === f.path && x.start_line === f.start_line);
+    lines.push(`文件 ${f.path} 第 ${f.start_line}-${f.end_line} 行：正文 ${size(f)}，Hub 框架 ${size(sum(frame))}`);
+  }
   lines.push(p.adapter_text && p.adapter_text.chars === 0 ? "适配器附加文本：无（原样发送上面的内容）"
                                                           : "适配器附加文本：未知（该适配器未声明）");
   const h = p.provider_hidden || {};
@@ -852,6 +926,7 @@ function toggleHandoff(m) {
   else if (S.handoff.length >= 3) { toast("一次最多交接 3 条回复"); return; }
   else S.handoff.push(m.message_id);
   render();
+  previewSend();
 }
 
 function short(id) { return id ? String(id).slice(0, 8) : "?"; }
@@ -1132,6 +1207,9 @@ function renderComposer() {
   $("handoffChips").replaceChildren(...picks.map((m) => el("span", { class: "chip info" },
     `附带交接：${(m.invocation && m.invocation.agent_id) || "Agent"} #${m.message_id}（${m.text.length} 字）`,
     el("button", { class: "mini", title: "移除", onclick: () => toggleHandoff(m) }, "×"))));
+  $("refChips").replaceChildren(...S.refs.map((spec) => el("span", { class: "chip info" },
+    `引用：${spec}`, el("button", { type: "button", class: "mini", title: "移除", onclick: () => removeRef(spec) }, "×"))));
+  renderSendPreview();
   $("composerNote").textContent = !S.token ? "请先连接"
     : !mode ? "请先选择执行模式"
     : active ? "有调用正在执行或状态未知，暂不能续接 thread"
@@ -1190,6 +1268,10 @@ $("connectBtn").addEventListener("click", connect);
 $("newConvBtn").addEventListener("click", () => guarded("newconv",
   () => createConversation("新会话 " + new Date().toLocaleTimeString())));
 $("composer").addEventListener("submit", send);
+$("addRefBtn").addEventListener("click", addRef);
+$("fileRef").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addRef(); } });
+$("fileRef").addEventListener("input", debounced(suggestFiles, 250));
+$("text").addEventListener("input", debounced(() => { if (S.refs.length || S.handoff.length) previewSend(); }, 500));
 $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();
 });

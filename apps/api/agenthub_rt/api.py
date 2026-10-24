@@ -100,6 +100,7 @@ def create_app(
     db_url: Optional[str] = None,
     adapter: Optional[Any] = None,
     adapter_kind: Optional[str] = None,
+    files_root: Optional[str] = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -135,6 +136,8 @@ def create_app(
         adapter = build_adapter(adapter_kind)
     app.state.adapter = adapter
     app.state.worker = Worker(db, adapter)
+    # The only tree a message's file references may read (None: refused).
+    app.state.files_root = files_root or config.files_root()
 
     # Read-model endpoints + the zero-build console page (see ui.py).
     from agenthub_rt.ui import register_ui

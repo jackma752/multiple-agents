@@ -251,6 +251,16 @@ def tool_approval_ttl() -> float:
     return _bounded_number(ENV_TOOL_APPROVAL_TTL, 120, 1, 600)
 
 
+#: The only directory tree whose files a message may reference (T-1e). Unset:
+#: file references are refused.
+ENV_FILES_ROOT = "AGENT_HUB_FILES_ROOT"
+
+
+def files_root() -> str | None:
+    value = (os.environ.get(ENV_FILES_ROOT) or "").strip()
+    return os.path.abspath(value) if value else None
+
+
 def codex_transport() -> str:
     """Selected Codex transport; anything unrecognised falls back to exec."""
     value = (os.environ.get(ENV_CODEX_TRANSPORT) or "").strip().lower()

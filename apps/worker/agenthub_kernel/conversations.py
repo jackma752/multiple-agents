@@ -7,7 +7,7 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
 from agenthub.chat import CONTEXT_MODE, MAX_HANDOFF_CHARS, MAX_MESSAGE_CHARS, ConversationTurn
-from agenthub.context import HANDOFF_CONTENT, HANDOFF_FRAME, SEPARATOR, USER_INPUT, compose
+from agenthub.context import FILE_SNIPPET, HANDOFF_CONTENT, HANDOFF_FRAME, SEPARATOR, USER_INPUT, compose
 from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
 
 #: Statuses in which a provider thread may still be executing a turn.
@@ -18,6 +18,7 @@ from agenthub_kernel.db import (
 )
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.budget import budget_view
+from agenthub_kernel.file_refs import FileRefError, file_segments
 from agenthub_kernel.usage_ledger import usage_view
 
 
@@ -53,8 +54,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "context_mode": inv.snapshot.get("context_mode", CONTEXT_MODE),
         "resume_thread_id": inv.snapshot.get("resume_thread_id"),
         "handoff": inv.snapshot.get("handoff") or [],
-        # With a handoff, what is sent differs from the user's own text: show it all.
-        "sent_text": inv.snapshot["task_input"] if inv.snapshot.get("handoff") else None,
+        # With a handoff or files, what is sent differs from the user's own text: show it all.
+        "sent_text": inv.snapshot["task_input"] if _adds_context(inv.snapshot) else None,
         # What this call sends, part by part, as approved (T-1d); None before T-1d.
         "context_preview": inv.snapshot.get("context_preview"),
         # Normalized ledger row (T-1a); None until the call is settled.
@@ -62,6 +63,11 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         # Token budget of its tree as the approval card shows it (T-1c).
         "budget": budget_view(session, _root_of_task(session, inv.task_id), inv=inv),
     }
+
+
+def _adds_context(snapshot: dict) -> bool:
+    parts = (snapshot.get("context_preview") or {}).get("parts") or []
+    return bool(snapshot.get("handoff")) or any(p.get("kind") == FILE_SNIPPET for p in parts)
 
 
 def _root_of_task(session: Session, task_id: str) -> Optional[str]:
@@ -154,16 +160,48 @@ def native_resume_blocker(session: Session, inv: InvocationRow) -> Optional[tupl
     return None
 
 
+def compose_turn(session: Session, cid: str, request: Any, *, context_profile: Optional[dict] = None,
+                 files_root: Optional[str] = None) -> tuple[str, dict, tuple]:
+    """The text a turn sends, its context preview and its handoff records; writes nothing.
+
+    The user's text, then the chosen replies (handoff) and the referenced files,
+    each in a fixed frame. The composed text is what the agent receives and what
+    the approval binds; the user's message keeps only what the user typed. The
+    preview is built from the same segments, so its parts are an exact split of
+    that text (T-1d). File contents are read now, once: the approved text is
+    what runs, whatever happens to the files afterwards (T-1f).
+    """
+    segments, handoff = [(USER_INPUT, request.text)], ()
+    if request.handoff_message_ids:
+        blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
+        for block in blocks:
+            segments += [(SEPARATOR, "\n\n"), *block]
+    if request.file_refs:
+        try:
+            segments += file_segments(files_root, request.file_refs)
+        except FileRefError as exc:
+            raise QuotaError(exc.code, exc.message) from None
+        except ValueError as exc:
+            raise QuotaError("invalid_file_ref", str(exc)) from None
+    task_input, preview = compose(segments, context_mode=request.context_mode, profile=context_profile)
+    if len(task_input) > MAX_MESSAGE_CHARS:
+        raise QuotaError("handoff_too_large" if not request.file_refs else "context_too_large",
+                         "message with its handoff and files exceeds the size limit")
+    return task_input, preview, handoff
+
+
 def submit_turn(
     session: Session, cid: str, user_id: str, request: ConversationTurn,
     *, adapter_version: str = "unknown", context_profile: Optional[dict] = None,
+    files_root: Optional[str] = None,
 ) -> dict[str, Any]:
     """Caller holds SQLite's writer lock; message/draft/approval commit together.
 
     ``adapter_version`` is the serving adapter's binding identity; it enters
     the snapshot, so the approval binds it (D11). ``context_profile`` is what
     the serving adapter declares for the context preview (T-1d); the preview
-    enters the snapshot too.
+    enters the snapshot too. ``files_root`` bounds which files ``file_refs``
+    may read.
     """
     conversation = owned_conversation(session, cid, user_id)
     previous = session.scalar(select(ChatMessageRow).where(
@@ -198,20 +236,8 @@ def submit_turn(
             raise QuotaError("native_session_busy",
                              "another call in this conversation is active or unknown")
 
-    # A manual handoff: the chosen replies are appended to the user's text in a
-    # fixed frame. The composed text is what the agent receives and what the
-    # approval binds; the user's message keeps only what the user typed. The
-    # context preview is built from the same segments, so its parts are an
-    # exact split of that text (T-1d).
-    segments, handoff = [(USER_INPUT, request.text)], ()
-    if request.handoff_message_ids:
-        blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
-        for block in blocks:
-            segments += [(SEPARATOR, "\n\n"), *block]
-    task_input, preview = compose(segments, context_mode=request.context_mode, profile=context_profile)
-    if len(task_input) > MAX_MESSAGE_CHARS:
-        raise QuotaError("handoff_too_large", "message with handoff exceeds the size limit")
-
+    task_input, preview, handoff = compose_turn(session, cid, request, context_profile=context_profile,
+                                                files_root=files_root)
     snapshot = InvocationSnapshot(
         agent_id=request.agent_id, task_input=task_input, parent_task_id=None,
         depth=0, policy_version=root.policy_version, execution_mode=request.execution_mode,

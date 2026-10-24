@@ -110,11 +110,19 @@ def main() -> None:
         default=None,
         help="runtime data directory (database, run dirs); default var/",
     )
+    parser.add_argument(
+        "--files-root",
+        default=None,
+        help="the only directory tree messages may reference files from (@ references); "
+             "default: none, references refused",
+    )
     args = parser.parse_args()
 
     # Environment first: config resolves DATA_DIR when it is imported.
     if args.data_dir:
         os.environ["AGENT_HUB_DATA_DIR"] = os.path.abspath(args.data_dir)
+    if args.files_root:
+        os.environ["AGENT_HUB_FILES_ROOT"] = os.path.abspath(args.files_root)
     if args.appserver_stub:
         os.environ["AGENT_HUB_ADAPTER"] = "multi" if args.adapter == "multi" else "codex"
         os.environ["AGENT_HUB_CODEX_TRANSPORT"] = "app-server"
@@ -162,6 +170,7 @@ def main() -> None:
     print(f"  OpenAPI  : http://{args.host}:{args.port}/openapi.json")
     print(f"  Database : {config.default_db_url()}")
     print(f"  Data dir : {config.DATA_DIR}")
+    print(f"  Files    : {config.files_root() or '(none: file references refused)'}")
     if args.appserver_stub:
         print(f"  stub     : tools/demo/stub_appserver.py --scenario {args.appserver_stub}")
     elif kind == "codex" and config.codex_transport() == "app-server":

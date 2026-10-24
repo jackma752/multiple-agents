@@ -46,7 +46,7 @@ def test_empty_segments_are_dropped_and_unknown_kinds_refused():
     with pytest.raises(ValueError):
         compose([("summary", "x")])
     with pytest.raises(ValueError):
-        compose([(HANDOFF_CONTENT, "x", {"path": "C:/secret"})])
+        compose([(HANDOFF_CONTENT, "x", {"note": "free text"})])
 
 
 def test_provider_side_context_is_unknown_and_never_estimated():
@@ -87,7 +87,7 @@ def _bump(p, i, key, by=1):
     lambda p: {**p, "parts": [{**p["parts"][0], "sha256": "0" * 64}, *p["parts"][1:]]},
     lambda p: {**p, "parts": p["parts"][:-1]},
     lambda p: {**p, "parts": [{**p["parts"][0], "kind": "summary"}, *p["parts"][1:]]},
-    lambda p: {**p, "parts": [{**p["parts"][0], "path": "x"}, *p["parts"][1:]]},
+    lambda p: {**p, "parts": [{**p["parts"][0], "note": "x"}, *p["parts"][1:]]},
     lambda p: {**p, "provider_hidden": {"status": "known", "tokens": 0}},
     lambda p: {**p, "version": 2},
     lambda p: {**p, "estimator": "tiktoken"},
