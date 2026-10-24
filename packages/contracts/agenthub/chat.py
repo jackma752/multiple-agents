@@ -41,8 +41,16 @@ class ConversationTurn:
     include_history: bool = False
     #: Output preference added as a visible hint (``agenthub.output``); "" = none.
     output_style: str = ""
+    #: P4 (``agenthub.collab``), set by the Hub's own endpoints: dispatch this plan
+    #: item as a sub-task, or collect a finished plan's results.
+    plan_item_id: Optional[int] = None
+    collect_plan_id: Optional[int] = None
 
     def __post_init__(self) -> None:
+        for name in ("plan_item_id", "collect_plan_id"):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"{name} must be a positive integer")
         if self.output_style not in OUTPUT_STYLES:
             raise ValueError("output_style must be '', 'concise' or 'detailed'")
         if self.summary_id is not None and (type(self.summary_id) is not int or self.summary_id < 1):
@@ -84,7 +92,8 @@ class ConversationTurn:
             data["file_refs"] = list(data["file_refs"])
         else:
             del data["file_refs"]
-        for key in ("summary_id", "include_history", "output_style"):  # likewise, absent unless used
+        for key in ("summary_id", "include_history", "output_style", "plan_item_id", "collect_plan_id"):
+            # likewise, absent unless used
             if not data[key]:
                 del data[key]
         return hashlib.sha256(

@@ -11,17 +11,21 @@ from agenthub.context import (
     FILE_SNIPPET, HANDOFF_CONTENT, HANDOFF_FRAME, OUTPUT_HINT, SEPARATOR, USER_INPUT, compose,
 )
 from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
+from agenthub.collab import MAX_COLLECT_CHARS
 from agenthub.output import OUTPUT_HINTS
 
 #: Statuses in which a provider thread may still be executing a turn.
 THREAD_BUSY_STATUSES = ("starting", "running", "unknown")
 from agenthub_kernel.adapters import adapter_for
 from agenthub_kernel.db import (
-    ApprovalRow, ChatMessageRow, ConversationRow, InvocationRow, TaskRow,
+    ApprovalRow, ChatMessageRow, CollabItemRow, ConversationRow, InvocationRow, TaskRow,
 )
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.budget import budget_view
 from agenthub_kernel.file_refs import FileRefError, file_blocks
+from agenthub_kernel.collab import (
+    attempt_of, check_dispatch, collected_replies, dependency_replies, plan_in, record_attempt,
+)
 from agenthub_kernel.summaries import (
     history_segments, link_view, summary_segments, tree_owner, usable_summary,
 )
@@ -66,6 +70,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "sent_text": inv.snapshot["task_input"] if _adds_context(inv.snapshot) else None,
         # What this call sends, part by part, as approved (T-1d); None before T-1d.
         "context_preview": inv.snapshot.get("context_preview"),
+        # P4: the plan item and attempt this sub-task call belongs to, if any.
+        "plan_item": attempt_of(session, inv.id), "depth": inv.snapshot.get("depth", 0),
         # Normalized ledger row (T-1a); None until the call is settled.
         "usage": usage_view(session, inv),
         # Token budget of its tree as the approval card shows it (T-1c).
@@ -115,9 +121,13 @@ def build_handoff(session: Session, cid: str, message_ids: tuple) -> tuple[list[
             raise QuotaError("handoff_too_large",
                              f"handed-over text exceeds {MAX_HANDOFF_CHARS} characters")
         blocks.append(handoff_segments(source, source_agent))
-        records.append({"message_id": source.id, "agent_id": source_agent, "chars": len(source.text),
-                        "sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest()})
+        records.append(_handoff_record(source, source_agent))
     return blocks, tuple(records)
+
+
+def _handoff_record(source: ChatMessageRow, agent_id: str) -> dict[str, Any]:
+    return {"message_id": source.id, "agent_id": agent_id, "chars": len(source.text),
+            "sha256": hashlib.sha256(source.text.encode("utf-8")).hexdigest()}
 
 
 def native_thread_for(session: Session, cid: str, agent_id: str) -> Optional[str]:
@@ -232,6 +242,17 @@ def compose_turn(session: Session, cid: str, request: Any, *, context_profile: O
     if request.handoff_message_ids:
         handoff_blocks, handoff = build_handoff(session, cid, request.handoff_message_ids)
         blocks += handoff_blocks
+    # P4: a sub-task gets the results it depends on; collecting gets every result.
+    plan_sources = []
+    if getattr(request, "plan_item_id", None):
+        plan_sources = dependency_replies(session, session.get(CollabItemRow, request.plan_item_id))
+    elif getattr(request, "collect_plan_id", None):
+        plan_sources = collected_replies(session, cid, request.collect_plan_id)
+    if plan_sources:
+        if sum(len(source.text) for source, _ in plan_sources) > MAX_COLLECT_CHARS:
+            raise QuotaError("handoff_too_large", f"sub-task results exceed {MAX_COLLECT_CHARS} characters")
+        blocks += [handoff_segments(source, agent) for source, agent in plan_sources]
+        handoff = tuple(handoff) + tuple(_handoff_record(source, agent) for source, agent in plan_sources)
     if getattr(request, "include_history", False) and cid is not None:
         blocks.append(history_segments(session, cid))
     if request.text:
@@ -297,16 +318,33 @@ def submit_turn(
             raise QuotaError("native_session_busy",
                              "another call in this conversation is active or unknown")
 
+    # P4: a plan item runs as its own depth-1 sub-task (created on its first
+    # dispatch, which checks the collaboration switch; retries reuse it).
+    task, item = root, None
+    if request.plan_item_id is not None:
+        item = session.get(CollabItemRow, request.plan_item_id)
+        plan = plan_in(session, cid, item.plan_id) if item is not None else None
+        if plan is None:
+            raise QuotaError("plan_not_found", "plan item not found")
+        check_dispatch(session, cid, item)
+        if item.task_id is None:
+            child = svc.create_task(agent_id=item.agent_id, goal=item.goal, parent_task_id=root.id,
+                                    kind="auto" if plan.source.startswith("reply:") else "user")
+            item.task_id = child.id
+        task = session.get(TaskRow, item.task_id)
+
     task_input, preview, handoff = compose_turn(session, cid, request, context_profile=context_profile,
                                                 files_root=files_root)
     snapshot = InvocationSnapshot(
-        agent_id=request.agent_id, task_input=task_input, parent_task_id=None,
-        depth=0, policy_version=root.policy_version, execution_mode=request.execution_mode,
+        agent_id=request.agent_id, task_input=task_input, parent_task_id=task.parent_task_id,
+        depth=task.depth, policy_version=root.policy_version, execution_mode=request.execution_mode,
         context_mode=request.context_mode, resume_thread_id=resume_thread_id,
         adapter_version=adapter_version, handoff=handoff, context_preview=preview,
     )
-    inv = svc.create_invocation(task_id=root.id, snapshot=snapshot)
+    inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)
+    if item is not None:
+        record_attempt(session, item, inv.id)
     message = ChatMessageRow(
         conversation_id=cid, role="user", text=request.text, invocation_id=inv.id,
         client_request_id=request.client_request_id, request_hash=request.request_hash(),

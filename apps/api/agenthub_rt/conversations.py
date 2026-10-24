@@ -26,6 +26,12 @@ from agenthub_kernel.summaries import (
     available_summaries, compress, link_of, link_view, root_task_of, save_summary, summary_view,
 )
 from agenthub.summary import SUMMARY_INSTRUCTION, StageSummary, parse_summary_text
+from agenthub.collab import (
+    COLLECT_INSTRUCTION, MAX_PLAN_ITEMS, PLAN_INSTRUCTION, parse_plan_text, validate_items,
+)
+from agenthub_kernel.collab import (
+    collaboration_enabled, item_in, plan_view, plans_of, save_plan,
+)
 from agenthub_kernel.events import CursorAhead, attach_stream_text, read_events
 from agenthub_kernel.usage_ledger import conversation_usage, instance_usage
 
@@ -109,6 +115,32 @@ class SummaryIn(BaseModel):
     file_refs: list[str] = Field(default_factory=list, max_length=MAX_REFS)
     # The drafting call's reply it was edited from, if any (recorded as its source).
     from_message_id: Optional[int] = None
+
+
+class PlanItemIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    agent_id: str = Field(min_length=1, max_length=200)
+    goal: str = Field(min_length=1)
+    depends_on: list[int] = Field(default_factory=list)
+
+
+class PlanIn(BaseModel):
+    """A collaboration plan (agenthub.collab); saving starts nothing."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    items: list[PlanItemIn]
+    # The main agent's reply it was edited from, if any (its items become "auto" tasks).
+    from_message_id: Optional[int] = None
+
+
+class DispatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    client_request_id: str = Field(min_length=1, max_length=128)
+    execution_mode: Literal["strict", "supervised"] = "strict"
+
+
+class CollectIn(DispatchIn):
+    agent_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
 
 
 class CompressIn(BaseModel):
@@ -440,6 +472,102 @@ def register_conversations(app, db) -> None:
             except QuotaError as exc:
                 raise _http_error(exc)
             return conversation_view(row, link_of(session, row.id))
+
+    # ------------------------------------------------- collaboration plans (P4)
+
+    def agent_ids() -> tuple:
+        """The agents this Hub serves (names only; no identity checks)."""
+        adapter = app.state.worker.adapter
+        agents = getattr(adapter, "agents", None)
+        if callable(getattr(adapter, "for_agent", None)) and callable(agents):
+            return tuple(sorted(agents()))
+        return tuple(sorted(getattr(adapter, "AGENT_IDS", ()) or ()))
+
+    def submit_hub_turn(session, cid, principal, request):
+        adapter = app.state.worker.adapter
+        try:
+            return submit_turn(session, cid, principal.identity, request,
+                               adapter_version=adapter_binding(adapter, request.agent_id),
+                               context_profile=adapter_context_profile(adapter, request.agent_id),
+                               files_root=app.state.files_root)
+        except QuotaError as exc:
+            raise HTTPException(404 if exc.code in ("plan_not_found",) else 409,
+                                detail={"code": exc.code, "message": exc.message})
+
+    @app.get("/api/conversations/{cid}/plans")
+    def list_plans(cid: str, principal: Principal = Depends(authenticate)):
+        with db.session() as session:
+            require_conversation(session, cid, principal)
+            return {"plans": [plan_view(session, p) for p in plans_of(session, cid)],
+                    "collaboration_enabled": collaboration_enabled(session, cid),
+                    "instruction": PLAN_INSTRUCTION.format(max_items=MAX_PLAN_ITEMS,
+                                                           agents=", ".join(agent_ids()) or "any"),
+                    "collect_instruction": COLLECT_INSTRUCTION}
+
+    @app.post("/api/conversations/{cid}/plans")
+    def create_plan(cid: str, body: PlanIn, principal: Principal = Depends(authenticate)):
+        """Save a plan (needs the collaboration switch). Nothing is dispatched."""
+        try:
+            items = validate_items([i.model_dump() for i in body.items])
+        except ValueError as exc:
+            raise HTTPException(422, detail={"code": "invalid_plan", "message": str(exc)})
+        known = agent_ids()
+        unknown = [i.agent_id for i in items if known and i.agent_id not in known]
+        if unknown:
+            raise HTTPException(422, detail={"code": "invalid_plan", "message": f"unknown agent(s): {unknown}"})
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            require_conversation(session, cid, principal)
+            source = "manual"
+            if body.from_message_id is not None:
+                reply = session.get(ChatMessageRow, body.from_message_id)
+                if reply is None or reply.conversation_id != cid or reply.role != "assistant":
+                    raise HTTPException(404, detail={"code": "draft_not_found",
+                                                     "message": "draft must be a reply in this conversation"})
+                source = f"reply:{reply.id}"
+            try:
+                plan = save_plan(session, cid, items, source=source)
+            except QuotaError as exc:
+                raise HTTPException(409, detail={"code": exc.code, "message": exc.message})
+            return plan_view(session, plan)
+
+    @app.get("/api/conversations/{cid}/plan-draft")
+    def plan_draft(cid: str, message_id: int = Query(..., ge=1), principal: Principal = Depends(authenticate)):
+        """A reply read back into plan items, for editing (not saved)."""
+        with db.session() as session:
+            require_conversation(session, cid, principal)
+            reply = session.get(ChatMessageRow, message_id)
+            if reply is None or reply.conversation_id != cid or reply.role != "assistant":
+                raise HTTPException(404, detail={"code": "draft_not_found",
+                                                 "message": "draft must be a reply in this conversation"})
+            return {"from_message_id": reply.id, "items": parse_plan_text(reply.text, agent_ids())}
+
+    @app.post("/api/conversations/{cid}/plans/{plan_id}/items/{index}/dispatch")
+    def dispatch_item(cid: str, plan_id: int, index: int, body: DispatchIn,
+                      principal: Principal = Depends(authenticate)):
+        """Create the item's sub-task call (pending approval); never runs it."""
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            require_conversation(session, cid, principal)
+            try:
+                item = item_in(session, cid, plan_id, index)
+            except QuotaError as exc:
+                raise HTTPException(404, detail={"code": exc.code, "message": exc.message})
+            request = _turn_of({"text": item.goal, "agent_id": item.agent_id,
+                                "client_request_id": body.client_request_id, "execution_mode": body.execution_mode,
+                                "handoff_message_ids": [], "file_refs": [], "plan_item_id": item.id})
+            return submit_hub_turn(session, cid, principal, request)
+
+    @app.post("/api/conversations/{cid}/plans/{plan_id}/collect")
+    def collect_plan(cid: str, plan_id: int, body: CollectIn, principal: Principal = Depends(authenticate)):
+        """One call that hands every sub-task result to an agent (pending approval)."""
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            require_conversation(session, cid, principal)
+            request = _turn_of({"text": body.text.strip() or COLLECT_INSTRUCTION, "agent_id": body.agent_id,
+                                "client_request_id": body.client_request_id, "execution_mode": body.execution_mode,
+                                "handoff_message_ids": [], "file_refs": [], "collect_plan_id": plan_id})
+            return submit_hub_turn(session, cid, principal, request)
 
     @app.post("/api/file-suggestions")
     def file_suggestions(body: SuggestIn, principal: Principal = Depends(authenticate)):

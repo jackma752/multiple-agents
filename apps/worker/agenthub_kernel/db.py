@@ -11,7 +11,8 @@ The approval & quota kernel and persistent local chat use these tables:
 ``conversations``, ``chat_messages``, ``conversation_events``,
 ``conversation_event_cursors``, ``stream_chunks``, ``tool_approvals``,
 ``tool_gate_closures``, ``usage_ledger``, ``tree_token_budget``,
-``token_budget_items``, ``conversation_summaries`` and ``conversation_links``.
+``token_budget_items``, ``conversation_summaries``, ``conversation_links``,
+``collab_plans``, ``collab_items`` and ``collab_attempts``.
 """
 
 from __future__ import annotations
@@ -171,6 +172,47 @@ class ConversationLinkRow(Base):
     parent_conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
     summary_id = Column(ForeignKey("conversation_summaries.id"), nullable=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class CollabPlanRow(Base):
+    """A collaboration plan of a conversation (P4, ``agenthub.collab``).
+
+    ``source`` is ``manual`` or ``reply:<message_id>`` (edited from the main
+    agent's proposal); its items are dispatched as ``user`` or ``auto`` tasks.
+    """
+
+    __tablename__ = "collab_plans"
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    source = Column(String, nullable=False, default="manual")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class CollabItemRow(Base):
+    """One sub-task of a plan; ``task_id`` is its depth-1 task once first dispatched."""
+
+    __tablename__ = "collab_items"
+    __table_args__ = (UniqueConstraint("plan_id", "idx"), {"sqlite_autoincrement": True})
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(ForeignKey("collab_plans.id"), index=True, nullable=False)
+    idx = Column(Integer, nullable=False)
+    agent_id = Column(String, nullable=False)
+    goal = Column(Text, nullable=False)
+    depends_on = Column(JSON, nullable=False, default=list)
+    task_id = Column(ForeignKey("tasks.id"), nullable=True)
+
+
+class CollabAttemptRow(Base):
+    """One dispatch of a plan item: its call, numbered from 1."""
+
+    __tablename__ = "collab_attempts"
+
+    invocation_id = Column(ForeignKey("invocations.id"), primary_key=True)
+    item_id = Column(ForeignKey("collab_items.id"), index=True, nullable=False)
+    attempt = Column(Integer, nullable=False)
 
 
 class PolicyVersionRow(Base):

@@ -82,7 +82,7 @@
                  color: var(--dim); }
   .usage-panel h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--fg); }
   .usage-line { margin: 2px 0; word-break: break-word; }
-  .summary-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .summary-form, .plan-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
   .summary-field { display: flex; flex-direction: column; gap: 2px; }
   .summary-field textarea { min-height: 40px; }
   #toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px; border-radius: 8px;
@@ -112,6 +112,7 @@
     <div id="banner" class="banner" hidden></div>
     <div id="usageConv" class="usage-bar" hidden></div>
     <div id="summaryBar" class="usage-bar" hidden></div>
+    <div id="planBar" class="usage-bar" hidden></div>
     <div id="timeline"><div class="empty">选择或新建一个会话。发送消息只会生成待审批调用，不会直接调用 Agent。</div></div>
     <form id="composer" autocomplete="off">
       <textarea id="text" placeholder="输入消息（Ctrl+Enter 发送）"></textarea>
@@ -187,6 +188,8 @@ const S = {
   attachSummary: null, // summary_id sent with each next call until removed
   includeHistory: false, // the next call carries recent history (summary drafting)
   summaryEdit: null,   // the summary form being edited, or null
+  plans: null,         // collaboration plans of this conversation (P4), with the switch state
+  planEdit: null,      // the plan form being edited, or null
   busy: new Set(),    // actions in flight (keys), to disable double clicks
   viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
   createPromise: null, // the one conversation creation in flight, shared by every caller
@@ -279,7 +282,7 @@ function absorbMessage(m) {
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
-      context_preview: inv.context_preview,
+      context_preview: inv.context_preview, plan_item: inv.plan_item,
     });
   }
 }
@@ -304,9 +307,139 @@ async function loadUsage(gen = S.viewGen) {
 
 function needUsage(gen = S.viewGen) {
   clearTimeout(S.usageTimer);
-  S.usageTimer = setTimeout(() => loadUsage(gen).catch((e) => {
-    if (current(gen)) toast("读取用量失败：" + e.message);
-  }), 120);
+  S.usageTimer = setTimeout(() => {
+    loadUsage(gen).catch((e) => { if (current(gen)) toast("读取用量失败：" + e.message); });
+    loadPlans(gen).catch(() => { /* plans refresh with the next settlement */ });
+  }, 120);
+}
+
+/* ---------------------------------------- collaboration plans (P4) --- */
+
+async function loadPlans(gen = S.viewGen) {
+  if (!S.cid || !current(gen)) return;
+  const cid = S.cid;
+  const data = await api("GET", `/api/conversations/${enc(cid)}/plans`);
+  if (!current(gen) || cid !== S.cid) return;
+  S.plans = data;
+  render();
+}
+
+const ITEM_STATE = { pending: ["待分派", ""], awaiting: ["待审批", "warn"], running: ["执行中", "info"],
+                     done: ["完成", "ok"], failed: ["失败", "bad"] };
+
+function editPlan(items, fromMessageId) {
+  S.planEdit = { from_message_id: fromMessageId || null,
+                 items: (items && items.length ? items : [{ agent_id: $("agent").value, goal: "", depends_on: [] }])
+                   .map((i) => ({ agent_id: i.agent_id, goal: i.goal, deps: (i.depends_on || []).join(", "),
+                                  unknown: !!i.unknown_agent })) };
+  render();
+}
+
+async function savePlan() {
+  const e = S.planEdit;
+  const items = e.items.map((i) => ({ agent_id: i.agent_id, goal: i.goal,
+    depends_on: i.deps.split(/[,，\s]+/).filter(Boolean).map(Number) }));
+  await guarded("plan", async () => {
+    await api("POST", `/api/conversations/${enc(S.cid)}/plans`, { items, from_message_id: e.from_message_id });
+    S.planEdit = null;
+    toast("协作计划已保存：每个子任务需要分别分派并审批");
+    await loadPlans();
+  });
+}
+
+async function draftPlanFromReply(m) {
+  const draft = await api("GET", `/api/conversations/${enc(S.cid)}/plan-draft`, undefined, { message_id: m.message_id });
+  if (!draft.items.length) { toast("这条回复里没有读到“1. agent: 目标”格式的计划行"); return; }
+  editPlan(draft.items, draft.from_message_id);
+}
+
+function askForPlan() {
+  $("text").value = S.plans.instruction + "\n\nTask:\n" + $("text").value;
+  toast("已填入拆分任务的请求：补全任务后发送，主 Agent 的回复可以读成协作计划");
+  render();
+}
+
+async function toggleCollaboration(on) {
+  const u = S.usageConv, rootId = u && u.root_task && u.root_task.root_task_id;
+  if (!rootId) { toast("先发送一条消息建立任务，才能设置协作扩展"); return; }
+  await guarded("collab", async () => {
+    const r = await api("PATCH", `/api/tasks/${enc(rootId)}/policy`, { ...u.budget.policy, collaboration_enabled: on });
+    toast(`协作扩展已${on ? "开启" : "关闭"}（策略 v${r.version}；撤销了 ${r.revoked_approvals} 个未消费的审批）`);
+    needUsage(); needMessages();
+  });
+}
+
+async function dispatchItem(plan, item) {
+  const mode = $("mode").value;
+  if (mode !== "strict" && mode !== "supervised") { toast("请先在输入框下方选择执行模式"); return; }
+  await guarded(`dispatch:${plan.plan_id}:${item.index}`, async () => {
+    await api("POST", `/api/conversations/${enc(S.cid)}/plans/${plan.plan_id}/items/${item.index}/dispatch`, {
+      execution_mode: mode, client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
+    toast(`子任务 #${item.index} 已生成待审批调用`);
+    needMessages(); await loadPlans();
+  });
+}
+
+async function collectPlan(plan) {
+  const mode = $("mode").value;
+  if (mode !== "strict" && mode !== "supervised") { toast("请先在输入框下方选择执行模式"); return; }
+  await guarded(`collect:${plan.plan_id}`, async () => {
+    await api("POST", `/api/conversations/${enc(S.cid)}/plans/${plan.plan_id}/collect`, {
+      agent_id: $("agent").value, execution_mode: mode,
+      client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
+    toast(`已生成汇总调用，交给 ${$("agent").value}，待审批`);
+    needMessages();
+  });
+}
+
+function renderPlans() {
+  const bar = $("planBar");
+  const p = S.plans;
+  bar.hidden = !S.cid || !p || (!S.messages.length && !p.plans.length);
+  const active = document.activeElement;
+  if (bar.hidden || (bar.contains(active) && active.matches(".plan-form textarea, .plan-form input, .plan-form select"))) return;
+  const lines = [el("div", { class: "usage-line" }, el("strong", {}, "协作计划 "),
+    p.collaboration_enabled ? chip("协作扩展已开启", "ok") : chip("协作扩展已关闭", ""),
+    " ", el("button", { class: "mini", disabled: S.busy.has("collab"), onclick: () => toggleCollaboration(!p.collaboration_enabled) },
+             p.collaboration_enabled ? "关闭" : "开启"),
+    el("button", { class: "mini", onclick: askForPlan }, "请主 Agent 拆分任务"),
+    el("button", { class: "mini", onclick: () => editPlan() }, "写协作计划"))];
+  const plan = p.plans[0];
+  if (plan) {
+    lines.push(el("div", { class: "usage-line dim" }, `计划 #${plan.plan_id}（${plan.source === "manual" ? "手写" : "由主 Agent 提议"}）：每个子任务单独分派、单独审批；依赖完成后才能分派`));
+    for (const item of plan.items) {
+      const [label, kind] = ITEM_STATE[item.state] || [item.state, ""];
+      const waiting = item.depends_on.filter((d) => (plan.items.find((x) => x.index === d) || {}).state !== "done");
+      lines.push(el("div", { class: "usage-line" }, chip(`#${item.index} ${item.agent_id}`, "info"), " ", chip(label, kind),
+        item.depends_on.length ? ` 依赖 ${item.depends_on.join("、")}${waiting.length ? "（等待中）" : ""} ` : " ",
+        item.goal.slice(0, 80), item.attempts ? `（第 ${item.attempts} 次）` : "", " ",
+        item.ready ? el("button", { class: "mini", disabled: S.busy.has(`dispatch:${plan.plan_id}:${item.index}`) || !p.collaboration_enabled,
+                                    onclick: () => dispatchItem(plan, item) }, item.state === "failed" ? "重试" : "分派") : null));
+    }
+    if (plan.all_done) lines.push(el("div", { class: "usage-line" }, "全部完成 ",
+      el("button", { class: "mini", disabled: S.busy.has(`collect:${plan.plan_id}`), onclick: () => collectPlan(plan) },
+         `把结果汇总交给 ${$("agent").value}`)));
+  }
+  if (S.planEdit) {
+    const e = S.planEdit;
+    const agents = (S.adapter && S.adapter.agent_ids && S.adapter.agent_ids.length) ? S.adapter.agent_ids : ["mock"];
+    lines.push(el("div", { class: "plan-form" },
+      e.from_message_id ? el("div", { class: "dim" }, `草稿来自回复 #${e.from_message_id}，保存前可修改`) : null,
+      ...e.items.map((item, n) => el("div", { class: "row" }, `#${n + 1}`,
+        el("select", { onchange: (ev) => { item.agent_id = ev.target.value; item.unknown = false; } },
+          ...agents.map((a) => el("option", { value: a, selected: a === item.agent_id ? "selected" : null }, a))),
+        item.unknown ? chip(`未知 Agent：${item.agent_id}`, "bad") : null,
+        el("textarea", { rows: "2", style: "flex:1", placeholder: "子任务目标（自足：子任务只看到目标和它依赖的结果）",
+                         oninput: (ev) => { item.goal = ev.target.value; } }, item.goal),
+        el("input", { style: "width:80px", placeholder: "依赖 如 1,2", value: item.deps,
+                      oninput: (ev) => { item.deps = ev.target.value; } }),
+        el("button", { class: "mini", onclick: () => { e.items.splice(n, 1); render(); } }, "删除"))),
+      el("div", { class: "row" },
+        e.items.length < 5 ? el("button", { onclick: () => { e.items.push({ agent_id: $("agent").value, goal: "", deps: "", unknown: false }); render(); } }, "加一项") : null,
+        el("button", { class: "primary", disabled: S.busy.has("plan"), onclick: savePlan }, "保存计划"),
+        el("button", { onclick: () => { S.planEdit = null; render(); } }, "取消"))));
+  }
+  bar.replaceChildren(...lines);
 }
 
 async function loadMessages(gen = S.viewGen) {
@@ -726,6 +859,7 @@ function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
   S.consent = new Map(); S.banner = ""; S.handoff = []; S.usageConv = null;
   S.summaries = []; S.summaryLink = {}; S.attachSummary = null; S.includeHistory = false; S.summaryEdit = null;
+  S.plans = null; S.planEdit = null;
 }
 
 /* The only way to create a conversation: concurrent callers share one creation. */
@@ -1027,6 +1161,7 @@ function renderCall(c) {
       chip(supervised ? "用户监督模式" : "严格模式", supervised ? "warn" : ""),
       c.approval_status ? chip("审批：" + c.approval_status, "") : null,
       c.context_mode === "native_resume" ? chip("续接 " + short(c.resume_thread_id), "info") : null,
+      c.plan_item ? chip(`子任务 #${c.plan_item.index}（计划 ${c.plan_item.plan_id}，第 ${c.plan_item.attempt} 次）`, "info") : null,
       ...handoff.map((h) => chip(`交接：${h.agent_id} #${h.message_id}（${h.chars} 字）`, "info")),
       // Every settled call shows its usage, with or without a reply (D-T0-3).
       SETTLED.includes(c.status) && usageText(c.usage)
@@ -1362,7 +1497,9 @@ function renderNow() {
                           title: "把这条回复附在下一次调用里交给所选 Agent；发送前会在审批卡里完整显示",
                           onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent"),
            el("button", { class: "mini", title: "把这条回复按“目标/约束/已完成/未解决/下一步/文件”读成摘要草稿，编辑后保存",
-                          onclick: () => draftFromReply(m).catch((e) => toast(e.message)) }, "用作摘要草稿")),
+                          onclick: () => draftFromReply(m).catch((e) => toast(e.message)) }, "用作摘要草稿"),
+           el("button", { class: "mini", title: "把这条回复中“1. agent: 目标 (after 1)”格式的行读成协作计划，编辑后保存",
+                          onclick: () => draftPlanFromReply(m).catch((e) => toast(e.message)) }, "读成协作计划")),
         el("div", { class: "bubble" }, m.text)));
     }
   }
@@ -1370,6 +1507,7 @@ function renderNow() {
   exposeStats();
   renderUsage();
   renderSummary();
+  renderPlans();
   renderComposer();
 }
 
