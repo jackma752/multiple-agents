@@ -25,7 +25,7 @@
 |---|---|
 | 准入 | 严格模式拒绝（`claude_code_controls_unverified`）。监督模式只认代码常量 `PINNED_CLAUDE_CODE`（2.1.308，静态核对），并要求零模型身份核验已记录；2026-10-24 已记录（`b57a1d5f…`）。离线桩为 simulation |
 | 发消息 / 最终回复 | 已实现（`claude -p`，提示词走 stdin，取 `--output-format json` 的 `result`）。**已验证一次（只认定当次，`evidence/cc-turn-real-run-1-pass`）**：经过 Hub，监督模式，固定提示词，回复恰好为 `OK`，`num_turns=1` |
-| 真实用量 | 已实现：result 带 `usage` / `total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**已验证一次**：当次返回 input 2、cache write 1750、cache read 0、output 4，估算 $0.014088。**口径（T-0）**：`input_tokens` 不含缓存，总输入 = input + cache write + cache read，即 1,752；双 Agent 第二次为 2 + 635 + 1,161 = 1,798。**T-1a（离线）**：账本按总输入入账；另存 `usage_raw` 和 `model_usage` 的数字；启动失败为已知零值；多个模型为 partial。真实运行**未验证** |
+| 真实用量 | 已实现：result 带 `usage` / `total_cost_usd` 时记录，`total_cost_usd` 是客户端估算。**已验证一次**：当次返回 input 2、cache write 1750、cache read 0、output 4，估算 $0.014088。**口径（T-0）**：`input_tokens` 不含缓存，总输入 = input + cache write + cache read，即 1,752；双 Agent 第二次为 2 + 635 + 1,161 = 1,798。**T-1a（离线）**：账本按总输入入账；另存 `usage_raw` 和 `model_usage` 的数字；启动失败为已知零值；多个模型为 partial。真实运行**未验证**。**P4 真实运行（2026-10-25）观测到**：`--max-turns 1` 下两次各出现一次两个模型、`num_turns=2`，原因未知，账本按规则记为 partial；第二次那条调用是被安全防护拒答（`is_error`），记为 failed，名额释放 |
 | 流式 | 未实现（不用 `stream-json`） |
 | 恢复会话 | 未实现（`--no-session-persistence`），不报告 `native_session` |
 | 取消 | `unsupported`；本地停止只结束本次入口进程，远端未确认停止时保留名额 |
