@@ -78,6 +78,7 @@ def collect(data_dir: Path, *, code: str, codex_binding: str = CODEX_BINDING,
             "sent_equals_adapter_input": bool(record) and record.get("input_sha256") == _sha(snap.get("task_input", "")),
             "record_present": bool(record), "workdir_empty": _empty_dir(record.get("workdir")),
             "usage_complete": (ledger.get(inv_id) or {}).get("completeness") == "complete",
+            "num_turns": record.get("num_turns"), "models": record.get("models"),
             "tool_activity": len(record.get("tool_activity") or [])
             + sum(1 for c in cards if c["invocation_id"] == inv_id),
             "accept_sent": any(c["decision_sent"] == "accept" for c in cards if c["invocation_id"] == inv_id),
@@ -145,6 +146,8 @@ def judge(f: dict) -> tuple[list, list]:
             inconclusive.append(f"{name}_tool_activity")
         if not c["usage_complete"]:
             inconclusive.append(f"{name}_usage_not_complete")
+        if c["agent"] == "claude-code" and c["num_turns"] != 1:
+            inconclusive.append(f"{name}_turns_not_one")  # on its own, whatever the usage says
     if f["item1"]["present"] and f["item1"]["depth"] != 1 or f["item2"]["present"] and f["item2"]["depth"] != 1:
         fail.append("item_not_a_sub_task")
     if f["collect"]["present"] and f["collect"]["depth"] != 0:
