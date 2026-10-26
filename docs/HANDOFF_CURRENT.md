@@ -8,6 +8,7 @@
 - 供主线工作 agent 整合：`fba1373` 是实现与回归提交，评估合入该提交即可；用户之前的阶段/8080 整合成果不重做。
 - 后续只读定位：用户 Administrator PowerShell 原生写入成功，venv Python 同窗口失败；`icacls` 发现项目 venv 的 `python.exe` 带继承 Low 完整性标签，基础 `D:\python\python.exe` 无此标签且直接令牌为 Medium。已记录单文件标签修正建议，助手没有更改权限，用户修正与复测待确认。详见上面诊断文档的后续定位节。
 - 用户已完成单文件标签修正，复核解释器现为 Medium。项目 venv 的 SSL/ctypes 加载恢复，正常测试命令得到 **34 passed in 0.49s**（写入检查回归、S1、hygiene），无需备用解释器。用户侧 home 写入和真实在线启动仍待确认。
+- 用户已回报修复版预检 `True`，用户终端的 Python home 写入权限确认恢复；待从该终端重启旧 8080 后台并选 app-server 做一次页面最小调用，在线结果未认定。助手未启动模型调用。
 
 ---
 

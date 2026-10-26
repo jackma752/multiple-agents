@@ -74,3 +74,5 @@ E:\plug\agent-hub\.venv\Scripts\python.exe -m pytest -o addopts='' -q tests/test
 ```
 
 这确认了本次观察到的解释器 DLL 加载失败在标签修正后消失；不据此关闭所有历史 DLL 问题。用户同一 PowerShell 下的 home 写入仍待重测，真实 Codex 回合尚未重试。
+
+用户随后在同一 PowerShell 重测，返回 `(True, '...codex-home is writable by this process')`。**用户启动环境下的 Python 写入权限已恢复**。8080 当时仍是旧 Hub，8090 本地代理端口可连接；下一步需从用户这个已验证可写的窗口重启 Hub，明确选择 `--codex-transport app-server` 并清除 exec 身份覆盖及模拟器变量，再由用户在页面做真实最小回合。当前数据目录中的阶段仅有 blocked/completed/stopped，未见活动或额度等待阶段。在线运行是否恢复仍以新回合实际结果为准。
