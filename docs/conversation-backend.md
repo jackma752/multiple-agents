@@ -1,5 +1,10 @@
 # 会话后端（2026-10-21）
 
+**2026-10-26 失败诊断补充**：消息内的 `invocation` 视图新增可空的 `error`，来源为内核已有的
+`invocations.error` 判定说明。页面失败/未知终态后读取原消息取得说明，刷新历史也保留；错误作为
+文本显示，不伪造模型回复，不把错误原文加入 SSE 审计事件。DeepSeek 的 HTTP 说明先移除密钥和
+本次输入，再限长；空正文明确标记，并提示核对模型、端点和代理。
+
 **2026-10-24 契约补充**（详见[多 Agent 对话](multi-agent.md)）：
 - `ConversationTurn` 新增 `handoff_message_ids`：只接受同一会话中的 Agent 回复，最多 3 条。
 - `InvocationSnapshot` 新增 `handoff`：记录每段来源，被交接的文本已写入 `task_input`；没有交接时哈希不变。

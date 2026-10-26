@@ -320,7 +320,7 @@ function absorbMessage(m) {
   const inv = m.invocation;
   if (inv) {
     patch(call(inv.invocation_id), {
-      status: inv.status, approval_id: inv.approval_id, approval_status: inv.approval_status,
+      status: inv.status, error: inv.error, approval_id: inv.approval_id, approval_status: inv.approval_status,
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
@@ -743,6 +743,16 @@ async function fetchCard(id, gen = S.viewGen) {
   } catch (e) { if (current(gen)) toast("读取工具审批卡失败：" + e.message); }
 }
 
+async function fetchCallError(id, gen = S.viewGen) {
+  const message = S.messages.find((m) => m.invocation && m.invocation.invocation_id === id);
+  if (!message || !S.cid) return;
+  const page = await api("GET", `/api/conversations/${enc(S.cid)}/messages`, undefined,
+                         { after_id: message.message_id - 1, limit: 1 });
+  if (!current(gen)) return;
+  const saved = page.messages.find((m) => m.invocation && m.invocation.invocation_id === id);
+  if (saved) { patch(call(id), { error: saved.invocation.error }); render(); }
+}
+
 /* Apply one stored event exactly once, in seq order, if it belongs to the view on screen. */
 function apply(ev, gen = S.viewGen) {
   if (!current(gen)) return;
@@ -762,6 +772,8 @@ function apply(ev, gen = S.viewGen) {
       break;
     case "invocation.status":
       patch(call(p.invocation_id), { status: p.to, approval_status: p.approval_status });
+      if (p.to === "failed" || p.to === "unknown") fetchCallError(p.invocation_id, gen)
+        .catch((e) => { if (current(gen)) toast("读取失败原因失败：" + e.message); });
       // Settled (also failed / interrupted / unknown): its ledger row now exists.
       if (SETTLED.includes(p.to)) needUsage(gen);
       break;
@@ -1465,6 +1477,7 @@ function renderCall(c) {
     consentBox,
     preview,
     sent,
+    c.error ? el("div", { class: "note bad", role: "alert" }, "调用失败原因：" + c.error) : null,
     notes.map((n) => el("div", { class: "note" }, n)),
     c.cards.map(renderCard));
 }

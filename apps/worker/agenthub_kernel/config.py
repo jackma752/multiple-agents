@@ -367,7 +367,7 @@ ENV_DEEPSEEK_TIMEOUT = "AGENT_HUB_DEEPSEEK_TIMEOUT"
 ENV_DEEPSEEK_STUB = "AGENT_HUB_DEEPSEEK_STUB"
 
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-flash"
 
 
 def deepseek_home() -> str:

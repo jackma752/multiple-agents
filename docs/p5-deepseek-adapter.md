@@ -3,6 +3,56 @@
 状态：**已实现，离线验证通过；真实往返未验证**（需要你自己的 `sk-...` key）。
 日期：2026-10-26。分支：`main`（未推送、无 remote）。
 
+## 2026-10-26 HTTP 400 修复（分支 `fix/deepseek-http400`）
+
+用户报告的三个失败调用均绑定 `deepseek:deepseek-chat@api.deepseek.com`；适配器记录只有
+`HTTP 400: `，没有响应正文或响应头，不能由旧记录认定唯一根因。
+
+已确认的代码配置缺陷：默认模型仍为 `deepseek-chat`。
+[官方退役公告](https://api-docs.deepseek.com/news/news260424/)规定该名字在 2026-07-24 后停止使用；
+[当前模型表](https://api-docs.deepseek.com/quick_start/pricing/)列出 `deepseek-flash` 与
+`deepseek-v4-pro`。默认配置及适配器空值回退均改为 `deepseek-flash`。显式的
+`AGENT_HUB_DEEPSEEK_MODEL` 仍保留，避免悄悄改变兼容网关/已批准调用的目标；需要在重启时明确修改。
+
+错误记录新增 `http`：状态码、正文为空/不可读/存在、请求模型、去除查询串及用户信息的端点、
+是否配置代理，以及限长白名单响应头（server/content-type/content-length/via/请求 ID）。
+HTTP 错误响应始终关闭；凭据和本次提示词从诊断中移除。空 400 有可见原因说明；官方端点的
+旧模型失败另提示改用 `deepseek-flash`。页面在失败后及刷新后显示内核错误说明。
+
+保留一次审批对应一次 HTTP 请求，未添加猜测性自动重发。官方文档支持 `stream_options`，
+也说明最后一个 chunk 在未设置该字段时仍报告 usage，不能把空 400 认定为该字段不兼容。
+根工作树中既有的另一份未提交重试方案和 multi 接入改动未被修改或收进本修复。
+
+连通检查只访问官方端点，不带 Authorization、不发送用户提示词：直连/8090 代理的 GET 及
+不带密钥的空 POST 均得到 401；这只证明检查时端点有响应，不证明用户的密钥或付费请求成功。
+三次旧证据保持原样；尚未用真实密钥重跑。
+
+用户验证时，先 Ctrl+C 停止旧服务，再在 PowerShell 设置模型并从修复工作树启动：
+
+```powershell
+$env:AGENT_HUB_DEEPSEEK_MODEL = 'deepseek-flash'
+Remove-Item Env:AGENT_HUB_DEEPSEEK_STUB -ErrorAction SilentlyContinue
+& 'E:\plug\agent-hub\.venv\Scripts\python.exe' 'E:\plug\agent-hub\.worktrees\deepseek-http400\tools\demo\serve.py' --host 127.0.0.1 --port 8080 --adapter deepseek --data-dir 'E:\plug\agent-hub\var\p46-user-demo\data' --files-root 'E:\plug\agent-hub\docs'
+```
+
+打开 `/chat`，新建会话、严格模式、发送一条简短消息，由用户批准一次。成功前保持“真实往返未验证”。
+如再次失败，页面会显示新诊断；没有授权自动反复运行。
+
+验证（全离线）：
+
+```text
+python -m pytest -o addopts='' -q tests/http/test_deepseek_failures.py tests/adapters/test_deepseek_adapter.py tests/http/test_multi_agent.py tests/http/test_conversations.py tests/http/test_chat_page.py tests/http/test_conversation_events.py tests/http/test_autopilot_recovery.py tests/test_usage_normalization.py
+171 passed in 25.17s
+
+# 补充当前模型成功流和不可读正文用例后，仅重跑本修复相关测试（与上一组重叠）：
+python -m pytest -o addopts='' -q tests/http/test_deepseek_failures.py tests/adapters/test_deepseek_adapter.py
+45 passed in 0.91s
+```
+
+另以 Headless Edge 打开独立的 18189 离线 HTTP-400 模拟服务：用户批准后即时显示错误，刷新后
+仍显示，页面无 JS 错误；截图为被忽略的 `var/browser400/failure.png`。测试服务已停止。
+未运行全量测试、未发送带真实密钥的请求、未修改原数据或历史调用。
+
 这份文档只写能站得住的部分。"未验证"一节列出所有我没有证据的说法，别把
 它们当结论。
 
@@ -16,7 +66,7 @@
 POST {base_url}/chat/completions
 Authorization: Bearer <key>        # 只出现在这个 header 里
 {
-  "model": "deepseek-chat",
+  "model": "deepseek-flash",
   "messages": [{"role": "user", "content": "<调用快照里的任务文本>"}],
   "stream": true,
   "stream_options": {"include_usage": true}

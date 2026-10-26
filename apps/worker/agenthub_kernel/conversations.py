@@ -93,6 +93,7 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "approval_id": approval.id if approval else None,
         "approval_status": approval.status if approval else None,
         "payload_hash": inv.payload_hash, "status": inv.status,
+        "error": inv.error,
         "execution_mode": inv.snapshot.get("execution_mode", "strict"),
         "agent_id": inv.snapshot["agent_id"],
         "context_mode": inv.snapshot.get("context_mode", CONTEXT_MODE),

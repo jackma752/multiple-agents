@@ -44,6 +44,7 @@ import urllib.error
 import urllib.request
 import uuid
 from typing import Any, Callable, Iterable, Iterator, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from agenthub.contracts import (
     AdapterContract,
@@ -69,6 +70,7 @@ AGENT_IDS = frozenset({"deepseek"})
 #: Path appended to the configured base URL. Kept separate so a base URL that
 #: already ends in ``/v1`` (an OpenAI-compatible proxy) still works.
 CHAT_PATH = "/chat/completions"
+DEFAULT_MODEL = "deepseek-flash"
 
 #: Every key this adapter is allowed to put in a request body. Anything else
 #: (``tools`` above all) would be a capability this channel does not have.
@@ -87,10 +89,11 @@ def redact(text: Any) -> str:
 class DeepSeekRefused(Exception):
     """A local or authenticated refusal: terminal, and nothing was generated."""
 
-    def __init__(self, code: str, detail: str = "") -> None:
+    def __init__(self, code: str, detail: str = "", *, http: Optional[dict] = None) -> None:
         super().__init__(detail or code)
         self.code = code
         self.detail = redact(detail)
+        self.http = http
 
 
 class DeepSeekRateLimited(Exception):
@@ -200,7 +203,20 @@ class HttpTransport:
         try:
             response = self._opener().open(request, timeout=self.timeout)
         except urllib.error.HTTPError as exc:
-            yield from _raise_for_status(exc)
+            endpoint = urlsplit(self.url)
+            context = {
+                "endpoint": urlunsplit((endpoint.scheme, endpoint.hostname or "", endpoint.path, "", "")),
+                "request_model": payload.get("model"),
+                "proxy_configured": bool(self.proxy),
+            }
+            # Only diagnostic text is retained; an upstream error can echo the
+            # Authorization header or input, neither belongs in an error record.
+            sensitive = [self._api_key]
+            sensitive.extend(m.get("content", "") for m in payload.get("messages", []) if isinstance(m, dict))
+            try:
+                yield from _raise_for_status(exc, context=context, sensitive=sensitive)
+            finally:
+                exc.close()
             return
         except (urllib.error.URLError, socket.timeout, TimeoutError, ssl.SSLError, OSError) as exc:
             raise DeepSeekTransportError(f"{type(exc).__name__}: {getattr(exc, 'reason', exc)}") from None
@@ -227,14 +243,38 @@ class HttpTransport:
                 pass
 
 
-def _raise_for_status(exc: urllib.error.HTTPError) -> Iterator[dict]:
-    """Turn an HTTP error into the right exception, without keeping the body."""
+def _raise_for_status(exc: urllib.error.HTTPError, *, context: Optional[dict] = None,
+                      sensitive: Iterable[str] = ()) -> Iterator[dict]:
+    """Keep bounded diagnostics, including why a response has no error text."""
+    def clean(value: Any) -> str:
+        value = str(value)
+        for secret in sensitive:
+            if isinstance(secret, str) and secret:
+                value = value.replace(secret, "[redacted]")
+                value = value.replace(json.dumps(secret, ensure_ascii=True)[1:-1], "[redacted]")
+                value = value.replace(json.dumps(secret, ensure_ascii=False)[1:-1], "[redacted]")
+        return redact(value)
+
     detail = ""
+    body_state = "empty"
     try:
         detail = exc.read(2000).decode("utf-8", "replace")
+        body_state = "present" if detail.strip() else "empty"
     except Exception:  # noqa: BLE001 - the body is a bonus
-        detail = ""
+        body_state = "unreadable"
+    detail = clean(detail)
     status = int(getattr(exc, "code", 0) or 0)
+    http = {"status": status, "body_state": body_state, **(context or {}), "headers": {}}
+    for name in ("server", "content-type", "content-length", "via", "x-ds-trace-id", "x-request-id"):
+        value = exc.headers.get(name) if exc.headers else None
+        if value is not None:
+            http["headers"][name] = clean(value)[:160]
+    if not detail.strip():
+        detail = "empty response body" if body_state == "empty" else "response body could not be read"
+        detail += "; check model name, endpoint and proxy"
+    if (context or {}).get("request_model") in ("deepseek-chat", "deepseek-reasoner"):
+        if urlsplit((context or {}).get("endpoint", "")).hostname == "api.deepseek.com":
+            detail += "; retired model name: configure AGENT_HUB_DEEPSEEK_MODEL=deepseek-flash"
     if status == 429:
         retry_after = ""
         try:
@@ -248,10 +288,10 @@ def _raise_for_status(exc: urllib.error.HTTPError) -> Iterator[dict]:
         })
         raise DeepSeekRateLimited(evidence or {"kind": "provider_quota", "reset_at": None}, detail[:500])
     if status in (401, 403):
-        raise DeepSeekRefused("deepseek_unauthorized", f"HTTP {status}: {detail[:300]}")
+        raise DeepSeekRefused("deepseek_unauthorized", f"HTTP {status}: {detail[:300]}", http=http)
     if status == 402:
-        raise DeepSeekRefused("deepseek_insufficient_balance", f"HTTP {status}: {detail[:300]}")
-    raise DeepSeekRefused(f"deepseek_http_{status}", f"HTTP {status}: {detail[:300]}")
+        raise DeepSeekRefused("deepseek_insufficient_balance", f"HTTP {status}: {detail[:300]}", http=http)
+    raise DeepSeekRefused(f"deepseek_http_{status}", f"HTTP {status}: {detail[:300]}", http=http)
 
 
 class StubTransport:
@@ -327,7 +367,7 @@ class DeepSeekAdapter(AdapterContract):
         stub: str = "",
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.model = model or "deepseek-chat"
+        self.model = model or DEFAULT_MODEL
         self.credentials_path = credentials_path
         self.proxy = proxy
         self.ca_bundle = ca_bundle
@@ -491,9 +531,10 @@ class DeepSeekAdapter(AdapterContract):
                                       detail=f"refused: deepseek_rate_limited")
         except DeepSeekRefused as exc:
             self._finish_failed(invocation_id, adapter_id, exc.code, detail=exc.detail,
+                                extra={"http": exc.http} if exc.http else None,
                                 elapsed=time.monotonic() - started)
             return AdapterStartResult(adapter_invocation_id=adapter_id, ok=False, terminal=True,
-                                      detail=f"refused: {exc.code}")
+                                      detail=f"refused: {exc.code}; {exc.detail}" if exc.http else f"refused: {exc.code}")
         except DeepSeekTransportError as exc:
             # Unknown, not failed: the request may have been accepted and billed.
             self._record_unknown(invocation_id, adapter_id, detail=str(exc),
@@ -543,8 +584,8 @@ class DeepSeekAdapter(AdapterContract):
             "model": self.model,
             "messages": [{"role": "user", "content": snapshot.task_input}],
             "stream": True,
-            # Without this the provider sends no usage at all, and the ledger
-            # would record "unknown" for every call.
+            # Explicitly request usage. Current DeepSeek also reports usage in
+            # its final chunk when this option is omitted (official API docs).
             "stream_options": {"include_usage": True},
         }
         return body
