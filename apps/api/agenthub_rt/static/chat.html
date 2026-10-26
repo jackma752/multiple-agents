@@ -222,6 +222,8 @@ const S = {
   refs: [],           // file references (agenthub.files syntax) for the NEXT call only
   sendPreview: null,  // what the composer would send now: {sent_text, context_preview, budget}
   foldOpen: {},       // "inv:<id>:ctx" -> true/false, remembered across re-renders
+  renderedCid: null,  // conversation the last render belonged to (detects a switch)
+  jumpPending: false, // jump to the newest message ONCE after opening a conversation
   suggestions: [],    // file references the user may add (never added without a click)
   summaries: [], summaryLink: {}, summaryInstruction: "",  // stage summaries (T-2)
   attachSummary: null, // summary_id sent with each next call until removed
@@ -1761,7 +1763,19 @@ const scheduleRender = render;
 
 function renderNow() {
   const tl = $("timeline");
-  const nearBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 80;
+  // Remember where the reader is BEFORE the DOM is rebuilt. Nothing below may
+  // move the view on its own: a streamed event used to yank it to the bottom
+  // whenever the view happened to be within 80px of the end, which is exactly
+  // where you sit while reading the newest card.
+  const prevTop = tl.scrollTop;
+  // Opening (or switching to) a conversation is the one moment a chat is expected
+  // to show the newest content. This is a ONE-SHOT jump: once the messages are
+  // there, later updates leave the view exactly where the wheel put it.
+  const switched = S.cid !== S.renderedCid;
+  if (switched) {
+    S.renderedCid = S.cid;
+    S.jumpPending = true;
+  }
   const banner = $("banner");
   banner.hidden = !S.banner;
   banner.replaceChildren(S.banner, " ",
@@ -1805,10 +1819,19 @@ function renderNow() {
         el("div", { class: "bubble" }, m.text)));
     }
   }
-  // A call the user just created shows its approval card at the end: go there.
+  // Two things scroll the view, both user-facing: the call the user just created
+  // ("send" was clicked, so take them to the new approval card) and the one-shot
+  // jump when a conversation is opened. Everything else keeps the previous offset,
+  // so reading is not interrupted - if the wheel was not used, the view does not move.
   const created = S.scrollAfter != null && S.lastMsgId > S.scrollAfter;
-  if (nearBottom || created) tl.scrollTop = tl.scrollHeight;
-  if (created) S.scrollAfter = null;
+  const opening = S.jumpPending && (S.messages || []).length > 0;
+  if (created || opening) {
+    tl.scrollTop = tl.scrollHeight;
+    if (created) S.scrollAfter = null;
+    if (opening) S.jumpPending = false;
+  } else {
+    tl.scrollTop = Math.min(prevTop, Math.max(0, tl.scrollHeight - tl.clientHeight));
+  }
   exposeStats();
   renderUsage();
   renderSummary();
