@@ -2,8 +2,8 @@
 
 Approving a call never approves its tools (AGENTS.md). While a call runs, a
 provider may ask to run a command or change files; the adapter opens a card
-through :class:`ToolGate` and waits. Only a user, through the API
-(:func:`decide`), can approve or decline it.
+through :class:`ToolGate` and waits. A user through the API (:func:`decide`),
+or that user's authorized stage rules, can approve or decline it.
 
 Rules enforced here, not in the adapter or the page:
 
@@ -44,6 +44,7 @@ from agenthub.contracts import (
     TOOL_APPROVAL_PENDING, TOOL_APPROVAL_VOID, TOOL_DELIVERY_BLOCKED,
     TOOL_DELIVERY_FAILED, TOOL_DELIVERY_NOT_SENT, TOOL_DELIVERY_PENDING,
     TOOL_DELIVERY_SENDING, TOOL_DELIVERY_SENT,
+    TOOL_APPROVAL_DETAIL_CHARS,
 )
 from agenthub_kernel.db import (
     ChatMessageRow, InvocationRow, ToolApprovalRow, ToolGateClosureRow,
@@ -51,7 +52,7 @@ from agenthub_kernel.db import (
 from agenthub_kernel.service import QuotaError, new_id, now
 
 ACTIVE_CALL_STATUSES = ("starting", "running")
-MAX_DETAIL_CHARS = 8000
+MAX_DETAIL_CHARS = TOOL_APPROVAL_DETAIL_CHARS
 
 
 def card_hash(row: ToolApprovalRow) -> str:
@@ -282,6 +283,17 @@ class ToolGate:
                 return session.get(ToolGateClosureRow, self.invocation_id) is None
         except Exception:  # noqa: BLE001
             return False
+
+    def void(self, card_id: str) -> None:
+        """The provider cleared this one request; preserve other cards in the call."""
+        with self.db.session() as session:
+            row = _locked(session, card_id)
+            if (row is not None and row.invocation_id == self.invocation_id
+                    and row.status in (TOOL_APPROVAL_PENDING, TOOL_APPROVAL_APPROVED)
+                    and row.delivery == TOOL_DELIVERY_PENDING):
+                row.status = TOOL_APPROVAL_VOID
+                row.delivery = TOOL_DELIVERY_NOT_SENT
+                session.flush()
 
     def delivered(self, card_id: str, *, decision: Optional[str], ok: bool) -> None:
         try:

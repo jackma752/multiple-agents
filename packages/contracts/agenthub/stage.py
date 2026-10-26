@@ -190,6 +190,8 @@ def tool_decision(rules: ToolRules, method: str, details: dict[str, Any]) -> tup
     writable root is always declined.
     """
     details = details if isinstance(details, dict) else {}
+    if details.get("additionalPermissions") or details.get("networkApprovalContext"):
+        return "declined", "additional access is not covered by command prefixes or file changes"
     if details.get("grantRoot"):
         return "declined", "asks to widen the writable root"
     if "fileChange" in method:

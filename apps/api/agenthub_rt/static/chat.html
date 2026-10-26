@@ -73,6 +73,7 @@
   .card dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 6px 0; }
   .card dt { color: var(--dim); }
   .card dd { margin: 0; word-break: break-all; }
+  .card dd.mono { white-space: pre-wrap; }
   .cursor::after { content: "▍"; animation: blink 1s steps(1) infinite; color: var(--accent); }
   @keyframes blink { 50% { opacity: 0; } }
   #composer { border-top: 1px solid var(--line); background: var(--panel); padding: 12px 16px; }
@@ -1291,7 +1292,19 @@ const METHOD_LABEL = {
 };
 const DETAIL_LABEL = { command: "命令（原文）", command_view: "命令（拆开后）", cwd: "目录",
   reason: "理由（模型提供的说明）", reason_source: null, path: "路径", grantRoot: "授权范围",
-  provider_available_decisions: "provider 提供的选项" };
+  changes: "文件变更", additionalPermissions: "本次命令申请的额外权限", networkApprovalContext: "网络授权范围",
+  approval_scope: null, approval_block_reason: "当前不能允许的原因",
+  kind: "操作类型", environmentId: "执行环境", provider_available_decisions: null };
+
+function fileChangesView(changes) {
+  if (!Array.isArray(changes)) return JSON.stringify(changes);
+  return changes.map((x) => {
+    const kind = typeof x.kind === "string" ? x.kind : (x.kind || {}).type;
+    const label = ({add:"新增", update:"修改", delete:"删除", move:"移动"})[kind] || kind || "变更";
+    const moved = x.kind && x.kind.move_path ? ` → ${x.kind.move_path}` : "";
+    return `${x.path || "（路径未知）"}${moved}\n${label}\n${x.diff || "（未提供差异）"}`;
+  }).join("\n\n");
+}
 
 function commandView(v) {
   if (!v || !v.parsed) return "无法可靠拆分，只看上面的原文（不显示改写后的命令）";
@@ -1319,8 +1332,9 @@ function renderCard(id) {
   const details = card.details || {};
   const rows = Object.entries(details).filter(([k]) => DETAIL_LABEL[k] !== null).map(([k, v]) => [
     el("dt", {}, DETAIL_LABEL[k] || k),
-    el("dd", { class: k === "command" || k === "command_view" ? "mono" : "" },
-       k === "command_view" ? commandView(v) : typeof v === "string" ? v : JSON.stringify(v)),
+    el("dd", { class: ["command", "command_view", "changes"].includes(k) ? "mono" : "" },
+       k === "command_view" ? commandView(v) : k === "changes" ? fileChangesView(v)
+         : typeof v === "string" ? v : JSON.stringify(v)),
   ]);
   const canApprove = acceptOffered(card);
   const delivery = card.delivery === "sent" ? `已发出：${card.decision_sent}`
@@ -1346,8 +1360,9 @@ function renderCard(id) {
       chip(`按阶段规则自动${card.auto.decision === "approved" ? "允许" : "拒绝"}`,
            card.auto.decision === "approved" ? "ok" : "warn"), " 规则：", card.auto.rule || "") : null,
     pending ? el("div", { class: "note" }, canApprove
-      ? "只批准这一个请求，不影响以后的请求；拒绝、超时或请求结束都不会执行。"
-      : "这一阶段只能拒绝：批准后的执行链尚未验证。不经审批、直接在沙箱内运行的命令（可能包括启动其他 Agent 的 CLI）Hub 只能观测、不能拦截。") : null);
+      ? "仅允许这一次操作，不记住命令前缀或授权整个会话。允许发出后，实际结果以执行记录为准。"
+      : (details.approval_block_reason || "接入方没有提供本次操作的单次允许选项。") +
+        " 不经审批、直接在沙箱内运行的操作，Hub 只能观测。") : null);
 }
 
 function renderCall(c) {
@@ -1932,10 +1947,13 @@ function renderAdapter() {
 function renderAgentPosture() {
   const a = agentInfo($("agent").value);
   const adm = a.execution_admission || {};
+  const supervised = a.supervised_admission || {};
   const chipEl = $("adapterChip");
-  chipEl.textContent = `${a.name || "?"}${a.transport ? " · " + a.transport : ""} · ${adm.mode || "?"}`;
-  chipEl.className = "chip " + (adm.mode === "simulation" ? "info" : adm.allowed ? "warn" : "bad");
-  chipEl.title = adm.reason || "";
+  const posture = adm.mode === "simulation" ? "离线模拟" : adm.allowed ? "严格模式可用"
+    : supervised.allowed ? "用户监督可用 · 严格受限" : "当前不可启动";
+  chipEl.textContent = `${a.name || "?"}${a.transport ? " · " + a.transport : ""} · ${posture}`;
+  chipEl.className = "chip " + (adm.mode === "simulation" ? "info" : adm.allowed || supervised.allowed ? "warn" : "bad");
+  chipEl.title = [adm.reason, supervised.reason].filter(Boolean).join("\n");
   // Mode options say what the adapter admits; the server decides regardless.
   const label = (x) => !x ? "" : x.mode === "simulation" ? "（离线模拟）"
     : x.allowed ? "" : "（当前适配器不放行）";

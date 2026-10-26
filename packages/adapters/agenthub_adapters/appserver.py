@@ -522,7 +522,12 @@ class AppServerClient:
                 f"unsupported decision {decision!r}; this client sends only "
                 f"{sorted(SUPPORTED_DECISIONS)}"
             )
-        self.respond(request.id, {"decision": decision})
+        if request.method == "item/permissions/requestApproval":
+            if decision != "decline":
+                raise AppServerError("permission grants are not single-command approvals")
+            self.respond(request.id, {"permissions": {}, "scope": "turn"})
+        else:
+            self.respond(request.id, {"decision": decision})
         request.answered = True
         self.approval_policy.decisions.append(
             {"id": request.id, "method": request.method, "decision": decision,
@@ -765,14 +770,15 @@ def requires_explicit_decision(method: str) -> bool:
 
 
 def describe_approval(params: dict) -> dict:
-    """A content-free summary of an approval request, safe to log or show.
+    """Fields for an authenticated approval card, which can quote user content.
 
     Field names follow the schema's params; anything unknown (including any prompt
-    text) is dropped rather than echoed, because an approval payload can quote user
-    content and the console only needs to know WHAT is being asked.
+    text) is dropped rather than echoed. Commands, diffs and permissions are
+    review material; callers must not copy them into public events or logs.
     """
     keys = ("itemId", "command", "cwd", "reason", "availableDecisions", "approvalId",
-            "threadId", "turnId", "kind", "grantRoot", "path")
+            "threadId", "turnId", "kind", "grantRoot", "path", "changes",
+            "additionalPermissions", "networkApprovalContext")
     return {k: params.get(k) for k in keys if k in params}
 
 

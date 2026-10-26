@@ -5,7 +5,7 @@ the pinned executable and every launch path is replaced by a sentinel, so no
 Codex process, model call or credential is involved.
 
 Decline-only behaviour is exercised on the in-memory stub by switching the
-adapter's ``accept_enabled`` off, which is what a real factory gets.
+adapter's ``accept_enabled`` off, preserving compatibility with deny-only mode.
 """
 
 import hashlib
@@ -114,8 +114,8 @@ def test_supervised_admits_only_the_pinned_factory_and_strict_never(tmp_path, pi
     supervised = execution_admission(adapter, "supervised")
     assert supervised.allowed and supervised.mode == "supervised"
     assert supervised.code == "user_supervised_boundary"
-    assert adapter.accept_enabled is False  # decline-only for a real factory
-    assert adapter.capabilities()["tool_accept"] is False
+    assert adapter.accept_enabled is True
+    assert adapter.capabilities()["tool_accept"] is True
 
 
 @pytest.mark.parametrize("change, problem", [
@@ -157,12 +157,13 @@ def test_supervised_needs_a_bounded_local_deadline(tmp_path, pinned_file, timeou
     assert not admission.allowed and "timeout" in admission.reason
 
 
-def test_supervised_refuses_an_adapter_that_could_answer_accept(tmp_path, pinned_file):
+def test_supervised_admits_request_scoped_accept_without_enabling_strict(tmp_path, pinned_file):
     _exe, ca = pinned_file
     adapter = real_adapter(tmp_path, real_factory(tmp_path, ca))
     adapter.accept_enabled = True
     admission = execution_admission(adapter, "supervised")
-    assert not admission.allowed and "tool_accept_enabled" in admission.reason
+    assert admission.allowed
+    assert not execution_admission(adapter, "strict").allowed
 
 
 def test_lookalike_factory_type_is_refused(tmp_path, pinned_file):
@@ -380,7 +381,7 @@ def test_settings_read_back_rejects_each_difference(result, problem):
 def decline_only_call(make_client, tmp_path, scenario="approval-default", *, ttl=10, **kwargs):
     factory = InMemoryStubFactory(scenario)
     adapter = make_adapter(tmp_path, factory, **kwargs)
-    adapter.accept_enabled = False  # what a real factory gets
+    adapter.accept_enabled = False  # an explicitly deny-only configuration
     client = make_client(adapter=adapter)
     client.app.state.worker.tool_approval_ttl = ttl
     cid = conversation(client)
@@ -455,7 +456,8 @@ def test_never_cancel_even_with_accept_enabled_offline(make_client):
     approve(client, turn)
     assert start(client, turn).status_code == 202
     card = pending_card(client, cid)
-    assert card["available_decisions"] == DEFAULT_DECISIONS  # stub: provider list as is
+    assert card["available_decisions"] == ["accept", "decline"]
+    assert card["details"]["provider_available_decisions"] == DEFAULT_DECISIONS
     client.post(f"/api/tool-approvals/{card['tool_approval_id']}/decline", headers=USER)
     settle(client)
     assert factory.servers[0].answered_approvals() == [{"id": "srv-1", "decision": "decline"}]
@@ -744,7 +746,7 @@ def test_wording_claims_nothing_unverified(tmp_path, pinned_file):
     assert not any(caps["verified"].values())
     for text in (SUPERVISED_REASON, REAL_APPSERVER_BLOCK_REASON):
         assert "支持" not in text and "已禁用" not in text
-    assert "只能拒绝" in SUPERVISED_REASON and "CLI" in SUPERVISED_REASON
+    assert "逐次允许或拒绝" in SUPERVISED_REASON and "CLI" in SUPERVISED_REASON
     info = describe(adapter)
     assert info["subagents_disabled"] is False and info["subagent_disable_requested"] is True
     assert info["binding_identity"].startswith("codex-app-server@codex-cli 0.163.0-alpha.11.2;sha256=")
@@ -753,4 +755,4 @@ def test_wording_claims_nothing_unverified(tmp_path, pinned_file):
 def test_chat_page_hides_approve_unless_accept_is_offered():
     page = (REPO / "apps" / "api" / "agenthub_rt" / "static" / "chat.html").read_text(encoding="utf-8")
     assert "pending && canApprove ?" in page and "function acceptOffered(card)" in page
-    assert "这一阶段只能拒绝" in page and "not_yet_acknowledged" in page
+    assert "接入方没有提供本次操作的单次允许选项" in page and "not_yet_acknowledged" in page

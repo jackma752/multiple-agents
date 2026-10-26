@@ -16,8 +16,8 @@ mode it is admitted only through :class:`CodexAppServerFactory` built from the
 reviewed :data:`PINNED_APPSERVER` constants, with no environment override, the
 verified argv, a proxy and a readable CA bundle, and a local deadline of at most
 600 s. Supervised is a boundary waiver the user accepts per call, not a control
-claim. S3-S5 each passed once through standalone probes (this run only); nothing
-here has run against Codex through the Hub.
+claim. Historical runs are recorded separately from the acceptance of the
+request-scoped allow chain; see docs/codex-tool-approval.md.
 
 Rules this adapter enforces:
 
@@ -29,8 +29,8 @@ Rules this adapter enforces:
 * a tool request of this turn becomes a kernel card when the Worker supplies a
   ``tool_gate``. The only way an answer is written is the gate's claim right
   before writing; after the call's tool decisions are closed nothing is sent,
-  and a void card is never answered. A real app-server's cards offer decline
-  only (accept is unverified, S7); a decline is always sent as ``decline`` and
+  and a void card is never answered. Supported command/file requests offer
+  one-request accept/decline; session-wide grants remain unavailable. A decline is sent as ``decline`` and
   nothing is ever turned into ``cancel`` (D1). Without a gate every request is
   declined;
 * only this turn's ``turn/completed`` with a terminal status settles a call;
@@ -152,7 +152,8 @@ REAL_APPSERVER_BLOCK_REASON = (
     "（S3–S5 只各验证了一条窄路径，只认定当次）。"
 )
 SUPERVISED_REASON = (
-    "仅保证 Hub 审批、固定身份与固定设置核验、本次入口进程控制；工具审批只能拒绝。"
+    "Hub 对收到的命令和文件修改审批请求逐次允许或拒绝；允许仅限本次请求，不添加会话级免审批规则。"
+    "真实工具允许链的首次人工验收待完成；固定身份、设置核验和本次入口进程控制保持有效。"
     "原生子 Agent 与不经审批的工具操作（可能包括启动其他 Agent 的 CLI）不在 Hub 配额内，"
     "停止只关闭本次入口进程，后代进程与远端停止不保证。"
 )
@@ -199,9 +200,33 @@ def _fit_decision(decision: str, offered: Any) -> str:
     server honours ``decline`` regardless, while ``cancel`` would abort the
     whole turn (D1). An accept the provider did not offer becomes a decline.
     """
-    if decision == "accept" and (not isinstance(offered, list) or "accept" in offered):
+    if decision == "accept" and (offered is None or isinstance(offered, list) and "accept" in offered):
         return "accept"
     return "decline"
+
+
+def request_decisions(method: str, params: dict, *, enabled: bool) -> tuple[list[str], str]:
+    """Offer only decisions with the single-request scope the Hub can present."""
+    from agenthub.contracts import TOOL_APPROVAL_DETAIL_CHARS
+
+    if not enabled:
+        return list(DECLINE_ONLY), "此适配器未开放工具允许"
+    if method not in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+        return list(DECLINE_ONLY), "此请求类型尚未接入单次工具允许"
+    if params.get("grantRoot"):
+        return list(DECLINE_ONLY), "此请求会扩大整场会话的可写范围，不能作为单次文件修改批准"
+    if params.get("networkApprovalContext"):
+        return list(DECLINE_ONLY), "此请求授予网络目标访问权限，不能作为单条命令批准"
+    if any(len(json.dumps(params.get(key), ensure_ascii=False, default=str)) > TOOL_APPROVAL_DETAIL_CHARS
+           for key in ("command", "changes", "additionalPermissions")):
+        return list(DECLINE_ONLY), "请求内容超过完整预览上限，请让 Agent 拆成较小的操作后重新申请"
+    if method == "item/commandExecution/requestApproval" and not params.get("command"):
+        return list(DECLINE_ONLY), "未提供可审阅的命令原文"
+    if method == "item/fileChange/requestApproval" and not params.get("changes"):
+        return list(DECLINE_ONLY), "未提供可审阅的文件变更"
+    if _fit_decision("accept", params.get("availableDecisions")) != "accept":
+        return list(DECLINE_ONLY), "接入方未提供单次允许选项；不会改用会话级允许或规则修改"
+    return ["accept", "decline"], ""
 
 
 def settings_problems(result: dict, cwd: str) -> list[str]:
@@ -462,6 +487,10 @@ class _Turn:
         self.turn_started_seen = False
         self.turn_status = ""
         self.provider_quota = None
+        # Full proposed changes belong only in authenticated cards, not events
+        # or the content-free tool activity report.
+        self.approval_previews: dict[str, dict] = {}
+        self.resolved_requests: set = set()
         self.terminal_seen = False
         self.foreign_events = 0
         self.late_events = 0
@@ -552,9 +581,10 @@ class AppServerCodexAdapter(AdapterContract):
         # Requested on every thread request and read back before any turn.
         self.sandbox = "read-only"
         self.disable_subagents = True  # requested via --disable; not proof, not control
-        #: Only the trusted offline stubs may answer accept. A real app-server
-        #: offers decline only until the accept chain is verified (S7).
-        self.accept_enabled = _trusted_offline(transport_factory)
+        #: Only supported factories may route one-request accepts through the
+        #: kernel's tool gate. Real strict admission remains independently blocked.
+        self.accept_enabled = (_trusted_offline(transport_factory)
+                               or type(transport_factory) is CodexAppServerFactory)
         self._start_count = 0
         self._lock = threading.Lock()
         self._active: dict[str, Any] = {}
@@ -597,7 +627,8 @@ class AppServerCodexAdapter(AdapterContract):
             "intercept_tool": False,
             "control_subagent": False,
             "real_usage": "unknown",
-            "tool_accept": self.accept_enabled,  # offline stubs only
+            "tool_accept": self.accept_enabled,
+            "tool_approval_scope": "request",
             # Nothing has been verified through the Hub. Standalone probes,
             # each this run only (docs/appserver-s6-plan.md §2):
             "verified": {"post_message": False, "stream": False, "resume_session": False,
@@ -629,9 +660,6 @@ class AppServerCodexAdapter(AdapterContract):
         if not (isinstance(self.timeout_seconds, (int, float)) and math.isfinite(self.timeout_seconds)
                 and 0 < self.timeout_seconds <= 600):
             problems.append("timeout")
-        if self.accept_enabled:
-            problems.append("tool_accept_enabled")  # decline-only until S7
-
         if problems:
             return ExecutionAdmission(
                 False, "blocked", "appserver_supervised_conditions",
@@ -854,12 +882,10 @@ class AppServerCodexAdapter(AdapterContract):
         deadline = time.monotonic() + self.timeout_seconds
         wall_deadline = _utc_naive() + dt.timedelta(seconds=self.timeout_seconds)
         while time.monotonic() < deadline:
-            if gate is not None and self._has_unrouted(client, turn):
-                # Requests and notifications are queued separately by the
-                # reader; apply what arrived before the request so its output
-                # precedes the card in the event stream.
-                if self._observe_batch(client.notifications(), turn, emit):
-                    return True
+            # Observe queued terminal/resolved notifications before claiming a
+            # decision, including when its card was opened in an earlier pass.
+            if self._observe_batch(client.notifications(), turn, emit):
+                return True
             self._route_requests(client, turn, emit, gate, wall_deadline)
             self._answer_decided(client, turn, gate)
             note = client.wait_for(lambda _n: True, timeout=0.05)
@@ -887,6 +913,10 @@ class AppServerCodexAdapter(AdapterContract):
 
     def _observe(self, note: Any, turn: _Turn, emit: Emit) -> bool:
         params = note.params or {}
+        if note.method == "serverRequest/resolved":
+            if params.get("threadId") == turn.thread_id and "requestId" in params:
+                turn.resolved_requests.add(params["requestId"])
+            return False
         if note.method == TURN_STARTED:
             if turn.ours(params, turn_from_payload=True):
                 turn.turn_started_seen = True
@@ -974,6 +1004,9 @@ class AppServerCodexAdapter(AdapterContract):
         Command text and output are not kept. Observing is not intercepting.
         """
         entry = turn.tool_entry(str(item.get("id") or ""), str(item.get("type") or ""))
+        if method == ITEM_STARTED and item.get("type") in ("commandExecution", "fileChange"):
+            turn.approval_previews[str(item.get("id") or "")] = {
+                k: item[k] for k in ("command", "cwd", "changes") if k in item}
         entry["lifecycle_seen"] = True
         if item.get("processId"):
             entry["process_id_reported"] = True
@@ -1066,20 +1099,17 @@ class AppServerCodexAdapter(AdapterContract):
         except Exception:  # noqa: BLE001
             return False
 
-    @staticmethod
-    def _has_unrouted(client: AppServerClient, turn: _Turn) -> bool:
-        return any(not r.answered and r.id not in turn.cards and r.id not in turn.closed_requests
-                   for r in client.server_requests())
-
-    def _card_details(self, params: dict) -> dict:
+    def _card_details(self, params: dict, blocked_reason: str = "") -> dict:
         details = {k: v for k, v in describe_approval(params).items()
                    if k not in ("itemId", "threadId", "turnId", "availableDecisions")}
         if "command" in details:
             details["command_view"] = command_view(details["command"])
         if "reason" in details:
             details["reason_source"] = "model"  # the model's own explanation, not a fact
-        if not self.accept_enabled:
-            details["provider_available_decisions"] = params.get("availableDecisions")
+        details["provider_available_decisions"] = params.get("availableDecisions")
+        details["approval_scope"] = "request"
+        if blocked_reason:
+            details["approval_block_reason"] = blocked_reason
         return details
 
     def _route_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
@@ -1088,17 +1118,23 @@ class AppServerCodexAdapter(AdapterContract):
         for request in client.server_requests():
             if request.answered or request.id in turn.cards or request.id in turn.closed_requests:
                 continue
+            if request.id in turn.resolved_requests:
+                request.answered = True
+                turn.closed_requests.add(request.id)
+                continue
             params = request.params or {}
             if (gate is not None and requires_explicit_decision(request.method)
                     and turn.ours(params)):
+                preview = turn.approval_previews.get(str(params.get("itemId") or ""), {})
+                presented = {**preview, **{k: v for k, v in params.items() if v is not None}}
+                offered, why = request_decisions(request.method, presented, enabled=self.accept_enabled)
                 try:
                     card_id = gate.open(
                         method=request.method, request_key=json.dumps(request.id),
                         thread_id=turn.thread_id, turn_id=turn.turn_id,
                         item_id=str(params.get("itemId") or ""),
-                        details=self._card_details(params),
-                        available_decisions=(params.get("availableDecisions") if self.accept_enabled
-                                             else list(DECLINE_ONLY)),
+                        details=self._card_details(presented, why),
+                        available_decisions=offered,
                         deadline=wall_deadline,
                     )
                 except Exception:  # noqa: BLE001
@@ -1125,6 +1161,15 @@ class AppServerCodexAdapter(AdapterContract):
             return
         turn.last_card_poll = now_mono
         for request_id, (request, card_id) in list(turn.cards.items()):
+            if request_id in turn.resolved_requests:
+                try:
+                    gate.void(card_id)
+                except Exception:  # no response can be sent after provider resolution
+                    pass
+                request.answered = True
+                turn.closed_requests.add(request_id)
+                del turn.cards[request_id]
+                continue
             try:
                 status = gate.poll(card_id)
             except Exception:  # noqa: BLE001
@@ -1149,8 +1194,11 @@ class AppServerCodexAdapter(AdapterContract):
             else:
                 # Only an approved card becomes accept; everything else declines.
                 answer = "accept" if status == "approved" else "decline"
-            if answer == "accept" and not self.accept_enabled:
-                # Decline-only: no path may write accept, not even a forged row.
+            preview = turn.approval_previews.get(str((request.params or {}).get("itemId") or ""), {})
+            presented = {**preview, **{k: v for k, v in (request.params or {}).items() if v is not None}}
+            offered, _why = request_decisions(request.method, presented, enabled=self.accept_enabled)
+            if answer == "accept" and "accept" not in offered:
+                # Recheck the request scope at delivery, including forged rows.
                 answer = "decline"
                 turn.accept_suppressed.append(card_id)
             decision = _fit_decision(answer, (request.params or {}).get("availableDecisions"))
