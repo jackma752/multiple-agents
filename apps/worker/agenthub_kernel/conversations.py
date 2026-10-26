@@ -12,6 +12,7 @@ from agenthub.context import (
     FILE_SNIPPET, HANDOFF_CONTENT, HANDOFF_FRAME, OUTPUT_HINT, SEPARATOR, USER_INPUT, compose,
 )
 from agenthub.contracts import NATIVE_RESUME, InvocationSnapshot
+from agenthub_kernel.model_usage import provider_of
 from agenthub.collab import MAX_COLLECT_CHARS
 from agenthub.output import OUTPUT_HINTS
 
@@ -96,6 +97,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "error": inv.error,
         "execution_mode": inv.snapshot.get("execution_mode", "strict"),
         "agent_id": inv.snapshot["agent_id"],
+        "model": inv.snapshot.get("model"), "reasoning_effort": inv.snapshot.get("reasoning_effort"),
+        "model_provider": inv.snapshot.get("model_provider"),
         "context_mode": inv.snapshot.get("context_mode", CONTEXT_MODE),
         "resume_thread_id": inv.snapshot.get("resume_thread_id"),
         "handoff": inv.snapshot.get("handoff") or [],
@@ -377,6 +380,8 @@ def submit_turn(
         depth=task.depth, policy_version=root.policy_version, execution_mode=request.execution_mode,
         context_mode=request.context_mode, resume_thread_id=resume_thread_id,
         adapter_version=adapter_version, handoff=handoff, context_preview=preview,
+        model=request.model, reasoning_effort=request.reasoning_effort,
+        model_provider=provider_of(request.agent_id) if request.model else None,
     )
     inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)

@@ -142,5 +142,5 @@ def test_page_has_the_usage_views():
     page = (Path(__file__).resolve().parents[2] / "apps" / "api" / "agenthub_rt" / "static"
             / "chat.html").read_text(encoding="utf-8")
     for needle in ('id="usageConv"', 'id="usageAll"', "/api/usage/summary", "另有 ${t.unknown_calls} 次未知",
-                   "根任务（含子任务调用）", "未区分项目"):
+                   "当前根任务（含子任务）", "agent-subtotal", "showGrandTotal"):
         assert needle in page

@@ -199,6 +199,8 @@ def settle_budget(session: Session, invocation_id: str) -> None:
     Idempotent; a no-op for trees without counters (they are built from the
     ledger when a budget first applies).
     """
+    from agenthub_kernel.model_budget import release
+    release(session, invocation_id)
     inv = session.get(InvocationRow, invocation_id)
     task = session.get(TaskRow, inv.task_id) if inv is not None else None
     if task is None or session.get(TreeTokenBudgetRow, task.root_task_id) is None:
@@ -240,7 +242,9 @@ def budget_view(session: Session, root_task_id: Optional[str], *,
     policy = tree_policy(session, root_task_id) if root_task_id else Policy()
     budget = BudgetPolicy.from_policy(policy)
     estimate = visible_estimate(inv.snapshot) if inv is not None else None
+    from agenthub_kernel.model_budget import views as model_budget_views
     view: dict[str, Any] = {
+        "model_budgets": model_budget_views(session, root_task_id, policy, inv) if root_task_id else [],
         "active": budget.active, **budget.to_dict(),
         "estimate_visible": estimate,
         # Instructions, tool definitions and thread history the provider adds.

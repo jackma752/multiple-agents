@@ -622,6 +622,11 @@ class PolicyService:
         if decision is not None and not decision.allowed:
             self.session.rollback()
             raise QuotaError(decision.code, decision.message or decision.code)
+        from agenthub_kernel.model_budget import admit as admit_model_budget
+        decision = admit_model_budget(self.session, inv, task.root_task_id, policy, metered=metered)
+        if decision is not None and not decision.allowed:
+            self.session.rollback()
+            raise QuotaError(decision.code, decision.message or decision.code)
 
         # 7. Atomic consume + reserve slot
         # 7. Atomic consume + reserve slot.

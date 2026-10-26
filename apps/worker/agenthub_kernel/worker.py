@@ -814,6 +814,10 @@ class Worker:
             # "unavailable" (a broken declaration) never matches. On mismatch
             # the call cannot run and its approval is left as it is.
             refusal = None
+            if inv.snapshot.get("model") and not getattr(target, "supports_model_selection", False):
+                refusal = ("model_selection_unsupported", "该适配器不能选择模型，调用未启动")
+            if inv.snapshot.get("reasoning_effort") and not getattr(target, "supports_effort_selection", False):
+                refusal = ("effort_selection_unsupported", "该适配器不能设置推理强度，调用未启动")
             recorded = inv.snapshot.get("adapter_version", "unknown")
             current = adapter_binding(target)
             if recorded != current or current == UNAVAILABLE_BINDING:

@@ -25,6 +25,7 @@ from agenthub.usage import (
     COMPLETE, PARTIAL, UNKNOWN, UsageRecord, completeness_rank, normalize_usage,
     not_launched_usage, unknown_usage,
 )
+from agenthub_kernel.model_usage import group_models, write_components
 from agenthub_kernel.adapters import adapter_for
 from agenthub_kernel.budget import budget_view, settle_budget
 from agenthub_kernel.db import ChatMessageRow, ConversationRow, InvocationRow, TaskRow, UsageLedgerRow
@@ -98,6 +99,12 @@ def record_usage(session: Session, adapter: Any, invocation_id: str, *,
     for name in NUMBER_FIELDS:
         setattr(row, name, getattr(rec, name))
     row.notes, row.raw, row.model = list(rec.notes), dict(rec.raw), rec.model
+    target = adapter_for(adapter, (inv.snapshot or {}).get("agent_id"))
+    try:
+        report = target.usage_report(invocation_id) if callable(getattr(target, "usage_report", None)) else None
+    except Exception:
+        report = None
+    write_components(session, inv, rec, report)
     session.flush()
     # Same transaction: the call's budget reservation is settled against this row (T-1c).
     settle_budget(session, invocation_id)
@@ -146,7 +153,12 @@ def _view_of(inv: InvocationRow, row: Optional[UsageLedgerRow]) -> Optional[dict
 
 def usage_view(session: Session, inv: InvocationRow) -> Optional[dict[str, Any]]:
     """This call's usage, ``not_recorded`` when settled without a row, else None."""
-    return _view_of(inv, session.get(UsageLedgerRow, inv.id))
+    view = _view_of(inv, session.get(UsageLedgerRow, inv.id))
+    if view is not None:
+        from agenthub_kernel.model_usage import components
+        view["models"] = [{k: p.get(k) for k in ("provider", "model", "model_source", "completeness")}
+                          for p in components(session, [view])]
+    return view
 
 
 def summarize(views: list[dict[str, Any]]) -> dict[str, Any]:
@@ -202,7 +214,7 @@ def conversation_usage(session: Session, conversation_id: str) -> dict[str, Any]
 
     root = root_task_of(session, conversation_id) if session.get(ConversationRow, conversation_id) else None
     return {"conversation_id": conversation_id, "mapping_note": MAPPING_NOTE,
-            "calls": calls, "total": summarize(calls), "by_agent": by_agent(calls),
+            "calls": calls, "total": summarize(calls), "by_agent": by_agent(calls), "by_model": group_models(session, calls),
             "root_task": root_task_usage(session, root) if root else None,
             # The tree's token budget and spend (T-1c); its policy for editing.
             "budget": budget_view(session, root)}
@@ -228,7 +240,7 @@ def root_task_usage(session: Session, root_task_id: str) -> dict[str, Any]:
             views.append(view)
             per_task.setdefault(inv.task_id, []).append(view)
     ordered = sorted(per_task, key=lambda tid: (tasks[tid].depth, tid))
-    return {"root_task_id": root_task_id, "total": summarize(views), "by_agent": by_agent(views),
+    return {"root_task_id": root_task_id, "total": summarize(views), "by_agent": by_agent(views), "by_model": group_models(session, views),
             "by_task": [{"task_id": tid, "parent_task_id": tasks[tid].parent_task_id,
                          "depth": tasks[tid].depth, "agent_id": tasks[tid].agent_id,
                          "kind": tasks[tid].kind, "total": summarize(per_task[tid])}
@@ -275,7 +287,7 @@ def instance_usage(session: Session, user_id: str, *, since: Optional[date] = No
         "scope": "instance", "scope_note": INSTANCE_SCOPE_NOTE, "mapping_note": MAPPING_NOTE,
         "day_basis": DAY_BASIS,
         "since": since.isoformat() if since else None, "until": until.isoformat() if until else None,
-        "total": summarize(views), "by_agent": by_agent(views),
+        "total": summarize(views), "by_agent": by_agent(views), "by_model": group_models(session, views),
         "by_day": [{"day": day, **summarize(group)} for day, group in sorted(days.items())],
         "by_conversation": [{"conversation_id": cid, "title": by_id[cid].title,
                              "total": summarize(convs[cid])} for cid in order],

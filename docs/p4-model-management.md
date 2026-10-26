@@ -1,6 +1,6 @@
 # P4 补充：模型管理与分模型用量
 
-日期：2026-10-26。状态：用户需求已记录，设计待实现；本次只更新计划，没有改运行代码或发起真实调用。
+日期：2026-10-26。状态：功能代码与离线页面验证已完成，首次真实模型目录/选择/预算验收待用户进行；本轮真实模型调用为 0。实现位于 `feat/p4-model-management`，main 未合并。
 
 用户完成页面体验后提出：用量应以单模型为中心，必须看见 Agent 使用的模型，并能切换模型。后续明确：**每模型独立 Token 预算也要做；右侧“用量与预算”按 Agent → 模型展示，同时保留该 Agent 的总花费，例如 Codex 下分别列出 6.0 Astra、6.1 Sol 的用量，再显示 Codex 合计。跨 Agent 的全局总 Token 才是可选项。** 示例是用户给出的显示层次，不是已经核验的账号可用模型列表。这两项纳入 P4 收口，先于 P5。安装包、换机配置与一键安装接入机制留在 P5 的交付配套；新 Agent 接入及其安装配方留在 P6，本次不启动这些工作。
 
@@ -100,3 +100,49 @@ Claude Code
 - 本机已保存的 alpha.11.2 schema 中存在 `ModelListParams`、`ModelListResponse`、`ThreadStartParams.model`、`TurnStartParams.model/effort`。这是静态依据，不是本次真实调用成功的证据。
 
 本次未执行任何 Agent、未读写登录凭据、未更换二进制、未更新价格表或测试模型额度；运行实现与真实可用性仍待以上步骤完成。
+
+## 6. 本轮实现与操作说明
+
+上文第 5 节末句记录的是设计阶段；本节更新实现状态。运行实现已经完成并通过以下离线验证，真实可用性没有因此升级为已验证。
+
+### 页面
+
+- 输入区新增模型 ID 输入/候选列表、推理强度、刷新模型和默认配置提示。模型选项按 Agent 保存；切 Agent 后使用各自选择。模型与显示偏好可保存在本地，登录 token 仍仅放页签 sessionStorage。
+- 右侧“用量与预算”新增当前会话/根任务/全部会话近 7 天的范围选择。默认根任务；按 Agent 分组显示模型行和可展开的独立预算，每组末尾保留 Agent 合计。全局总计默认关闭，可选打开并记住偏好；原根任务预算收在“整个任务总预算（可选）”，显示开关不会停用它。
+- 审批卡显示请求模型/强度；结束后列出接入方报告或线程配置回读的模型。两者不同会提示可能的别名解析/内部切换，不把请求值改写成实际值。
+- 自动阶段可为每个 Agent 填写模型与强度，并在一次规则确认中显示；手动子任务与汇总也带对应 Agent 的选择，仍分别生成审批快照。
+
+### 数据和执行接口
+
+- `InvocationSnapshot.model`、`reasoning_effort` 与可选的 `model_provider` 绑定审批 hash；未使用时省略，保留旧快照/请求 hash。当前 provider 是接口通道键 `codex` / `claude-code`，没有新增同一 Agent 的多账号或多网关配置。
+- `GET /api/agents/{agent}/models` 只读缓存/该用户历史，无进程启动。`POST /api/agents/{agent}/models/refresh` 是用户明确点击的元数据刷新：Codex 可启动固定的本地 app-server，发送 initialize、model/list 和 config/read，再关闭；不发 thread/start 或 turn/start，不产生模型回合。
+- Codex 模型/强度传入 thread/start、thread/resume 和 turn/start；请求了明确模型但线程回读不一致时，在模型回合启动前拒绝。Claude Code 使用本次进程的 `--model` / `--effort`；exec 复用原 `-m` 路径，强度选择未开放。无对应声明的适配器在消耗批准前拒绝，不能静默忽略。
+- Claude Code 没有接入账号模型目录 RPC，页面候选来自明确标注的 CLI 别名和历史记录，也能手填完整 ID。**设置模型预算后，须使用完整模型 ID；未解析的 opus/sonnet/haiku 不能绕过预算归属检查。** 模型目录和历史出现不代表账号当前可用。
+- 新增 `model_usage` 拆分表和模型预算预留/准入表，由现有 create_all 新建，未修改旧表结构。单次调用原账本仍是 Agent 和全局合计来源；多模型组件只有与整次输入/输出对齐时才拆分，不能对齐留在未归属，不再重复加一笔调用总量。旧记录不按当前选择猜填模型。
+- `Policy.model_budgets` 的键为紧凑 JSON `[agent, provider, model]`，值为 `{total, per_call, warn_percent, mode}`。沿用根任务作用范围，与根任务预算在同一个 SQLite writer 事务中检查、预留或回滚；模型计数在准入前从账本与预留记录对账，并通过条件更新检查余额。
+- 未知消耗保留未结算预留，补报后按差额对账；恢复或重放不会重复计费。模型预算阻断不消耗审批、不占槽，其他模型在原授权和其他限额内可继续。单次仍是预留，不提供模型运行中的 Token 硬截断。
+
+### 实际验证
+
+受影响范围命令（没有运行全量或压力测试）：
+
+```text
+python -m pytest -o addopts='' -q tests/http/test_model_management.py tests/http/test_budget_admission.py tests/http/test_usage_ledger.py tests/http/test_usage_views.py tests/http/test_autopilot.py tests/http/test_autopilot_recovery.py tests/http/test_conversation_stream.py tests/http/test_conversations.py tests/http/test_chat_page.py tests/http/test_appserver_s6.py tests/http/test_async_and_tool_approval.py tests/http/test_codex_tool_allow.py tests/http/test_collab.py tests/http/test_context_preview.py tests/http/test_stage_summary.py tests/http/test_policy_api.py tests/adapters/test_claude_code_adapter.py tests/adapters/test_codex_adapter.py tests/adapters/test_usage_reports.py tests/policy/test_snapshot_binding.py tests/policy/test_policy_versioning.py tests/policy/test_codex_gate.py tests/policy/test_claude_code_gate.py tests/test_usage_normalization.py tests/test_budget_rules.py tests/test_claude_code_min.py tests/test_context_preview.py tests/test_collab_plan.py --basetemp=E:\plug\.tmp\model-final-affected
+619 passed in 97.73s
+```
+
+补上“不支持的适配器不能忽略模型”和“CLI 别名不能绕过模型预算”后，模型专项完整重跑：`tests/http/test_model_management.py --basetemp=E:\plug\.tmp\model-final-feature` → `20 passed in 5.18s`（与上述测试存在重叠，不相加作为总测试数）。
+
+隔离 Edge 浏览器走查结果：`PASS: model discovery/selection, two models and agents, subtotals, per-model budget refusal, other model allowed, total preference and reload; no page errors`。截图和脚本在忽略的 `var/model-browser/`，8188 测试服务已正常退出，未操作用户的 8080 服务。
+
+本轮另修正三个旧测试的预期：页面布局文案、旧请求 hash 测试排除新增的空模型字段、允许非敏感显示偏好使用 localStorage 而继续限制 token 为 sessionStorage。没有靠改预期取消审批或预算检查。
+
+### 用户在 8080 离线体验
+
+先关闭旧服务器，再从用户自己的 PowerShell 启动本工作树版本。以下命令明确使用两个离线桩，数据与原在线演示目录分开；没有真实模型：
+
+```powershell
+& 'E:\plug\agent-hub\.venv\Scripts\python.exe' 'E:\plug\agent-hub\.worktrees\p4-model-management\tools\demo\serve.py' --host 127.0.0.1 --port 8080 --adapter multi --appserver-stub usage-multi-request --claude-code-stub success-usage --data-dir 'E:\plug\agent-hub\var\p4-model-demo\data' --files-root 'E:\plug\agent-hub\docs'
+```
+
+打开 `http://127.0.0.1:8080/chat`，新建会话，选 Codex，点“刷新模型”，分别以 stub-model、stub-model-2 发送并手动启动一次；右侧应出现两行及 codex 合计。每行可展开模型预算；先建立待审批消息就能产生根任务，不必先花一次真实调用才能设置预算。Claude Code 桩可手填示例模型 ID，返回对应模拟用量。真实目录、模型参数和账户可用性由用户后续单独验收，不以这个演示替代。

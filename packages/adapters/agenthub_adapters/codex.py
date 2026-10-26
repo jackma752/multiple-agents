@@ -511,6 +511,9 @@ def success_script(
 
 class CodexAdapter(AdapterContract):
     """Minimal real adapter. Gated: cannot start without a kernel gate token."""
+    supports_model_selection = True
+    supports_effort_selection = False
+
 
     name = "codex"
 
@@ -713,7 +716,7 @@ class CodexAdapter(AdapterContract):
             workdir,
             sandbox=self.sandbox,
             disable_subagents=self.disable_subagents,
-            model=self.model,
+            model=snapshot.model or self.model,
         )
         # `command_prefix` exists so an offline integration can run a STUB process
         # through the exact same machinery (argv, env, file-captured stdout,

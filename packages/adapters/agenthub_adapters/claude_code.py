@@ -605,6 +605,17 @@ def classify(run: ClaudeRun, parsed: ParsedResult) -> tuple[str, bool, str]:
 
 class ClaudeCodeAdapter(AdapterContract):
     """Minimal Claude Code adapter. Gated: gate token, binding identity, admission."""
+    supports_model_selection = True
+    supports_effort_selection = True
+
+    def model_catalog(self, *, refresh=False):
+        # This CLI exposes a selection flag, not an account model-list RPC.
+        # Aliases are labelled as such; users may enter a provider-specific ID.
+        return {"models": [{"id": x, "display_name": x, "source": "cli_alias",
+                            "reasoning_efforts": ["low", "medium", "high"]} for x in ('opus', 'sonnet', 'haiku')],
+                "default_model": None, "source": "cli_alias", "refresh_available": False,
+                "message": "CLI 别名候选，不保证账号可用；默认模型待执行结果确认，也可输入完整模型 ID"}
+
 
     name = "claude-code"
     transport = TRANSPORT
@@ -753,6 +764,10 @@ class ClaudeCodeAdapter(AdapterContract):
                                       detail=f"refused: launch preparation failed ({type(exc).__name__})")
 
         argv = list(self.launcher.argv)
+        if snapshot.model:
+            argv += ["--model", snapshot.model]
+        if snapshot.reasoning_effort:
+            argv += ["--effort", snapshot.reasoning_effort]
         stderr_path = os.path.join(logs, f"{invocation_id}-claude-stderr.log")
         stdout_path = os.path.join(scratch, f"{invocation_id}-{uuid.uuid4().hex}.json")
         # Past this line a launch is attempted. Record first: a crash afterwards
@@ -895,4 +910,5 @@ class ClaudeCodeAdapter(AdapterContract):
         if not usage:
             notes.append("no_usage_reported")
         return {"mapping": MAPPING_CLAUDE_CODE, "usage": usage, "source": "cli_result",
-                "notes": notes, "model": models[0] if len(models) == 1 else None}
+                "notes": notes, "model": models[0] if len(models) == 1 else None,
+                "model_usage": payload.get("model_usage") or {}, "model_source": "provider_usage"}

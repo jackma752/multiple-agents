@@ -484,6 +484,35 @@ class UsageLedgerRow(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
+class ModelUsageRow(Base):
+    """Per-model components of one ledger record, not additional spending."""
+    __tablename__ = "model_usage"
+    invocation_id = Column(ForeignKey("invocations.id"), primary_key=True)
+    provider = Column(String, primary_key=True)
+    model = Column(String, primary_key=True)  # empty = not attributable
+    payload = Column(JSON, nullable=False)
+
+
+class ModelBudgetCounterRow(Base):
+    __tablename__ = "model_budget_counters"
+    id = Column(String, primary_key=True)
+    known = Column(Integer, nullable=False, default=0)
+    unsettled = Column(Integer, nullable=False, default=0)
+    reserved = Column(Integer, nullable=False, default=0)
+    unbounded = Column(Integer, nullable=False, default=0)
+
+
+class ModelBudgetReservationRow(Base):
+    __tablename__ = "model_budget_reservations"
+    invocation_id = Column(ForeignKey("invocations.id"), primary_key=True)
+    root_task_id = Column(String, index=True, nullable=False)
+    agent_id = Column(String, nullable=False)
+    provider = Column(String, nullable=False)
+    model = Column(String, nullable=False)
+    reservation = Column(Integer, nullable=False)
+    reserved = Column(Integer, nullable=False)
+
+
 class TreeTokenBudgetRow(Base):
     """Per-tree token counters for atomic budget admission (T-1c).
 

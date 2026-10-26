@@ -78,9 +78,12 @@ class StageRules:
     retry_limit: int = 3
     auto_resume: bool = True
     quota_retry_seconds: int = 300
+    models: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
+        if not self.models:
+            out.pop("models", None)
         out["agents"] = list(self.agents)
         out["tool"] = {"command_prefixes": list(self.tool.command_prefixes),
                        "allow_file_changes": self.tool.allow_file_changes}
@@ -143,16 +146,24 @@ def make_rules(data: dict[str, Any], *, served: tuple = ()) -> StageRules:
     quota_retry = data.get("quota_retry_seconds", 300)
     if type(quota_retry) is not int or not 60 <= quota_retry <= 3600:
         raise ValueError("quota_retry_seconds must be 60..3600")
+    from agenthub.models import validate_selection
+    models = data.get("models") or {}
+    if not isinstance(models, dict) or set(models) - set(agents):
+        raise ValueError("models must be selections for the stage agents")
+    for selection in models.values():
+        if not isinstance(selection, dict) or set(selection) - {"model", "reasoning_effort"}:
+            raise ValueError("invalid stage model selection")
+        validate_selection(**selection)
     tool = ToolRules(command_prefixes=clean_prefixes(data.get("command_prefixes")),
                      allow_file_changes=data.get("allow_file_changes") is True)
     return StageRules(agents=agents, plan=plan, max_calls=max_calls, tool=tool, retry_limit=retry,
                       auto_resume=data.get("auto_resume", True) is not False,
-                      quota_retry_seconds=quota_retry, **roles)
+                      quota_retry_seconds=quota_retry, models=models, **roles)
 
 
 def rules_of(stored: dict[str, Any]) -> StageRules:
     tool = stored.get("tool") or {}
-    return StageRules(agents=tuple(stored["agents"]), main_agent=stored["main_agent"], plan=stored["plan"],
+    return StageRules(models=stored.get("models") or {}, agents=tuple(stored["agents"]), main_agent=stored["main_agent"], plan=stored["plan"],
                       review_agent=stored.get("review_agent"), collect_agent=stored.get("collect_agent"),
                       max_calls=stored["max_calls"], retry_limit=stored.get("retry_limit", 3),
                       auto_resume=stored.get("auto_resume", True),

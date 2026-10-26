@@ -33,7 +33,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Optional, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, StrictBool, StrictInt
+from pydantic import BaseModel, StrictBool, StrictInt, Field
 
 from agenthub.contracts import InvocationSnapshot, Policy
 from agenthub_kernel import Worker
@@ -68,6 +68,8 @@ class InvocationIn(BaseModel):
     permissions: dict[str, Any] = {}
     resources: dict[str, Any] = {}
     execution_mode: Literal["strict", "supervised"] = "strict"
+    model: Optional[str] = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,79}$")
+    reasoning_effort: Optional[str] = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 class ApprovalIn(BaseModel):
@@ -75,6 +77,7 @@ class ApprovalIn(BaseModel):
 
 
 class PolicyIn(BaseModel):
+    model_config = {"protected_namespaces": ()}
     max_subagents_total: int = 3
     max_subagents_concurrent: int = 2
     max_depth: int = 1
@@ -86,6 +89,7 @@ class PolicyIn(BaseModel):
     token_budget_per_call: Optional[StrictInt] = None
     token_budget_warn_percent: StrictInt = 80
     token_budget_mode: Literal["strict", "soft"] = "strict"
+    model_budgets: dict = {}
 
 
 class ReconcileIn(BaseModel):
@@ -162,6 +166,8 @@ def create_app(
     register_conversations(app, db)
     register_tool_approvals(app, db)
     register_stages(app, db)
+    from agenthub_rt.models import register_models
+    register_models(app, db)
 
     @app.get("/api/agents")
     def list_agents() -> list[dict[str, Any]]:
@@ -221,7 +227,7 @@ def create_app(
                     parent_task_id=body.parent_task_id,
                     depth=task.depth,
                     permissions=body.permissions,
-                    resources=body.resources,
+                    resources=body.resources, model=body.model, reasoning_effort=body.reasoning_effort,
                     execution_mode=body.execution_mode,
                     # Must carry the tree's CURRENT policy version, otherwise the
                     # consume-time policy check would (correctly) reject this
@@ -337,6 +343,7 @@ def create_app(
                 token_budget_per_call=body.token_budget_per_call,
                 token_budget_warn_percent=body.token_budget_warn_percent,
                 token_budget_mode=body.token_budget_mode,
+                model_budgets=body.model_budgets,
             )
         except ValueError as exc:
             raise HTTPException(
