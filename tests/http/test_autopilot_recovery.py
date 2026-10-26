@@ -59,6 +59,24 @@ def test_server_background_loop_finishes_without_manual_tick(make_hub):
     assert stage_of(client, cid)["calls_used"] == 1
 
 
+def test_latest_stage_uses_creation_order_when_timestamps_tie(make_hub, monkeypatch):
+    from agenthub_kernel import autopilot
+
+    client, _ = make_hub()
+    cid = conv(client)
+    prove(client, cid, agents=("claude-code",))
+    ids = iter(("stage_z_first", "stage_a_second"))
+    monkeypatch.setattr(autopilot, "new_id", lambda prefix: next(ids))
+    first = cc_stage(client, cid)
+    assert run_stage(client, cid) == "completed"
+    second = cc_stage(client, cid)
+    with client.app.state.db.session() as session:
+        for sid in (first, second):
+            session.get(StageRunRow, sid).created_at = dt.datetime(2026, 10, 26)
+    assert stage_of(client, cid)["stage_id"] == second
+    assert run_stage(client, cid) == "completed"
+
+
 @pytest.mark.parametrize("failures", [2, 4])
 def test_retries_have_failure_context_and_keep_count_after_scheduler_restart(make_hub, failures):
     client, _ = make_hub()

@@ -23,7 +23,7 @@ import logging
 import threading
 from typing import Any, Callable, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, literal_column, select, text
 from sqlalchemy.orm import Session
 
 from agenthub.chat import ConversationTurn
@@ -103,7 +103,7 @@ def open_stage(session: Session, root_task_id: str) -> Optional[StageRunRow]:
 
 def latest_stage(session: Session, cid: str) -> Optional[StageRunRow]:
     return session.scalar(select(StageRunRow).where(StageRunRow.conversation_id == cid)
-                          .order_by(StageRunRow.created_at.desc(), StageRunRow.id.desc()).limit(1))
+                          .order_by(StageRunRow.created_at.desc(), literal_column("stage_runs.rowid").desc()).limit(1))
 
 
 def start_stage(session: Session, cid: str, user_id: str, data: dict[str, Any], *, adapter: Any) -> StageRunRow:
