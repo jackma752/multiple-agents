@@ -221,6 +221,7 @@ const S = {
   handoff: [],        // reply message_ids chosen to pass on with the NEXT call only
   refs: [],           // file references (agenthub.files syntax) for the NEXT call only
   sendPreview: null,  // what the composer would send now: {sent_text, context_preview, budget}
+  foldOpen: {},       // "inv:<id>:ctx" -> true/false, remembered across re-renders
   suggestions: [],    // file references the user may add (never added without a click)
   summaries: [], summaryLink: {}, summaryInstruction: "",  // stage summaries (T-2)
   attachSummary: null, // summary_id sent with each next call until removed
@@ -1422,12 +1423,28 @@ function renderCall(c) {
     " 我已了解并同意本次调用的用户监督边界：" + supervisedBoundaryText(c.agent_id)) : null;
   // A handoff sends more than the user's own text: the exact composed input is
   // what the approval binds, so it is shown in full (open while awaiting).
-  const sent = c.sent_text ? el("details", { class: "sent", open: awaiting ? "open" : null },
-    el("summary", {}, "将发送的完整内容（" + c.sent_text.length + " 字）"),
+  // Fold-outs on a call card (T-1d). They default to open while the call can still
+  // be approved, but the card is REBUILT on every streamed event - so deriving
+  // `open` from the live state alone made the panel snap shut the moment the
+  // approval was consumed, losing what the user had opened to read. The user's
+  // choice is remembered here instead and wins from then on.
+  const fold = (key, title, children) => {
+    const remembered = S.foldOpen[key];
+    const isOpen = remembered === undefined ? awaiting : remembered;
+    return el("details", { class: "sent", open: isOpen ? "open" : null },
+      el("summary", {
+        // Record intent BEFORE the browser toggles, so the rebuilt card reopens
+        // exactly as the user left it.
+        onclick: (ev) => { S.foldOpen[key] = !ev.currentTarget.parentNode.open; },
+      }, title),
+      children);
+  };
+  const sent = c.sent_text ? fold("inv:" + c.id + ":sent",
+    "将发送的完整内容（" + c.sent_text.length + " 字）",
     el("pre", { class: "mono" }, c.sent_text)) : null;
-  // What the approval binds, part by part (T-1d): open while it can still be approved.
-  const preview = c.context_preview ? el("details", { class: "sent", open: awaiting ? "open" : null },
-    el("summary", {}, contextSummary(c.context_preview)),
+  // What the approval binds, part by part (T-1d).
+  const preview = c.context_preview ? fold("inv:" + c.id + ":ctx",
+    contextSummary(c.context_preview),
     contextLines(c.context_preview).map((t) => el("div", { class: "note" }, t))) : null;
   return el("div", { class: "call" },
     el("div", { class: "row" },
