@@ -190,18 +190,25 @@ def codex_home_write_check(path: str | None = None) -> tuple[bool, str]:
 
     Writes one tiny file and removes it. Returns ``(ok, detail)``.
     """
-    import tempfile
+    import uuid
 
     path = os.fspath(path) if path is not None else codex_home()
     if not os.path.isdir(path):
         return False, f"{path} does not exist"
+    probe = os.path.join(path, f".agenthub-write-probe-{uuid.uuid4().hex}")
     try:
-        # Exclusive random name: never truncate a pre-existing file and never
-        # collide with another worker's preflight. Check the selected home,
-        # not a different path obtained from an inherited environment override.
-        with tempfile.NamedTemporaryFile(prefix=".agenthub-write-probe-", dir=path) as fh:
-            fh.write(b"ok")
-            fh.flush()
+        # tempfile retries PermissionError on Windows when os.access says yes.
+        # Under an execution sandbox that can mean billions of denied attempts.
+        # One exclusive create reports the actual denial immediately, without
+        # truncating an existing file or touching any credential.
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, b"ok")
+        finally:
+            try:
+                os.close(fd)
+            finally:
+                os.unlink(probe)
     except OSError as exc:
         return False, f"{path} is not writable by this process ({exc})"
     return True, f"{path} is writable by this process"
