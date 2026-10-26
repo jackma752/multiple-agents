@@ -92,6 +92,7 @@
 - Codex 有已记录的原生 thread 时绑定该失败调用自己的 thread 恢复；Claude Code 没有原生续接能力，使用原目标、依赖结果和失败记录新开独立调用。`recovery_started` 事件记录 native_resume / independent。原生续接明确失败后，按普通修复路径建立独立调用；未知结果不能如此重试。
 - 用户关闭自动续跑后需要点“继续”；另一个阶段恢复额度也不会代替此用户决定。暂停/停止优先于到点恢复。
 - 关页面不影响后台；重启服务使用相同数据目录才可恢复。关机期间不会执行，重新启动后的恢复检查会处理已到期的等待。
+- 探测调用只有在**能证明从未启动**时才释放租约。调用仍是 `draft`/`awaiting_approval` 且其审批已是 `revoked`/`declined`/`expired`（或审批已不存在）时，记 `quota_probe_stranded` 事件、清空 `provider_quota.probe_invocation_id`，由下个 tick 重新探测；审批仍是 `pending`/`approved`、或调用已 `queued`/`starting`/`running`/`unknown` 时继续等待，绝不重复执行可能已开始的调用。否则一次"暂停后审批被撤销"会让额度桶被一条永不启动的调用永久占住，后续阶段全部卡在"等待额度恢复"。
 
 ## 7. 验证与待验收
 

@@ -337,3 +337,41 @@ def test_codex_quota_resume_binds_the_failed_calls_own_thread(make_hub):
 ])
 def test_only_explicit_quota_evidence_becomes_a_wait(error, expected):
     assert bool(quota_error(error)) is expected
+
+
+def test_probe_stranded_by_a_revoked_approval_does_not_pin_the_bucket(make_hub):
+    """A probe whose approval was revoked never ran, so it must not lease the bucket forever.
+
+    Reproduces the P4.6d blocker: a policy update revoked the probe's approval, the
+    invocation stayed ``draft``, ``probe_invocation_id`` was never cleared and every
+    later stage waited for a call that could not start.
+    """
+    client, _ = make_hub()
+    cid = conv(client)
+    prove(client, cid, agents=("claude-code",))
+    clock = fake_clock(client)
+    reset = clock[0] + dt.timedelta(seconds=5)
+    prompts = script(client, [fail("usage limit reached", reset_at=reset.isoformat() + "Z"),
+                              result_object(reply="recovered")])
+    cc_stage(client, cid)
+    assert run_stage(client, cid) == "waiting_quota"
+
+    with client.app.state.db.session() as s:
+        row = s.get(ProviderQuotaRow, "claude-code")
+        failed = s.scalar(select(InvocationRow).where(InvocationRow.status == "failed"))
+        stranded = InvocationRow(id="inv-stranded-probe", task_id=failed.task_id,
+                                 payload_hash=failed.payload_hash, snapshot=dict(failed.snapshot or {}),
+                                 status="draft")
+        s.add(stranded)
+        s.flush()
+        s.add(ApprovalRow(id="appr-stranded-probe", invocation_id=stranded.id,
+                          payload_hash=failed.payload_hash, user_id="local-user", status="revoked"))
+        row.probe_invocation_id = stranded.id
+        row.next_check_at = clock[0] - dt.timedelta(seconds=1)
+
+    assert run_stage(client, cid) == "completed"
+    assert len(prompts) == 2 and "Continue the interrupted stage step" in prompts[1]
+    with client.app.state.db.session() as s:
+        assert s.get(ProviderQuotaRow, "claude-code") is None
+        # The stranded invocation itself is never executed or rewritten by the scheduler.
+        assert s.get(InvocationRow, "inv-stranded-probe").status == "draft"

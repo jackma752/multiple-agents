@@ -606,6 +606,20 @@ class Autopilot:
             probe = session.get(InvocationRow, row.probe_invocation_id)
             if probe and probe.status == "unknown":
                 raise _Blocked(step, "status_unknown", "Quota probe outcome is unknown; no duplicate probe", probe.id)
+            if probe and probe.status in ("draft", "awaiting_approval"):
+                # A probe that never started cannot pin the bucket forever. When its
+                # approval is gone (revoked, declined or expired by a policy change)
+                # the call provably never ran, so the lease is released and a fresh
+                # probe may be created. ``pending``/``approved`` still may run and
+                # keep the lease: an unstarted call is never duplicated.
+                approval = session.scalar(
+                    select(ApprovalRow).where(ApprovalRow.invocation_id == probe.id))
+                if approval is None or approval.status not in ("pending", "approved"):
+                    _event(session, stage, "quota_probe_stranded", invocation_id=probe.id, step=step,
+                           agent=agent, approval_status=(approval.status if approval else None))
+                    row.probe_invocation_id = None
+                    session.flush()
+                    probe = None
             if probe and probe.status not in WAITING:
                 payload = self._payload(probe)
                 if probe.status == "failed" and payload.get("provider_quota"):
