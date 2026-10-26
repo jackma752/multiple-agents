@@ -42,3 +42,24 @@ $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
 该命令不启动模型、不读取凭据。`True` 只证明这次 PowerShell 进程能写所选目录；后台也要在可写的启动环境中运行。`False` 按返回的实际错误处理。连 `CHECK_STARTED` 都没有时，先调查 Python 启动/输出，不继续推断目录权限。
 
 当前在线接入的已知事实：exec 默认固定的旧文件不存在；app-server 的 AgentHub 独立运行时仍存在且哈希匹配，失败记录 `turn_requested=false`，尚未发起模型回合。真实 app-server 重试应等本地预检通过后，由用户操作。此次没有追加真实模型调用。
+
+## 后续定位：项目解释器继承 Low 完整性标签
+
+用户在自己的 PowerShell 报告：`whoami` 为 Administrator，原生 .NET 创建/删除测试文件得到 `WRITE_OK`，但同窗口的虚拟环境 Python 仍返回 `Permission denied`。因此不能将用户侧失败简单归因于助手的 CodexSandboxOffline 账户。
+
+只读核查 `icacls` 得到：
+
+- `E:\plug\agent-hub\.venv\Scripts\python.exe` 带 `Mandatory Label\Low Mandatory Level:(I)(NW)`；其 Scripts 父目录也带继承的 Low 标签。
+- `D:\python\python.exe` 无 Low 标签。
+- 长期 home 的 DACL 给 Administrator 完全控制，CodexSandboxUsers 只有读取/执行；没有把 home 改成可写给沙箱用户。
+- 同一助手环境直接运行基础解释器，令牌查询得到 `S-1-16-8192`（Medium）。虚拟环境解释器的 `_ctypes` 导入失败，未取得其直接令牌输出，不能声称已取得 Low 令牌值。
+
+Windows 官方规则：新进程完整性取用户与可执行文件完整性中的较低者；管理员启动 Low 文件，新进程仍按 Low 工作，不能写普通用户的 Medium 数据目录。来源：[Microsoft MIC](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control)。上述文件标签可以解释用户两种写入结果的差异，也为虚拟环境 DLL 初始化异常提供线索；DLL 问题是否随标签修正消失仍待复测。
+
+用户可在自己的 PowerShell 针对这一个解释器修正标签：
+
+```powershell
+icacls 'E:\plug\agent-hub\.venv\Scripts\python.exe' /setintegritylevel M
+```
+
+如果修改标签被拒，可使用管理员 PowerShell执行这一步。不要递归修改整个工作区、磁盘或凭据目录。标签变化只影响以后新启动的进程；成功后重新运行上文的修正版写入检查，并验证 `_ssl` 能否导入。此命令尚未由助手执行，用户操作结果待确认；在线恢复仍未认定。

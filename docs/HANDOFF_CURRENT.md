@@ -6,6 +6,7 @@
 - 没有真实模型调用、没有读取凭据、没有更改 Windows 权限、没有按进程名停止 Python。
 - [诊断、测试命令和用户下一步](issue-codex-home-write-check.md)。先停止旧检查，再在用户普通 PowerShell 加载本修复的配置文件检查目录；用户侧能否写入尚待输出确认。修复检查不等于在线接入已恢复。
 - 供主线工作 agent 整合：`fba1373` 是实现与回归提交，评估合入该提交即可；用户之前的阶段/8080 整合成果不重做。
+- 后续只读定位：用户 Administrator PowerShell 原生写入成功，venv Python 同窗口失败；`icacls` 发现项目 venv 的 `python.exe` 带继承 Low 完整性标签，基础 `D:\python\python.exe` 无此标签且直接令牌为 Medium。已记录单文件标签修正建议，助手没有更改权限，用户修正与复测待确认。详见上面诊断文档的后续定位节。
 
 ---
 
