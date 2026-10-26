@@ -1106,4 +1106,3 @@ cd /d E:\plug\agent-hub\.worktrees\appserver-proto && E:\plug\agent-hub\.venv\Sc
 3. **不要**把"文档支持 + 本机接口存在"写成"行为已验证"；三层证据必须分开。
 4. **不要**删除长期 `CODEX_HOME` 或 `~/.codex`；不要在未确认停止的情况下释放配额。
 5. 提交前至少运行受影响范围的测试；未经批准不合并、不推送。
-
