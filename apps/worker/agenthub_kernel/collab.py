@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
 from agenthub.collab import MAX_ATTEMPTS_PER_ITEM, PlanItem
@@ -74,8 +74,11 @@ def _latest(session: Session, item: CollabItemRow) -> tuple[int, Optional[Invoca
     """(calls on the item's sub-task, the latest of them)."""
     if item.task_id is None:
         return 0, None
+    # SQLite CURRENT_TIMESTAMP has second precision. Random invocation IDs
+    # cannot break ties: an automatic retry can finish in the same second.
+    # rowid preserves insertion order, including adjudication-created calls.
     calls = session.scalars(select(InvocationRow).where(InvocationRow.task_id == item.task_id)
-                            .order_by(InvocationRow.created_at, InvocationRow.id)).all()
+                            .order_by(InvocationRow.created_at, literal_column("invocations.rowid"))).all()
     return len(calls), (calls[-1] if calls else None)
 
 
@@ -136,7 +139,7 @@ def item_in(session: Session, cid: str, plan_id: int, index: int) -> CollabItemR
     return item
 
 
-def check_dispatch(session: Session, cid: str, item: CollabItemRow) -> None:
+def check_dispatch(session: Session, cid: str, item: CollabItemRow, *, attempt_limit: int = MAX_ATTEMPTS_PER_ITEM) -> None:
     """Raise unless this item may be dispatched now (see module docstring)."""
     if not collaboration_enabled(session, cid):
         raise QuotaError("collaboration_disabled", "协作扩展未开启")
@@ -150,7 +153,7 @@ def check_dispatch(session: Session, cid: str, item: CollabItemRow) -> None:
                          "ended (recovery or adjudication) before dispatching it again")
     if mine["state"] == "done":
         raise QuotaError("item_done", "this sub-task is already done")
-    if mine["attempts"] >= MAX_ATTEMPTS_PER_ITEM:
+    if mine["attempts"] >= attempt_limit:
         raise QuotaError("retry_limit", f"this sub-task was dispatched {mine['attempts']} times (the limit)")
     waiting = [d for d in item.depends_on or [] if states[d]["state"] != "done"]
     if waiting:

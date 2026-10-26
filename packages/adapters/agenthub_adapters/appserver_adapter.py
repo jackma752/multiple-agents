@@ -461,6 +461,7 @@ class _Turn:
         self.native_child_usage: dict[str, dict] = {}
         self.turn_started_seen = False
         self.turn_status = ""
+        self.provider_quota = None
         self.terminal_seen = False
         self.foreign_events = 0
         self.late_events = 0
@@ -819,6 +820,9 @@ class AppServerCodexAdapter(AdapterContract):
         except AppServerResponseError as exc:
             # The server answered with an error: definitive for that request.
             failure = f"server refused {'turn/start' if turn_requested else 'setup'}: {exc.code}"
+            from agenthub_adapters.quota import quota_error
+            facts = {**(facts or {}), "provider_quota": quota_error(
+                {"code": exc.code, "message": str(exc), "data": exc.data})}
         except (AppServerTimeout, AppServerDisconnected, AppServerError) as exc:
             if not turn_requested:
                 failure = f"setup failed before any turn: {type(exc).__name__}"
@@ -914,6 +918,9 @@ class AppServerCodexAdapter(AdapterContract):
                 return False
             turn.turn_status = turn_status_of(note)
             turn.terminal_seen = True
+            if turn.turn_status == "failed":
+                from agenthub_adapters.quota import quota_error
+                turn.provider_quota = quota_error((params.get("turn") or {}).get("error"))
             # No usage here: the schema's Turn has no usage field (D-T0-4).
             return True
         if note.method == DELTA_AGENT_MESSAGE:
@@ -1276,6 +1283,7 @@ class AppServerCodexAdapter(AdapterContract):
             "previous_turn_id": turn.previous_turn_id if turn else "",
             "turn_requested": turn_requested,
             "turn_status": turn.turn_status if turn else "",
+            "provider_quota": turn.provider_quota if turn else None,
             "final_message": turn.final_message if turn else "",
             "usage": usage,
             "usage_source": usage_source,

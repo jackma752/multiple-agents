@@ -979,6 +979,8 @@ class Worker:
             elif getattr(start, "terminal", True):
                 # Definitive end: settle it and free the slot once. A provider-
                 # reported interrupt is a confirmed cancel, not a failure.
+                if inv is not None:
+                    inv.error = start.detail[:400]  # retained for stage repair and pre-launch refusal diagnosis
                 svc.release(invocation_id, InvocationStatus.CANCELED
                             if getattr(start, "outcome", None) == "canceled"
                             else InvocationStatus.FAILED)

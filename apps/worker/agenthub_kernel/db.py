@@ -215,6 +215,77 @@ class CollabAttemptRow(Base):
     attempt = Column(Integer, nullable=False)
 
 
+class StageRunRow(Base):
+    """One user-authorized stage of automatic execution (P4.6, ``agenthub.stage``).
+
+    ``rules`` is what the user approved (``StageRules.as_dict``) and
+    ``rules_hash`` its fingerprint; ``checkpoint`` is the scheduler's
+    progress; ``summary`` the completion or blocker summary once it ends.
+    """
+
+    __tablename__ = "stage_runs"
+
+    id = Column(String, primary_key=True)
+    conversation_id = Column(ForeignKey("conversations.id"), index=True, nullable=False)
+    root_task_id = Column(String, index=True, nullable=False)
+    status = Column(String, nullable=False)
+    execution_mode = Column(String, nullable=False)
+    goal = Column(Text, nullable=False)
+    criteria = Column(Text, nullable=False, default="")
+    rules = Column(JSON, nullable=False)
+    rules_hash = Column(String, nullable=False)
+    supervised_consent = Column(Boolean, nullable=False, default=False)
+    granted_by = Column(String, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    checkpoint = Column(JSON, nullable=False, default=dict)
+    summary = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProviderQuotaRow(Base):
+    """One cooldown/probe per local provider bucket, shared by stages and persisted across restart."""
+
+    __tablename__ = "provider_quota"
+    bucket = Column(String, primary_key=True)
+    next_check_at = Column(DateTime, nullable=False)
+    reset_at = Column(DateTime, nullable=True)
+    backoff_seconds = Column(Integer, nullable=False, default=300)
+    probe_invocation_id = Column(String, nullable=True)
+    last_failure_id = Column(String, nullable=True)
+
+
+class StageGrantRow(Base):
+    """The authorization source of an approval the scheduler gave under a stage's rules."""
+
+    __tablename__ = "stage_grants"
+
+    approval_id = Column(ForeignKey("approvals.id"), primary_key=True)
+    invocation_id = Column(ForeignKey("invocations.id"), index=True, nullable=False)
+    stage_id = Column(ForeignKey("stage_runs.id"), index=True, nullable=False)
+    step = Column(String, nullable=False)
+    rule = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class StageEventRow(Base):
+    """What the scheduler did under a stage (approvals, tool decisions, steps, the end).
+
+    ``detail`` holds ids, codes and short reasons only - never prompts or replies.
+    """
+
+    __tablename__ = "stage_events"
+    __table_args__ = ({"sqlite_autoincrement": True},)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stage_id = Column(ForeignKey("stage_runs.id"), index=True, nullable=False)
+    kind = Column(String, nullable=False)
+    invocation_id = Column(String, nullable=True)
+    tool_approval_id = Column(String, nullable=True)
+    detail = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class PolicyVersionRow(Base):
     """A stored policy version (audit of what limits were in effect)."""
 

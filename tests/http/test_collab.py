@@ -5,6 +5,8 @@ in-process fake (replies CC_REPLY and records its prompts). Every sub-task is
 its own depth-1 call with its own approval; nothing runs by itself.
 """
 
+import datetime as dt
+
 from sqlalchemy import func, select
 
 from agenthub.collab import COLLECT_INSTRUCTION
@@ -121,6 +123,28 @@ def test_a_failed_item_may_be_retried_once(hub):
         assert plan_of(client, cid)["plans"][0]["items"][0]["state"] == "failed"
     r = dispatch(client, cid, pid, 1, "a3")
     assert r.status_code == 409 and r.json()["detail"]["code"] == "retry_limit"
+
+
+def test_same_second_retry_is_latest_even_when_its_random_id_sorts_first(hub, monkeypatch):
+    from agenthub_kernel import service
+
+    client, _router, _prompts = hub
+    cid = multi.conversation(client)
+    set_policy(client, started(client, cid))
+    pid = save_plan(client, cid, items=PLAN[:1]).json()["plan_id"]
+    original_id = service.new_id
+    ids = iter(("inv_z_first", "inv_a_retry"))
+    monkeypatch.setattr(service, "new_id", lambda prefix: next(ids) if prefix == "inv" else original_id(prefix))
+    first = dispatch(client, cid, pid, 1, "failed").json()
+    client.post(f"/api/approvals/{first['approval_id']}/reject", headers=USER)
+    retry = dispatch(client, cid, pid, 1, "retry").json()
+    with client.app.state.db.session() as session:
+        for turn in (first, retry):
+            session.get(InvocationRow, turn["invocation_id"]).created_at = dt.datetime(2026, 10, 26)
+    item = plan_of(client, cid)["plans"][0]["items"][0]
+    assert item["invocation_id"] == retry["invocation_id"] and item["state"] == "awaiting"
+    assert approve_run(client, retry).json()["status"] == "succeeded"
+    assert plan_of(client, cid)["plans"][0]["all_done"]
 
 
 def test_an_unknown_call_is_unconfirmed_and_not_retried_until_adjudicated(make_client):

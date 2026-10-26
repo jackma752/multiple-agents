@@ -326,7 +326,7 @@ def bundled_stub_path() -> str:
 
 #: Scenarios of tools/demo/stub_claude_code.py (hand-written from the docs, not captured).
 STUB_SCENARIOS = ("success-usage", "success-no-usage", "error-result", "max-turns", "malformed",
-                  "hang", "nonzero-exit", "success-nonzero")
+                  "hang", "nonzero-exit", "success-nonzero", "autopilot")
 
 
 class StubClaudeLauncher:
@@ -824,6 +824,9 @@ class ClaudeCodeAdapter(AdapterContract):
             "terminal": terminal,
             "detail": detail,
         }
+        if verdict == FAILED:
+            from agenthub_adapters.quota import quota_error
+            payload["provider_quota"] = quota_error(result)
         self.store.set_payload(invocation_id, payload)
         self.store.set_status(invocation_id, verdict, detail[:400])
         if verdict == FINISHED:

@@ -1,5 +1,7 @@
 # Agent Hub
 
+**2026-10-26 P4.6 自动执行（本分支）**：新增用户一次授权的阶段调度、规则内工具决定、失败修复、额度等待与重启恢复。当前已做离线验证，用户操作验收与真实自动运行仍待进行。见 [实现设计](docs/p46-autopilot.md)、[离线验收步骤](docs/p46-offline-acceptance.md) 和 [交接记录](docs/HANDOFF_CURRENT.md)。
+
 把 Codex、Claude Code 等 Agent 接入一个统一聊天入口的私人控制台。核心约束：**每次 Agent 调用先经用户同意，子 Agent 数量由用户限制**。
 
 定义、方案与验收标准见 `E:\plug\AGENT_HUB_PLAN.md`。

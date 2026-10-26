@@ -101,6 +101,7 @@ def create_app(
     adapter: Optional[Any] = None,
     adapter_kind: Optional[str] = None,
     files_root: Optional[str] = None,
+    autopilot_interval: Optional[float] = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -125,7 +126,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app_: FastAPI):
+        # P4.6: stages move on by themselves only when the server runs the loop
+        # (normal server entry points); tests can call app.state.autopilot.tick() instead.
+        if autopilot_interval:
+            # Reconcile persisted calls before scheduling; unknown calls are never relaunched.
+            await asyncio.to_thread(app_.state.worker.recover)
+            app_.state.autopilot.start_background(autopilot_interval)
         yield
+        app_.state.autopilot.stop_background()
         # Wait for calls the pool is executing; never kill them. Anything still
         # running afterwards is reconciled by the next recover().
         await asyncio.to_thread(app_.state.worker.shutdown, 30)
@@ -138,6 +146,9 @@ def create_app(
     app.state.worker = Worker(db, adapter)
     # The only tree a message's file references may read (None: refused).
     app.state.files_root = files_root or config.files_root()
+    from agenthub_kernel.autopilot import Autopilot
+
+    app.state.autopilot = Autopilot(db, app.state.worker, files_root=lambda: app.state.files_root)
 
     # Read-model endpoints + the zero-build console page (see ui.py).
     from agenthub_rt.ui import register_ui
@@ -146,8 +157,11 @@ def create_app(
     from agenthub_rt.conversations import register_conversations
     from agenthub_rt.tool_approvals import register_tool_approvals
 
+    from agenthub_rt.stages import register_stages
+
     register_conversations(app, db)
     register_tool_approvals(app, db)
+    register_stages(app, db)
 
     @app.get("/api/agents")
     def list_agents() -> list[dict[str, Any]]:
@@ -649,7 +663,7 @@ def create_app(
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(create_app(), host="127.0.0.1", port=8080)
+    uvicorn.run(create_app(autopilot_interval=2.0), host="127.0.0.1", port=8080)
 
 
-app = create_app()
+app = create_app(autopilot_interval=2.0)

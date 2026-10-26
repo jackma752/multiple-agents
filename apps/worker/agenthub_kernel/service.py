@@ -30,9 +30,12 @@ from agenthub_kernel.db import (
     InvocationRow,
     PolicyVersionRow,
     QuotaReservationRow,
+    StageGrantRow,
+    StageRunRow,
     TaskRow,
     TreeQuotaRow,
 )
+from agenthub.stage import STAGE_RUNNABLE
 from agenthub_kernel.taskstatus import derive_task_status
 
 UTC = dt.timezone.utc
@@ -516,6 +519,25 @@ class PolicyService:
             raise QuotaError(
                 "not_approved", f"approval {appr.id} is {appr.status}, not approved"
             )
+
+        # 2b. An approval the scheduler gave under a stage's rules (P4.6) holds
+        # only while that stage is active: pausing, stopping or ending the
+        # stage stops its approved calls from starting, here at the gate.
+        grant = self.session.get(StageGrantRow, appr.id)
+        if grant is not None:
+            stage = self.session.get(StageRunRow, grant.stage_id)
+            if (stage is None or stage.status not in STAGE_RUNNABLE
+                    or (stage.expires_at is not None and stage.expires_at < now())):
+                raise QuotaError("stage_not_active",
+                                 f"approval {appr.id} was given under stage {grant.stage_id}, which is "
+                                 f"{stage.status if stage is not None else 'missing'}")
+            from agenthub.stage import rules_of
+            rules = rules_of(stage.rules)
+            if (rules.rules_hash() != stage.rules_hash or grant.invocation_id != inv.id
+                    or stage.root_task_id != task.root_task_id
+                    or inv.snapshot.get("agent_id") not in rules.agents
+                    or inv.snapshot.get("execution_mode", "strict") != stage.execution_mode):
+                raise QuotaError("stage_rule_mismatch", "call is outside the authorized stage rules")
 
         # 3. Approval bound to the same hash
         if appr.payload_hash != inv.payload_hash:

@@ -18,6 +18,7 @@ from agenthub.output import OUTPUT_HINTS
 #: Statuses in which a provider thread may still be executing a turn.
 THREAD_BUSY_STATUSES = ("starting", "running", "unknown")
 from agenthub_kernel.adapters import adapter_for
+from agenthub_kernel.autopilot import grant_view
 from agenthub_kernel.db import (
     ApprovalRow, ChatMessageRow, CollabItemRow, ConversationRow, InvocationRow, TaskRow,
 )
@@ -107,6 +108,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "usage": usage_view(session, inv),
         # Token budget of its tree as the approval card shows it (T-1c).
         "budget": budget_view(session, _root_of_task(session, inv.task_id), inv=inv),
+        # P4.6: the stage rule that approved it, when the user did not click.
+        "authorized_by": grant_view(session, approval.id if approval else None),
     }
 
 
@@ -302,7 +305,8 @@ def compose_turn(session: Session, cid: str, request: Any, *, context_profile: O
 def submit_turn(
     session: Session, cid: str, user_id: str, request: ConversationTurn,
     *, adapter_version: str = "unknown", context_profile: Optional[dict] = None,
-    files_root: Optional[str] = None,
+    files_root: Optional[str] = None, stage_dispatch_limit: Optional[int] = None,
+    stage_resume_thread_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Caller holds SQLite's writer lock; message/draft/approval commit together.
 
@@ -337,7 +341,7 @@ def submit_turn(
 
     resume_thread_id = None
     if request.context_mode == NATIVE_RESUME:
-        resume_thread_id = native_thread_for(session, cid, request.agent_id)
+        resume_thread_id = stage_resume_thread_id or native_thread_for(session, cid, request.agent_id)
         if resume_thread_id is None:
             raise QuotaError("no_native_session",
                              "no provider thread recorded by this agent's latest reply")
@@ -357,7 +361,8 @@ def submit_turn(
         plan = plan_in(session, cid, item.plan_id) if item is not None else None
         if plan is None:
             raise QuotaError("plan_not_found", "plan item not found")
-        check_dispatch(session, cid, item)
+        check_dispatch(session, cid, item, **({"attempt_limit": stage_dispatch_limit}
+                                             if stage_dispatch_limit is not None else {}))
         if item.task_id is None:
             child = svc.create_task(agent_id=item.agent_id, goal=item.goal, parent_task_id=root.id,
                                     kind="auto" if plan.source.startswith("reply:") else "user")

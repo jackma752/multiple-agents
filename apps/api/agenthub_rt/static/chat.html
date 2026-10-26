@@ -124,6 +124,8 @@
   <strong>Agent Hub · 会话</strong>
   <span id="adapterChip" class="chip">适配器未知</span>
   <span id="connChip" class="chip">未连接</span>
+  <span id="autoChip" class="chip" hidden></span>
+  <span id="autoCtl" hidden></span>
   <span class="grow"></span>
   <button id="panelToggle" class="drawer-btn" type="button">面板</button>
   <input id="token" type="password" autocomplete="off" placeholder="用户 token（默认 dev-user-token）" />
@@ -177,6 +179,8 @@
   </main>
   <aside class="side" id="sidePanel">
     <button class="drawer-close mini" type="button" data-close="sidePanel">关闭</button>
+    <details class="sec" data-key="auto" open><summary>自动执行</summary>
+      <div id="autoBar" class="usage-bar" hidden></div></details>
     <details class="sec" data-key="usage" open><summary>用量与预算</summary>
       <div id="usageConv" class="usage-bar" hidden></div></details>
     <details class="sec" data-key="summary" open><summary>阶段摘要</summary>
@@ -204,9 +208,8 @@
  * current one. A plain reconnect keeps the state; a resync (409) rebuilds it
  * completely by replaying the stream from seq 0.
  *
- * The page never approves on its own: every approval is a click on a specific
- * call or tool card; a supervised call additionally needs its own, unticked
- * boundary consent. All text is inserted with textContent.
+ * Manual calls are approved individually. Automatic calls require one explicit
+ * stage authorization, enforced by the backend. All text uses textContent.
  */
 
 const S = {
@@ -225,6 +228,7 @@ const S = {
   summaryEdit: null,   // the summary form being edited, or null
   plans: null,         // collaboration plans of this conversation (P4), with the switch state
   planEdit: null,      // the plan form being edited, or null
+  stage: null, stageEdit: null,
   busy: new Set(),    // actions in flight (keys), to disable double clicks
   viewGen: 0, streamCtrl: null, msgTimer: null, renderQueued: false, banner: "",
   createPromise: null, // the one conversation creation in flight, shared by every caller
@@ -317,7 +321,7 @@ function absorbMessage(m) {
       agent_id: inv.agent_id, execution_mode: inv.execution_mode,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
-      context_preview: inv.context_preview, plan_item: inv.plan_item,
+      context_preview: inv.context_preview, plan_item: inv.plan_item, authorized_by: inv.authorized_by,
     });
   }
 }
@@ -345,7 +349,232 @@ function needUsage(gen = S.viewGen) {
   S.usageTimer = setTimeout(() => {
     loadUsage(gen).catch((e) => { if (current(gen)) toast("读取用量失败：" + e.message); });
     loadPlans(gen).catch(() => { /* plans refresh with the next settlement */ });
+    loadStage(gen).catch(() => { /* the stage refreshes with the next poll */ });
   }, 120);
+}
+
+/* ------------------------------------------- automatic stages (P4.6) --- */
+
+const STAGE_LABEL = { active: ["自动执行中", "info"], repairing: ["自行修复中", "warn"],
+  waiting_quota: ["等待额度恢复", "warn"], paused: ["已暂停", "warn"], completed: ["阶段已完成", "ok"],
+  blocked: ["遇到阻塞", "bad"], stopped: ["已停止", ""] };
+const STAGE_OPEN = ["active", "repairing", "waiting_quota", "paused"];
+const PHASE_LABEL = { plan: "请主 Agent 拆分", work: "执行", review: "审阅", repair: "按审阅意见修复", collect: "汇总", done: "收尾" };
+const PLAN_MODE_LABEL = { none: "不拆分（主 Agent 单次完成）", current: "用会话里最新的计划", agent: "请主 Agent 拆分" };
+const REASON_LABEL = { step_failed: "步骤失败", no_result: "步骤结束但没有可交接的回复", status_unknown: "调用状态未知",
+  review_failed: "审阅未通过", plan_unreadable: "读不出计划", plan_outside_rules: "用到了规则以外的 Agent",
+  max_calls_reached: "达到本阶段调用上限", start_refused: "启动被 Hub 拒绝", stopped_by_user: "由你停止",
+  scheduler_error: "调度器内部错误，已保留进度" };
+const EVENT_LABEL = { started: "开始", auto_approved: "按规则批准调用", tool_approved: "按规则允许工具",
+  tool_declined: "按规则拒绝工具", plan_saved: "读回计划", review: "审阅", pause: "暂停", resume: "继续",
+  stop: "停止", completed: "完成", blocked: "阻塞", retry_scheduled: "安排修复重试", repair_scheduled: "按审阅意见修复",
+  quota_wait: "保存进度并等待额度", recovery_started: "从检查点继续" };
+
+async function loadStage(gen = S.viewGen) {
+  if (!S.cid || !current(gen)) return;
+  const cid = S.cid;
+  const data = await api("GET", `/api/conversations/${enc(cid)}/stage`);
+  if (!current(gen) || cid !== S.cid) return;
+  S.stage = data;
+  render();
+}
+
+function stageNow() { return S.stage && S.stage.stage; }
+function stageOpen() { const s = stageNow(); return !!s && STAGE_OPEN.includes(s.status); }
+
+async function stageAction(action) {
+  const s = stageNow();
+  if (!s) return;
+  if (action === "stop" && !confirm("停止本阶段？未启动调用会被撤销，并向运行中的调用请求中断；远端停止以适配器确认为准。停止后不会自动恢复。")) return;
+  await guarded("stage", async () => {
+    await api("POST", `/api/stages/${enc(s.stage_id)}/${action}`);
+    await loadStage();
+    needMessages();
+  });
+}
+
+function editStage() {
+  const agents = (S.stage && S.stage.agents) || [];
+  S.stageEdit = { goal: "", criteria: "", mode: "", consent: false, plan: "none", agents: agents.slice(),
+                  main: $("agent").value, review: "", collect: "", maxCalls: "12", prefixes: "", files: false,
+                  retries: "3", autoResume: true, quotaMinutes: "5" };
+  render();
+}
+
+async function startStage() {
+  const e = S.stageEdit;
+  if (!e.goal.trim()) { toast("请填写阶段目标"); return; }
+  if (!e.mode) { toast("请选择执行边界（严格或用户监督）"); return; }
+  if (e.mode === "supervised" && !e.consent) { toast("用户监督模式需要先勾选边界同意"); return; }
+  const body = { goal: e.goal.trim(), criteria: e.criteria.trim(), execution_mode: e.mode,
+                 supervised_consent: e.consent === true, plan: e.plan, agents: e.agents, main_agent: e.main,
+                 review_agent: e.review || null, collect_agent: e.collect || null, max_calls: Number(e.maxCalls),
+                 command_prefixes: e.prefixes.split("\n").map((x) => x.trim()).filter(Boolean),
+                 allow_file_changes: e.files === true, retry_limit: Number(e.retries), auto_resume: e.autoResume,
+                 quota_retry_seconds: Number(e.quotaMinutes) * 60 };
+  // Shown once, in full: this is the stage's whole authorization.
+  const lines = ["按规则自动执行本阶段？以下内容一次授权，执行中不再逐张确认：",
+    `目标：${body.goal}`, `完成标准：${body.criteria || "（未写）"}`,
+    `执行边界：${body.execution_mode === "supervised" ? "用户监督模式" : "严格模式"}`,
+    `Agent：${body.agents.join("、")}；主：${body.main_agent}；审阅：${body.review_agent || "不审阅"}` +
+      (body.plan !== "none" ? `；汇总：${body.collect_agent || body.main_agent}` : ""),
+    `计划：${PLAN_MODE_LABEL[body.plan]}`, `本阶段调用上限：${body.max_calls}`,
+    `自动允许的命令前缀：${body.command_prefixes.join("、") || "（无：所有工具请求都会被自动拒绝）"}`,
+    `文件修改请求：${body.allow_file_changes ? "自动允许" : "自动拒绝"}`,
+    `失败后最多修复重试 ${body.retry_limit} 次；额度恢复后${body.auto_resume ? "自动" : "手动"}继续。等待不消耗修复次数，所有调用仍计入总上限和预算。`,
+    `恢复时间未知时，从 ${e.quotaMinutes} 分钟后检查，仍限额则间隔翻倍，最长 60 分钟；同一接入方共用等待。`,
+    body.plan !== "none" ? "需要子任务：会开启协作扩展（生成新策略版本，作废未消费的手动审批）" : "",
+    "删除、推送、合并、部署、联网下载等操作只有前缀里写明才会被允许。可随时暂停或停止。"].filter(Boolean);
+  if (!confirm(lines.join("\n"))) return;
+  await guarded("stage", async () => {
+    await api("POST", `/api/conversations/${enc(S.cid)}/stages`, body);
+    S.stageEdit = null;
+    await loadStage();
+    needUsage();
+    needMessages();
+  });
+}
+
+function stageFormView(e) {
+  const data = S.stage || {};
+  const agents = data.agents || [];
+  const proven = data.proven || {};
+  const opt = (value, label, chosen) => el("option", { value, selected: value === chosen ? "selected" : null }, label);
+  const pick = (key, list, extra) => el("select", { onchange: (ev) => { e[key] = ev.target.value; render(); } },
+    ...(extra ? [opt("", extra, e[key])] : []), ...list.map((a) => opt(a, a, e[key])));
+  const modeName = (m) => (m === "supervised" ? "用户监督" : "严格");
+  return el("div", { class: "plan-form stage-form" },
+    el("label", { class: "summary-field" }, "阶段目标",
+      el("textarea", { rows: "3", oninput: (ev) => { e.goal = ev.target.value; } }, e.goal)),
+    el("label", { class: "summary-field" }, "完成标准（审阅 Agent 按它判断）",
+      el("textarea", { rows: "2", oninput: (ev) => { e.criteria = ev.target.value; } }, e.criteria)),
+    el("div", { class: "row" }, "执行边界 ",
+      el("select", { onchange: (ev) => { e.mode = ev.target.value; render(); } },
+        opt("", "请选择", e.mode), opt("strict", "严格模式", e.mode), opt("supervised", "用户监督模式", e.mode))),
+    e.mode === "supervised" ? el("label", { class: "consent" },
+      el("input", { type: "checkbox", checked: e.consent ? "checked" : null,
+                    onchange: (ev) => { e.consent = ev.target.checked === true; } }),
+      " 我已了解并同意本阶段所有调用的用户监督边界：" + supervisedBoundaryText(e.main)) : null,
+    el("div", { class: "row" }, "计划 ",
+      el("select", { onchange: (ev) => { e.plan = ev.target.value; render(); } },
+        ...Object.entries(PLAN_MODE_LABEL).map(([k, v]) => opt(k, v, e.plan)))),
+    el("div", {}, "使用的 Agent（需先手动跑通一次）",
+      ...agents.map((a) => el("label", { class: "usage-line", style: "display:block" },
+        el("input", { type: "checkbox", checked: e.agents.includes(a) ? "checked" : null,
+                      onchange: (ev) => { e.agents = ev.target.checked ? [...new Set([...e.agents, a])]
+                                                                       : e.agents.filter((x) => x !== a); render(); } }),
+        ` ${a} `, chip((proven[a] || []).length ? "已跑通：" + proven[a].map(modeName).join("、") : "未跑通",
+                       (proven[a] || []).includes(e.mode) ? "ok" : "warn")))),
+    el("div", { class: "row" }, "主 Agent ", pick("main", e.agents)),
+    el("div", { class: "row" }, "审阅 ", pick("review", e.agents, "不审阅")),
+    e.plan !== "none" ? el("div", { class: "row" }, "汇总 ", pick("collect", e.agents, "同主 Agent")) : null,
+    el("div", { class: "row" }, "本阶段调用上限 ",
+      el("input", { type: "number", min: "1", max: "50", style: "width:70px", value: e.maxCalls,
+                    oninput: (ev) => { e.maxCalls = ev.target.value; } })),
+    el("div", { class: "row" }, "失败后修复重试次数（首次之外） ",
+      el("input", { type: "number", min: "0", max: "3", value: e.retries, style: "width:65px",
+                    oninput: (ev) => { e.retries = ev.target.value; } })),
+    el("label", {}, el("input", { type: "checkbox", checked: e.autoResume ? "checked" : null,
+                                  onchange: (ev) => { e.autoResume = ev.target.checked; } }), " 额度恢复后自动继续"),
+    el("div", { class: "row" }, "恢复时间未知：首次检查间隔（分钟） ",
+      el("input", { type: "number", min: "1", max: "60", value: e.quotaMinutes, style: "width:65px",
+                    oninput: (ev) => { e.quotaMinutes = ev.target.value; } })),
+    el("div", { class: "dim" }, "等待额度时会保存进度。后台服务需保持运行；重新启动服务后可恢复等待。状态未知的调用不会重复执行。"),
+    el("label", { class: "summary-field" }, "自动允许的命令前缀（每行一个；删除、推送等须写明，其余请求自动拒绝）",
+      el("textarea", { rows: "2", placeholder: "如：dir\ngit status", oninput: (ev) => { e.prefixes = ev.target.value; } },
+         e.prefixes)),
+    el("label", {}, el("input", { type: "checkbox", checked: e.files ? "checked" : null,
+                                  onchange: (ev) => { e.files = ev.target.checked === true; } }), " 自动允许文件修改请求"),
+    el("div", { class: "row" },
+      el("button", { class: "primary", disabled: S.busy.has("stage"), onclick: startStage }, "按规则自动执行"),
+      el("button", { onclick: () => { S.stageEdit = null; render(); } }, "取消")));
+}
+
+function stageCardView(s) {
+  const [label, kind] = STAGE_LABEL[s.status] || [s.status, ""];
+  const rules = s.rules || {};
+  const cp = s.checkpoint || {};
+  const lines = [el("div", { class: "usage-line" }, chip(label, kind), " ", s.goal.slice(0, 80)),
+    el("div", { class: "usage-line dim" },
+       `${s.execution_mode === "supervised" ? "用户监督" : "严格"} · ${PLAN_MODE_LABEL[rules.plan] || rules.plan}` +
+       ` · 当前：${PHASE_LABEL[cp.phase] || cp.phase || "—"} · 调用 ${s.calls_used}/${rules.max_calls}`)];
+  if (STAGE_OPEN.includes(s.status)) {
+    lines.push(el("div", { class: "row" },
+      s.status === "paused"
+        ? el("button", { class: "mini", disabled: S.busy.has("stage"), onclick: () => stageAction("resume") }, "继续")
+        : el("button", { class: "mini", disabled: S.busy.has("stage"), onclick: () => stageAction("pause") }, "暂停"),
+      el("button", { class: "mini danger", disabled: S.busy.has("stage"), onclick: () => stageAction("stop") }, "停止")));
+  }
+  if (s.status === "paused") lines.push(el("div", { class: "usage-line dim" }, "已暂停后续调度和工具授权；已经开始的调用可能仍在运行。停止会另行请求中断。"));
+  for (const [step, wait] of Object.entries(cp.waits || {})) {
+    lines.push(el("div", { class: "usage-line" }, `${step} · ${wait.agent}：` +
+      (wait.reset_at ? `预计恢复 ${new Date(wait.reset_at).toLocaleString()}` : "额度恢复时间未知") +
+      `；下次检查 ${new Date(wait.next_check_at).toLocaleString()}` +
+      (wait.probe_invocation_id ? "；正在共用一次恢复探测" : "") + (!wait.auto_resume ? "；需点击继续" : "")));
+  }
+  const retries = Object.entries(cp.retry_counts || {});
+  if (retries.length) lines.push(el("div", { class: "usage-line" }, "修复重试：" +
+    retries.map(([step, n]) => `${step} ${n}/${rules.retry_limit}`).join("、")));
+  if (s.status === "waiting_quota" && !rules.auto_resume) lines.push(
+    el("button", { class: "mini", onclick: () => stageAction("resume") }, "继续（到期后检查额度）"));
+  const sum = s.summary;
+  for (const stop of cp.stop_requests || []) {
+    lines.push(el("div", { class: "usage-line dim" }, `中断 ${stop.invocation_id}：` +
+      (stop.remote_stop_confirmed ? "已确认结束" : stop.interrupt_accepted ? "已接受中断，等待结束确认" :
+        `尚未确认停止（${stop.reason || "unsupported"}）；调用最终状态见记录`)));
+  }
+  if (sum) {
+    const steps = (sum.steps || []).map((x) => `${x.step}（${x.agent}，${(CALL_LABEL[x.status] || [x.status])[0]}）`);
+    if (steps.length) lines.push(el("div", { class: "usage-line" }, "步骤：" + steps.join(" → ")));
+    const u = sum.usage || {};
+    lines.push(el("div", { class: "usage-line dim" },
+      `用量：输入 ${fmtN(u.input || 0)} / 输出 ${fmtN(u.output || 0)}` + (u.unknown ? `，另有 ${u.unknown} 次未知` : "")));
+    if (sum.kind === "completed") {
+      if (sum.review) lines.push(el("div", { class: "usage-line" }, `审阅：${sum.review}`));
+      if (sum.result_message_id) lines.push(el("div", { class: "usage-line" }, `结果见消息 #${sum.result_message_id}`));
+      lines.push(el("div", { class: "usage-line dim" }, sum.next));
+    } else {
+      lines.push(el("div", { class: "usage-line" },
+        `${REASON_LABEL[sum.reason] || sum.reason}` + (sum.step ? `（步骤 ${sum.step}）` : "") +
+        (sum.message ? `：${sum.message}` : "")));
+      lines.push(el("div", { class: "usage-line" }, "已完成：" + ((sum.done || []).join("、") || "无")));
+      lines.push(el("div", { class: "usage-line" }, "继续需要：" + sum.needs));
+    }
+  }
+  const recent = (s.events || []).filter((x) => x.kind !== "started").slice(0, 6);
+  if (recent.length) lines.push(el("div", { class: "usage-line dim" }, "最近：",
+    ...recent.map((x) => el("div", {}, `${EVENT_LABEL[x.kind] || x.kind}` +
+      (x.detail && x.detail.step ? ` ${x.detail.step}` : "") + (x.detail && x.detail.rule ? `：${x.detail.rule}` : "")))));
+  return lines;
+}
+
+function renderAuto() {
+  const bar = $("autoBar");
+  const s = stageNow();
+  const open = stageOpen();
+  // Always reachable: state and pause/stop in the top bar while a stage is open.
+  $("autoChip").hidden = !open;
+  $("autoCtl").hidden = !open;
+  if (open) {
+    const [label, kind] = STAGE_LABEL[s.status] || [s.status, ""];
+    $("autoChip").textContent = "自动：" + label;
+    $("autoChip").className = "chip " + kind;
+    $("autoCtl").replaceChildren(
+      s.status === "paused" ? el("button", { class: "mini", onclick: () => stageAction("resume") }, "继续")
+                            : el("button", { class: "mini", onclick: () => stageAction("pause") }, "暂停"),
+      el("button", { class: "mini danger", onclick: () => stageAction("stop") }, "停止"));
+  }
+  bar.hidden = !S.cid || !S.stage;
+  const active = document.activeElement;
+  if (bar.hidden || (bar.contains(active) && active.matches(".stage-form textarea, .stage-form input"))) return;
+  const lines = [];
+  if (s) lines.push(...stageCardView(s));
+  if (!open) {
+    if (S.stageEdit) lines.push(stageFormView(S.stageEdit));
+    else lines.push(el("div", { class: "usage-line" }, "手动模式（逐次同意）",
+      el("button", { class: "mini", onclick: editStage }, s ? "开启新阶段" : "设置自动执行")));
+  }
+  bar.replaceChildren(...lines);
 }
 
 /* ---------------------------------------- collaboration plans (P4) --- */
@@ -901,7 +1130,7 @@ function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
   S.consent = new Map(); S.banner = ""; S.handoff = []; S.usageConv = null;
   S.summaries = []; S.summaryLink = {}; S.attachSummary = null; S.includeHistory = false; S.summaryEdit = null;
-  S.plans = null; S.planEdit = null; S.scrollAfter = null;
+  S.plans = null; S.planEdit = null; S.scrollAfter = null; S.stage = null; S.stageEdit = null;
 }
 
 /* The only way to create a conversation: concurrent callers share one creation. */
@@ -1107,8 +1336,12 @@ function renderCard(id) {
       delivery ? chip(delivery, "") : null,
       el("span", { class: "grow" }),
       pending && canApprove ? el("button", { class: "danger", disabled: busy || !card.card_hash,
-                               onclick: () => answerCard(card, "approve") }, "批准这一次") : null,
-      pending ? el("button", { disabled: busy, onclick: () => answerCard(card, "decline") }, "拒绝") : null),
+                               onclick: () => answerCard(card, "approve") }, "允许此操作") : null,
+      pending ? el("button", { disabled: busy, onclick: () => answerCard(card, "decline") }, "拒绝此操作") : null),
+    // P4.6: decided by the stage's tool rules, not by a click.
+    card.auto ? el("div", { class: "note" },
+      chip(`按阶段规则自动${card.auto.decision === "approved" ? "允许" : "拒绝"}`,
+           card.auto.decision === "approved" ? "ok" : "warn"), " 规则：", card.auto.rule || "") : null,
     pending ? el("div", { class: "note" }, canApprove
       ? "只批准这一个请求，不影响以后的请求；拒绝、超时或请求结束都不会执行。"
       : "这一阶段只能拒绝：批准后的执行链尚未验证。不经审批、直接在沙箱内运行的命令（可能包括启动其他 Agent 的 CLI）Hub 只能观测、不能拦截。") : null);
@@ -1124,8 +1357,8 @@ function renderCall(c) {
   if (awaiting) {
     actions.push(el("button", { class: "primary", disabled: busyRun || (supervised && !consented),
                                 title: supervised && !consented ? "先勾选本次调用的监督边界同意" : null,
-                                onclick: () => approveAndRun(c) }, "同意并调用"),
-                 el("button", { disabled: busyRun, onclick: () => rejectCall(c) }, "拒绝"));
+                                onclick: () => approveAndRun(c) }, "启动本次调用"),
+                 el("button", { disabled: busyRun, onclick: () => rejectCall(c) }, "不启动"));
   } else if (c.status === "queued" && c.approval_status === "approved") {
     actions.push(el("button", { class: "primary", disabled: busyRun, onclick: () => runApproved(c) }, "执行"));
   } else if (c.status === "starting" || c.status === "running") {
@@ -1202,6 +1435,7 @@ function renderCall(c) {
       chip(c.agent_id || "Agent", "info"),
       chip(supervised ? "用户监督模式" : "严格模式", supervised ? "warn" : ""),
       c.approval_status ? chip("审批：" + c.approval_status, "") : null,
+      c.authorized_by ? chip(`按阶段规则自动批准（${c.authorized_by.step}）`, "ok") : null,
       c.context_mode === "native_resume" ? chip("续接 " + short(c.resume_thread_id), "info") : null,
       c.plan_item ? chip(`子任务 #${c.plan_item.index}（计划 ${c.plan_item.plan_id}，第 ${c.plan_item.attempt} 次）`, "info") : null,
       ...handoff.map((h) => chip(`交接：${h.agent_id} #${h.message_id}（${h.chars} 字）`, "info")),
@@ -1562,7 +1796,8 @@ function renderNow() {
   renderUsage();
   renderSummary();
   renderPlans();
-  $("sideEmpty").hidden = !["usageConv", "summaryBar", "planBar"].every((id) => $(id).hidden);
+  renderAuto();
+  $("sideEmpty").hidden = !["autoBar", "usageConv", "summaryBar", "planBar"].every((id) => $(id).hidden);
   renderComposer();
 }
 
@@ -1738,6 +1973,14 @@ setInterval(() => {
     node.textContent = `剩余 ${secondsLeft(node.dataset.expires)} 秒`;
   }
 }, 1000);
+
+let stagePolling = false;
+setInterval(async () => {
+  if (!S.cid || stagePolling || S.stageEdit) return;
+  stagePolling = true;
+  try { await loadStage(); } catch (_) { /* reconnect retains the last confirmed state */ }
+  finally { stagePolling = false; }
+}, 2000);
 
 (function boot() {
   let saved = "";

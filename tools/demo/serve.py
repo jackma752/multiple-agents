@@ -129,6 +129,10 @@ def main() -> None:
         os.environ["AGENT_HUB_APPSERVER_STUB"] = args.appserver_stub
     if args.claude_code_stub:
         os.environ["AGENT_HUB_CLAUDE_CODE_STUB"] = args.claude_code_stub
+        if args.data_dir:
+            # An isolated offline demo keeps its stub work directories with its data.
+            os.environ.setdefault("AGENT_HUB_CLAUDE_CODE_WORKDIR",
+                                  os.path.join(os.path.abspath(args.data_dir), "claude-code-runs"))
 
     import uvicorn
 
@@ -226,7 +230,9 @@ def main() -> None:
 
     from agenthub_rt.api import create_app
 
-    app = create_app(adapter=adapter) if adapter is not None else create_app(adapter_kind=kind)
+    # P4.6: the stage scheduler runs in this process, a pass every 2 seconds.
+    app = (create_app(adapter=adapter, autopilot_interval=2.0) if adapter is not None
+           else create_app(adapter_kind=kind, autopilot_interval=2.0))
     config_ = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config_)
 

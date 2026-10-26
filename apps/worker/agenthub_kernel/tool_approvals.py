@@ -86,7 +86,13 @@ def card_view(session: Any, row: ToolApprovalRow) -> dict[str, Any]:
         "decided_at": row.decided_at.isoformat() + "Z" if row.decided_at else None,
         "delivery": row.delivery, "decision_sent": row.decision_sent,
         "card_hash": card_hash(row),
+        "auto": _auto_rule(session, row.id),
     }
+
+
+def _auto_rule(session: Any, card_id: str) -> Optional[dict[str, Any]]:
+    from agenthub_kernel.autopilot import tool_rule_of
+    return tool_rule_of(session, card_id)
 
 
 def _clean_details(details: Any) -> dict[str, Any]:
@@ -114,11 +120,11 @@ def _locked(session: Any, card_id: str) -> Optional[ToolApprovalRow]:
 
 
 def decide(session: Any, card_id: str, *, decision: str, actor: str,
-           presented_hash: Optional[str]) -> ToolApprovalRow:
+           presented_hash: Optional[str], already_locked: bool = False) -> ToolApprovalRow:
     """User decision. Raises QuotaError (-> 404/409) unless it can apply."""
     if decision not in (TOOL_APPROVAL_APPROVED, TOOL_APPROVAL_DECLINED):
         raise QuotaError("bad_decision", "decision must be approved or declined")
-    row = _locked(session, card_id)
+    row = session.get(ToolApprovalRow, card_id) if already_locked else _locked(session, card_id)
     if row is None:
         raise QuotaError("no_tool_approval", "tool approval not found")
     closure = session.get(ToolGateClosureRow, row.invocation_id)
@@ -201,6 +207,14 @@ class ToolGate:
         except Exception:  # noqa: BLE001 - details may quote content; never logged
             return None
         self.opened.append(card_id)
+        if not closed:
+            # A stage call (P4.6): its tool rules allow or decline the request
+            # now; anything else stays a card for the user.
+            from agenthub_kernel.autopilot import auto_decide_tool
+            try:
+                auto_decide_tool(self.db, card_id)
+            except Exception:  # noqa: BLE001 - the card simply stays pending
+                pass
         return card_id
 
     def poll(self, card_id: str) -> str:
@@ -242,6 +256,13 @@ class ToolGate:
                     row.delivery = TOOL_DELIVERY_BLOCKED
                     session.flush()
                     return None
+                from agenthub_kernel.db import StageGrantRow, StageRunRow
+                from agenthub.stage import STAGE_RUNNABLE
+                grant = session.scalar(select(StageGrantRow).where(StageGrantRow.invocation_id == row.invocation_id))
+                if grant is not None:
+                    stage = session.get(StageRunRow, grant.stage_id)
+                    if stage is None or stage.status not in STAGE_RUNNABLE:
+                        return None  # pause/stop serializes with tool delivery as well as call claims
                 row.delivery = TOOL_DELIVERY_SENDING
                 session.flush()
                 return "accept" if row.status == TOOL_APPROVAL_APPROVED else "decline"

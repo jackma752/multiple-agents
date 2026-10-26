@@ -22,13 +22,14 @@ length of stdin - never the prompt itself.
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 import json
 import os
 import sys
 import time
 
 SCENARIOS = ("success-usage", "success-no-usage", "error-result", "max-turns", "malformed",
-             "hang", "nonzero-exit", "success-nonzero")
+             "hang", "nonzero-exit", "success-nonzero", "autopilot")
 VERSION = "2.1.308 (Claude Code)"
 HELP_FLAGS = ("-p, --print", "--output-format <format>", "--safe-mode", "--tools <tools...>",
               "--strict-mcp-config", "--disable-slash-commands", "--permission-mode <mode>",
@@ -75,6 +76,27 @@ def main() -> int:
                                  "stdin_sha256": hashlib.sha256(data).hexdigest(),
                                  "stdin_bytes": len(data)}) + "\n")
     print(f"stub: scenario {scenario}", file=sys.stderr)
+
+    if scenario == "autopilot":
+        # Explicit offline demonstration, never a real quota observation.
+        prompt = data.decode("utf-8", errors="replace")
+        common = {"total_cost_usd": 0.0123, "usage": USAGE,
+                  "modelUsage": {"claude-stub-model": {"inputTokens": 12, "outputTokens": 3}}}
+        if "Review the results above" in prompt:
+            reply = "VERDICT: PASS\nOffline review fixture passed."
+        elif "Propose a plan" in prompt:
+            reply = "1. claude-code: Prepare a task list\n2. claude-code: Check the result (after 1)"
+        elif "DEMO_QUOTA" in prompt and "Continue the interrupted stage step" not in prompt:
+            emit(result(is_error=True, subtype="error_during_execution", result="usage limit reached (offline fixture)",
+                        reset_at=(dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=5)).isoformat(), **common))
+            return 1
+        elif "DEMO_RETRY" in prompt and "Repair attempt" not in prompt:
+            emit(result(is_error=True, subtype="error_during_execution", result="temporary fixture error", **common))
+            return 1
+        else:
+            reply = "Offline stage step completed."
+        emit(result(result=reply, **common))
+        return 0
 
     if scenario == "hang":
         time.sleep(120)
