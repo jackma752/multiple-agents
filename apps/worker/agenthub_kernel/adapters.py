@@ -16,6 +16,9 @@ CLI all agree:
   the bundled offline stub (simulation).
 * ``multi`` - both of the above behind one Hub (``RoutingAdapter``); each call
   is checked and run on the adapter of its own ``agent_id`` (:func:`adapter_for`).
+* ``deepseek`` - one OpenAI-compatible ``chat/completions`` call per turn
+  (docs/p5-deepseek-adapter.md). No local process, no tool channel, so strict
+  mode is admitted; the credential lives outside the repository.
 
 :func:`adapter_binding` is what a new call's snapshot binds to
 (``adapter_version``), so an approval given under one pinned identity can never
@@ -33,10 +36,15 @@ from agenthub_kernel import config
 MOCK = "mock"
 CODEX = "codex"
 CLAUDE_CODE = "claude-code"
+DEEPSEEK = "deepseek"
 MULTI = "multi"
-KNOWN = (MOCK, CODEX, CLAUDE_CODE, MULTI)
-#: Adapter ``name`` -> kind, for adapters that launch a real process.
+KNOWN = (MOCK, CODEX, CLAUDE_CODE, DEEPSEEK, MULTI)
+#: Adapter ``name`` -> kind, for adapters that launch a real local process.
 REAL_KINDS = {CODEX: CODEX, CLAUDE_CODE: CLAUDE_CODE}
+#: Adapter ``name`` -> kind, for adapters that reach a provider over the network
+#: without launching anything locally. They are real calls, but there is no
+#: process, work directory or sandbox to report.
+REMOTE_KINDS = {DEEPSEEK: DEEPSEEK}
 
 
 def adapter_kind() -> str:
@@ -65,6 +73,9 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
 
     if kind == CLAUDE_CODE:
         return _build_claude_code(config.claude_code_settings())
+
+    if kind == DEEPSEEK:
+        return _build_deepseek(config.deepseek_settings())
 
     if kind == CODEX:
         from agenthub_adapters.codex import CodexAdapter, StubCodexRunner, is_bundled_stub_command
@@ -125,6 +136,25 @@ def _build_appserver(s: dict) -> Any:
     return AppServerCodexAdapter(
         transport_factory=factory, workdir_root=s["workdir_root"], store=store,
         timeout_seconds=s["timeout_seconds"], version=version,
+    )
+
+
+def _build_deepseek(s: dict) -> Any:
+    from agenthub_adapters.deepseek import DeepSeekAdapter
+    from agenthub_adapters.store import ExecutionStore, ensure_parent
+
+    return DeepSeekAdapter(
+        base_url=s["base_url"],
+        model=s["model"],
+        credentials_path=s["credentials_path"],
+        store=ExecutionStore(path=ensure_parent(s["store_path"]), table="deepseek_executions"),
+        proxy=s["proxy"] or "",
+        ca_bundle=s["ca_bundle"] or "",
+        timeout_seconds=s["timeout_seconds"],
+        # A credential under the repository is refused outright (deepseek.load_api_key).
+        repo_root=config.REPO_ROOT,
+        # DEV/TEST ONLY: canned SSE instead of the network (AGENT_HUB_DEEPSEEK_STUB).
+        stub=s["stub"],
     )
 
 
@@ -228,8 +258,10 @@ def describe(adapter: Any) -> dict:
     name = getattr(adapter, "name", "")
     info = {
         "name": getattr(adapter, "name", type(adapter).__name__),
-        "kind": REAL_KINDS.get(name, MOCK),
+        "kind": REAL_KINDS.get(name) or REMOTE_KINDS.get(name) or MOCK,
         "real_process": name in REAL_KINDS,
+        # Reaches a provider over the network, but launches nothing locally.
+        "network": name in REMOTE_KINDS,
         "agent_ids": sorted(getattr(adapter, "AGENT_IDS", ()) or ()),
     }
     admission = execution_admission(adapter)
@@ -249,6 +281,16 @@ def describe(adapter: Any) -> dict:
         info["timeout_seconds"] = getattr(adapter, "timeout_seconds", None)
         info["transport"] = getattr(adapter, "transport", "exec")
         info["binding_identity"] = adapter_binding(adapter)
+    if info["kind"] == DEEPSEEK:
+        from agenthub_adapters.deepseek import credential_status
+
+        # No local binary to identify: what an approval binds to is the model and
+        # the endpoint. Never the credential - only whether the file is there.
+        info["model"] = getattr(adapter, "model", "")
+        info["endpoint"] = getattr(adapter, "url", "")
+        info["binding_identity"] = adapter_binding(adapter)
+        info["credentials"] = credential_status(getattr(adapter, "credentials_path", ""))
+        info["stub"] = bool(getattr(adapter, "stub", ""))
     supports = getattr(adapter, "supports_native_resume", None)
     info["native_resume"] = bool(supports()) if callable(supports) else False
     # Strict token budgets refuse agents that cannot report usage (T-1c).

@@ -75,13 +75,22 @@ def main() -> None:
     )
     parser.add_argument(
         "--adapter",
-        choices=["mock", "codex", "claude-code", "multi"],
+        choices=["mock", "codex", "claude-code", "deepseek", "multi"],
         default=None,
         help="adapter to serve with: 'mock' is inert (default); 'codex' exposes "
              "records and capabilities; real launches require explicit per-call "
              "supervised consent while strict controls remain unverified; "
+             "'deepseek' calls the OpenAI-compatible chat/completions endpoint "
+             "with the credential under %LOCALAPPDATA%\\AgentHub\\deepseek; "
              "'multi' serves codex and claude-code side by side, each call on "
              "the adapter of its own agent",
+    )
+    parser.add_argument(
+        "--deepseek-stub",
+        metavar="SCENARIO",
+        default=None,
+        help="with --adapter deepseek: serve canned SSE instead of the network "
+             "(ok|quota|unauthorized|truncated|empty); no model, no key needed",
     )
     parser.add_argument(
         "--claude-code-stub",
@@ -133,6 +142,9 @@ def main() -> None:
             # An isolated offline demo keeps its stub work directories with its data.
             os.environ.setdefault("AGENT_HUB_CLAUDE_CODE_WORKDIR",
                                   os.path.join(os.path.abspath(args.data_dir), "claude-code-runs"))
+    if args.deepseek_stub:
+        os.environ["AGENT_HUB_DEEPSEEK_STUB"] = args.deepseek_stub
+        os.environ.setdefault("AGENT_HUB_ADAPTER", "deepseek")
 
     import uvicorn
 
@@ -165,6 +177,8 @@ def main() -> None:
         print("Agent Hub - app-server transport against the OFFLINE STUB (no Codex, no model)")
     elif kind == "codex":
         print("Agent Hub - Codex adapter (strict blocked; explicit supervised approval available)")
+    elif kind == "deepseek":
+        print("Agent Hub - DeepSeek adapter (chat/completions; no local process, no tools)")
     else:
         print("Agent Hub - Mock API (no real Agent is contacted)")
     print(f"  adapter  : {kind}")
@@ -192,6 +206,19 @@ def main() -> None:
         print(f"  proxy    : {s['proxy'] or '(none)'}")
         print(f"  ca bundle: {s['ca_bundle'] or '(none)'}")
         print(f"  work dirs: {s['workdir_root']}")
+    elif kind == "deepseek":
+        from agenthub_adapters.deepseek import credential_status
+
+        s = config.deepseek_settings()
+        status = credential_status(s["credentials_path"])
+        print(f"  endpoint : {s['base_url']}  model {s['model']}")
+        print(f"  stub     : {s['stub'] or '(none: real calls)'}")
+        print("  credential: " + ("present (contents never printed)" if status["exists"]
+                                  else "MISSING -> every call refuses before sending")
+                      + f"  at {status['credentials_path']}")
+        print(f"  proxy    : {s['proxy'] or '(none)'}")
+        print(f"  ca bundle: {s['ca_bundle'] or '(none)'}")
+        print(f"  timeout  : {s['timeout_seconds']}s")
     elif kind == "codex":
         s = config.codex_settings()
         print(f"  codex    : {s['codex_path']}")

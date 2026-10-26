@@ -35,8 +35,11 @@ USAGE_MAPPING_VERSION = 1
 MAPPING_CODEX_APPSERVER = "codex.app_server.token_usage_breakdown"
 MAPPING_CODEX_EXEC = "codex.exec.turn_completed_usage"
 MAPPING_CLAUDE_CODE = "claude_code.result_usage"
+#: DeepSeek (OpenAI-compatible) ``usage`` object from the final stream chunk.
+MAPPING_DEEPSEEK = "deepseek.chat_completions.usage"
 MAPPING_NONE = "none"
-MAPPINGS = frozenset({MAPPING_CODEX_APPSERVER, MAPPING_CODEX_EXEC, MAPPING_CLAUDE_CODE, MAPPING_NONE})
+MAPPINGS = frozenset({MAPPING_CODEX_APPSERVER, MAPPING_CODEX_EXEC, MAPPING_CLAUDE_CODE,
+                      MAPPING_DEEPSEEK, MAPPING_NONE})
 
 COMPLETE = "complete"
 PARTIAL = "partial"
@@ -194,6 +197,46 @@ def _claude_code(usage: dict, notes: list[str]) -> dict[str, Optional[int]]:
     }
 
 
+def _deepseek(usage: dict, notes: list[str]) -> dict[str, Optional[int]]:
+    """DeepSeek ``usage``: prompt/completion totals, cache hit and reasoning.
+
+    ``prompt_tokens`` already includes the cache-hit tokens (the provider bills
+    them at two rates, it does not send them twice), so ``input_uncached`` is
+    the miss count. There is no cache-*write* charge in this API, so that field
+    stays unknown rather than being claimed as a zero.
+    """
+    prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    if not (is_count(prompt) and is_count(completion)):
+        notes.append("usage_malformed")
+        return {}
+    hit, miss = usage.get("prompt_cache_hit_tokens"), usage.get("prompt_cache_miss_tokens")
+    hit = hit if is_count(hit) else None
+    miss = miss if is_count(miss) else None
+    if hit is None:
+        notes.append("cache_fields_missing")
+    elif hit > prompt:
+        notes.append("mapping_mismatch")
+    uncached = miss if miss is not None else (prompt - hit if hit is not None else None)
+    if uncached is not None and hit is not None and uncached + hit != prompt:
+        notes.append("mapping_mismatch")
+    total = usage.get("total_tokens")
+    if is_count(total) and total != prompt + completion:
+        notes.append("mapping_mismatch")
+    reasoning = None
+    details = usage.get("completion_tokens_details")
+    if isinstance(details, dict):
+        value = details.get("reasoning_tokens")
+        reasoning = value if is_count(value) else None
+    return {
+        "input_total": prompt,
+        "input_uncached": uncached,
+        "cache_read": hit,
+        "cache_write": None,
+        "output_total": completion,
+        "reasoning": reasoning,
+    }
+
+
 def judge_completeness(notes: list[str]) -> str:
     if any(n in UNKNOWN_NOTES for n in notes):
         return UNKNOWN
@@ -242,6 +285,8 @@ def normalize_usage(report: Optional[dict]) -> UsageRecord:
             notes.append("no_usage_reported")
     elif mapping == MAPPING_CLAUDE_CODE:
         fields = _claude_code(usage, notes)
+    elif mapping == MAPPING_DEEPSEEK:
+        fields = _deepseek(usage, notes)
     else:
         names = CODEX_APPSERVER_NAMES if mapping == MAPPING_CODEX_APPSERVER else CODEX_EXEC_NAMES
         fields = _codex(usage, names, notes)

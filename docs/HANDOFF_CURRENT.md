@@ -1,6 +1,27 @@
 # 当前交接：main 已合并 P4.6 并统一 8080 入口（2026-10-26）
 
-## 最新：第一条真实在线回合（codex / app-server，2026-10-26 12:00）
+## 最新：DeepSeek 适配器落地（P5，2026-10-26 17:00）
+
+- **形态**：一次调用 = 一条 OpenAI 兼容 `POST {base}/chat/completions` 流式请求。请求体只有
+  `model / messages / stream / stream_options`，**没有 `tools`**；不启本地进程、无工具通道、无子
+  Agent 通道 → 因此**严格模式准入**（`code=no_local_execution_channel`），残余风险写进 `reason`：
+  提示词会发往 provider，且**无法中途取消**。
+- **凭据**：`%LOCALAPPDATA%\AgentHub\deepseek\credentials.json`（`AGENT_HUB_DEEPSEEK_HOME` 只改目录）。
+  仓库内路径直接拒；**不读**环境变量里的 key；页面只显示"文件是否存在/大小"，从不显示内容。
+- **失败语义**：无 gate_token / 无凭据 / 401 / 402 → 终态拒绝、零花费；429 → 带 `provider_quota`
+  让阶段层"等待额度恢复"；断流·超时 → `unknown` 且**保留槽位**；无 `finish_reason` → failed（绝不
+  算成功）。
+- **离线验证**：`tests/adapters/test_deepseek_adapter.py` 39 项全过（凭据四种拒绝、请求体无 tools、
+  SSE 解析与 `[DONE]`、四种失败语义、用量映射、`cancel` 报 unsupported）。
+- **未验证**（别当结论）：真实 `api.deepseek.com` 往返、真实 SSE 分片节奏、
+  `prompt_cache_hit_tokens` 真实语义、429 `Retry-After` 真实格式、代理链路。清单在
+  `docs/p5-deepseek-adapter.md` §7。
+- **怎么开**：真调用 `tools/demo/serve.py --adapter deepseek`（需要你自己的 `sk-...`）；离线
+  `--adapter deepseek --deepseek-stub ok|quota|unauthorized|truncated|empty`。
+- **刻意不做**：不进 `multi`（`multi` 仍是 codex + claude-code，已验收的断言不动）；首版不含 tools
+  与会话恢复。
+
+## 第一条真实在线回合（codex / app-server，2026-10-26 12:00）
 
 - **结果**：`inv-371025d822df` 经 `codex` / `app-server` 通道完成，`turn/completed with status
   completed`，thread `01a1765d-493e-7bb2-be9a-127cb19749cb`，用量 输入 16,787（缓存读 12,416，

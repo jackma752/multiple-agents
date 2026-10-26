@@ -353,6 +353,50 @@ def claude_code_settings() -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# DeepSeek chat-completions channel (P5)
+# --------------------------------------------------------------------------- #
+#: Directory holding ``credentials.json``; outside the repository by default.
+ENV_DEEPSEEK_HOME = "AGENT_HUB_DEEPSEEK_HOME"
+#: OpenAI-compatible base URL (no trailing ``/v1``; the adapter appends the path).
+ENV_DEEPSEEK_BASE_URL = "AGENT_HUB_DEEPSEEK_BASE_URL"
+ENV_DEEPSEEK_MODEL = "AGENT_HUB_DEEPSEEK_MODEL"
+ENV_DEEPSEEK_CA = "AGENT_HUB_DEEPSEEK_CA"
+ENV_DEEPSEEK_TIMEOUT = "AGENT_HUB_DEEPSEEK_TIMEOUT"
+#: DEV/TEST ONLY: serve canned replies instead of calling the network.
+ENV_DEEPSEEK_STUB = "AGENT_HUB_DEEPSEEK_STUB"
+
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+
+
+def deepseek_home() -> str:
+    """Directory of the DeepSeek credential, resolved without touching disk.
+
+    Same reasoning as :func:`codex_home`: a credential must not live under the
+    repository, where an archive or a ``git add -f`` could copy it out.
+    """
+    return os.environ.get(ENV_DEEPSEEK_HOME) or os.path.join(_local_base(), "AgentHub", "deepseek")
+
+
+def deepseek_credentials_path() -> str:
+    return os.path.join(deepseek_home(), "credentials.json")
+
+
+def deepseek_settings() -> dict:
+    return {
+        "home": deepseek_home(),
+        "credentials_path": deepseek_credentials_path(),
+        "base_url": (os.environ.get(ENV_DEEPSEEK_BASE_URL) or DEFAULT_DEEPSEEK_BASE_URL).strip(),
+        "model": (os.environ.get(ENV_DEEPSEEK_MODEL) or DEFAULT_DEEPSEEK_MODEL).strip(),
+        "stub": (os.environ.get(ENV_DEEPSEEK_STUB) or "").strip(),
+        "store_path": os.path.join(DATA_DIR, "deepseek-executions.db"),
+        "proxy": os.environ.get(ENV_PROXY) or "http://127.0.0.1:8090",
+        "ca_bundle": os.environ.get(ENV_DEEPSEEK_CA) or _default_ca_bundle(),
+        "timeout_seconds": _bounded_number(ENV_DEEPSEEK_TIMEOUT, 120, 1, 3600),
+    }
+
+
 def _command_prefix() -> list:
     """DEV/TEST ONLY argv prefix (JSON array). Empty unless explicitly set."""
     raw = os.environ.get(ENV_CODEX_PREFIX)
