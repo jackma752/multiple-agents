@@ -13,12 +13,12 @@
 
 最终打包检查：应用 exe、setup.exe 和实际安装产生的 Uninstall.exe 都找到与 ICO 逐字节一致的 7 个图像资源；开始菜单目标为新应用 exe。临时安装/卸载成功，测试注册项已清除。`/favicon.ico` 与 `/assets/app-icon.png` 均返回 200，返回字节与资源文件一致。
 
-发行源码为 `259dd60`，文件保存在主目录 `dist/p5-release-0.5.1/`：
+图标功能提交为 `259dd60`。整合用户同时编辑的 README 后，最终发行源码为 `01dcdb0`，文件保存在主目录 `dist/p5-release-0.5.1/`：
 
 | 文件 | SHA-256 |
 | --- | --- |
-| AgentHub-0.5.1-windows-x64-setup.exe | `420854c86890f8fa0b965db6168f906eb22a601dedfb521096f17d877ac70ee4` |
-| AgentHub-0.5.1-windows-x64-portable.zip | `a416f1c980789304426a3ffcacbd6b5e182fe5c7f387c5195dabad8635e7d65f` |
+| AgentHub-0.5.1-windows-x64-setup.exe | `a8ceb644a2acb33ac10ec5678e08781f49c5fcef12e402198baba691791c67aa` |
+| AgentHub-0.5.1-windows-x64-portable.zip | `7470fd4ab5f16b97e74f1328fa12811f77931511d7c8aac30fc41636f9a9929f` |
 
 新 ZIP 的 Medium 完整性标记已核对；这不等于获得代码签名或保证所有机器不出现 Windows 安全提示。
 

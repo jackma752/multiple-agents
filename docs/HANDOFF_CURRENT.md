@@ -3,7 +3,7 @@
 - 图标功能提交 `259dd60`，用户指定的原图保存在 `assets/branding/source.png`；无裁剪、无重绘，底部文字保留。
 - 应用、安装器、卸载器、开始菜单、网页 favicon/页首与 README 使用相同图案。多尺寸 ICO 7 帧、网页 PNG 已生成。
 - 受影响范围 38 项测试通过；图标接口 200 且字节一致；应用/setup/实际 Uninstall.exe 的 7 帧资源哈希与 ICO 一致，临时安装/卸载成功。
-- 新包在根目录 `dist/p5-release-0.5.1/`，校验值见 `docs/project-icon.md`；原 `dist/p5-release/` 0.5.0 包保留。包源码为 `259dd60`，之后只登记验证。
+- 新包在根目录 `dist/p5-release-0.5.1/`，校验值见 `docs/project-icon.md`；原 `dist/p5-release/` 0.5.0 包保留。用户同时编辑的主目录 README 删除内容已保留，最终包源码为 `01dcdb0`，之后只登记验证。
 - 用户询问自定义目录：安装向导能改程序目录；数据目录支持 AGENT_HUB_DESKTOP_HOME 环境变量，尚无图形化迁移入口；工作区独立设置。README 已解释，不扩展该功能。
 - 没有新增真实模型请求，没有修改 8080 现有服务或用户账号资料。新版仍未做代码签名。
 
