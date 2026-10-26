@@ -11,4 +11,15 @@
 
 验证：页面/控制台/桌面设置原有受影响测试 38 passed in 5.87s；ICO 7 个尺寸可读取，原图哈希一致。打包资源与最终产物检查在发行记录补充。
 
+最终打包检查：应用 exe、setup.exe 和实际安装产生的 Uninstall.exe 都找到与 ICO 逐字节一致的 7 个图像资源；开始菜单目标为新应用 exe。临时安装/卸载成功，测试注册项已清除。`/favicon.ico` 与 `/assets/app-icon.png` 均返回 200，返回字节与资源文件一致。
+
+发行源码为 `259dd60`，文件保存在主目录 `dist/p5-release-0.5.1/`：
+
+| 文件 | SHA-256 |
+| --- | --- |
+| AgentHub-0.5.1-windows-x64-setup.exe | `420854c86890f8fa0b965db6168f906eb22a601dedfb521096f17d877ac70ee4` |
+| AgentHub-0.5.1-windows-x64-portable.zip | `a416f1c980789304426a3ffcacbd6b5e182fe5c7f387c5195dabad8635e7d65f` |
+
+新 ZIP 的 Medium 完整性标记已核对；这不等于获得代码签名或保证所有机器不出现 Windows 安全提示。
+
 安装路径与数据路径仍分开：安装向导可改安装目录；AGENT_HUB_DESKTOP_HOME 可改数据目录，图形化迁移未实现。本轮不改这项行为，只在 README 补充说明。
