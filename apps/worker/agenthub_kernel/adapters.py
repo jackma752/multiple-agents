@@ -14,7 +14,7 @@ CLI all agree:
   Strict is blocked; supervised admits only the pinned constant after its
   zero-model identity check is recorded. ``AGENT_HUB_CLAUDE_CODE_STUB`` selects
   the bundled offline stub (simulation).
-* ``multi`` - both of the above behind one Hub (``RoutingAdapter``); each call
+* ``multi`` - Codex, Claude Code and DeepSeek behind one Hub (``RoutingAdapter``); each call
   is checked and run on the adapter of its own ``agent_id`` (:func:`adapter_for`).
 * ``deepseek`` - one OpenAI-compatible ``chat/completions`` call per turn
   (docs/p5-deepseek-adapter.md). No local process, no tool channel, so strict
@@ -69,7 +69,8 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
         # Otherwise the same construction as each single kind, so nothing is
         # trusted that would not be trusted on its own.
         codex = _build_appserver({**config.codex_settings(), "transport": "app-server"})
-        return RoutingAdapter({CODEX: codex, CLAUDE_CODE: build_adapter(CLAUDE_CODE)})
+        return RoutingAdapter({CODEX: codex, CLAUDE_CODE: build_adapter(CLAUDE_CODE),
+                               DEEPSEEK: build_adapter(DEEPSEEK)})
 
     if kind == CLAUDE_CODE:
         return _build_claude_code(config.claude_code_settings())

@@ -167,7 +167,7 @@ def main() -> None:
         # Built once here and handed to the app, so the banner shows exactly
         # what will serve each agent (transport, bound identity, admission).
         adapter = build_adapter(kind)
-        print("Agent Hub - codex + claude-code side by side (each call checked and run on its own agent's adapter)")
+        print("Agent Hub - codex + claude-code + deepseek (each call checked on its own adapter)")
         for agent_id, info in describe(adapter)["agents"].items():
             sup = info.get("supervised_admission") or {}
             print(f"  {agent_id:<11}: transport={info.get('transport')}  supervised={sup.get('mode')}"
@@ -182,6 +182,7 @@ def main() -> None:
     else:
         print("Agent Hub - Mock API (no real Agent is contacted)")
     print(f"  adapter  : {kind}")
+    print(f"  source   : {REPO_ROOT}")
     print(f"  API page : http://{args.host}:{args.port}/docs")
     print(f"  console  : http://{args.host}:{args.port}/ui")
     print(f"  chat     : http://{args.host}:{args.port}/chat")

@@ -201,9 +201,10 @@ def test_build_adapter_multi_builds_each_agent_like_its_single_kind(monkeypatch,
     monkeypatch.setenv("AGENT_HUB_CLAUDE_CODE_STUB", "success-usage")
     monkeypatch.setenv("AGENT_HUB_CLAUDE_CODE_WORKDIR", str(tmp_path / "cc-runs"))
     router = build_adapter()
-    assert isinstance(router, RoutingAdapter) and router.AGENT_IDS == {"codex", "claude-code"}
+    assert isinstance(router, RoutingAdapter) and router.AGENT_IDS == {"codex", "claude-code", "deepseek"}
     assert type(router.for_agent("codex")).__name__ == "AppServerCodexAdapter"
     assert type(router.for_agent("claude-code")).__name__ == "ClaudeCodeAdapter"
+    assert type(router.for_agent("deepseek")).__name__ == "DeepSeekAdapter"
     for agent in ("codex", "claude-code"):
         assert execution_admission(router.for_agent(agent)).mode == "simulation"
 

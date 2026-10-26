@@ -42,6 +42,7 @@ from agenthub_kernel.db import (
     ToolApprovalRow, UsageLedgerRow, ProviderQuotaRow,
 )
 from agenthub_kernel.service import PolicyService, QuotaError, new_id, now
+from agenthub_kernel.collab import unstarted_approval_closed
 from agenthub_kernel.summaries import tree_owner
 
 WAITING = ("draft", "awaiting_approval", "queued", "starting", "running")
@@ -658,6 +659,8 @@ class Autopilot:
             ChatMessageRow.conversation_id == stage.conversation_id, ChatMessageRow.client_request_id == key))
         inv = session.get(InvocationRow, message.invocation_id) if message else None
         if inv:
+            if unstarted_approval_closed(session, inv):
+                raise _Blocked(step, "start_refused", "Unstarted approval is closed; authorize a new stage", inv.id)
             if inv.status in WAITING:
                 return inv, "waiting", None
             if inv.status == "unknown":

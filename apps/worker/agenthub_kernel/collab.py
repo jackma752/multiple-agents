@@ -12,7 +12,7 @@ the manual adjudication of an ``unknown`` call alike - and the latest decides:
 * ``done``: succeeded, with a reply that can be handed on;
 * ``no_result``: succeeded but without a reply in this conversation;
 * ``failed``: confirmed to have ended otherwise (failed, canceled, timed out,
-  rejected, invalid).
+  rejected, invalid), or never launched and all its approvals revoked/rejected/expired.
 
 Dispatching is refused unless the collaboration switch is on, every item it
 depends on is ``done``, the item is ``pending``, ``failed`` or ``no_result``,
@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from agenthub.collab import MAX_ATTEMPTS_PER_ITEM, PlanItem
 from agenthub.contracts import Policy
 from agenthub_kernel.db import (
-    ChatMessageRow, CollabAttemptRow, CollabItemRow, CollabPlanRow, InvocationRow, TaskRow,
+    ApprovalRow, ChatMessageRow, CollabAttemptRow, CollabItemRow, CollabPlanRow, InvocationRow, TaskRow,
 )
 from agenthub_kernel.service import QuotaError
 from agenthub_kernel.summaries import root_task_of
@@ -87,11 +87,28 @@ def _reply(session: Session, invocation_id: str) -> Optional[ChatMessageRow]:
                                                        ChatMessageRow.role == "assistant"))
 
 
+def unstarted_approval_closed(session: Session, inv: InvocationRow) -> bool:
+    """An unlaunched call with only closed approvals cannot still be dispatched.
+
+    Revocation can leave the invocation in draft. Preserve that historical row;
+    only a newly authorized call may replace it. Launch/unknown evidence and any
+    still-live approval continue to prevent duplicate dispatch.
+    """
+    if inv.status not in ("draft", "awaiting_approval", "queued"):
+        return False
+    if inv.started_at is not None or inv.adapter_invocation_id:
+        return False
+    statuses = session.scalars(select(ApprovalRow.status).where(ApprovalRow.invocation_id == inv.id)).all()
+    return bool(statuses) and all(status in ("revoked", "rejected", "expired") for status in statuses)
+
+
 def item_state(session: Session, item: CollabItemRow) -> dict[str, Any]:
     attempts, inv = _latest(session, item)
     reply = _reply(session, inv.id) if inv is not None else None
     if inv is None:
         state = "pending"
+    elif unstarted_approval_closed(session, inv):
+        state = "failed"
     elif inv.status in ACTIVE:
         state = ACTIVE[inv.status]
     elif inv.status == "unknown":

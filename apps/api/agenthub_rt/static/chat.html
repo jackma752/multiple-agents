@@ -11,6 +11,7 @@
     --warn: #e8b339; --bad: #e2565b; --radius: 10px;
   }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: var(--fg); font: 14px/1.55 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
   button { font: inherit; color: var(--fg); background: var(--panel2); border: 1px solid var(--line);
@@ -409,6 +410,10 @@ async function startStage() {
   if (!e.goal.trim()) { toast("请填写阶段目标"); return; }
   if (!e.mode) { toast("请选择执行边界（严格或用户监督）"); return; }
   if (e.mode === "supervised" && !e.consent) { toast("用户监督模式需要先勾选边界同意"); return; }
+  if (!e.agents.includes(e.main)) { toast("请从已勾选的 Agent 中重新选择主 Agent"); return; }
+  if ((e.review && !e.agents.includes(e.review)) || (e.collect && !e.agents.includes(e.collect))) {
+    toast("请从已勾选的 Agent 中重新选择审阅和汇总 Agent"); return;
+  }
   const body = { goal: e.goal.trim(), criteria: e.criteria.trim(), execution_mode: e.mode,
                  supervised_consent: e.consent === true, plan: e.plan, agents: e.agents, main_agent: e.main,
                  review_agent: e.review || null, collect_agent: e.collect || null, max_calls: Number(e.maxCalls),
@@ -443,7 +448,9 @@ function stageFormView(e) {
   const agents = data.agents || [];
   const proven = data.proven || {};
   const opt = (value, label, chosen) => el("option", { value, selected: value === chosen ? "selected" : null }, label);
-  const pick = (key, list, extra) => el("select", { onchange: (ev) => { e[key] = ev.target.value; render(); } },
+  const pick = (key, list, extra) => el("select", {
+    "aria-label": { main: "主 Agent", review: "审阅 Agent", collect: "汇总 Agent" }[key],
+    onchange: (ev) => { e[key] = ev.target.value; render(); } },
     ...(extra ? [opt("", extra, e[key])] : []), ...list.map((a) => opt(a, a, e[key])));
   const modeName = (m) => (m === "supervised" ? "用户监督" : "严格");
   return el("div", { class: "plan-form stage-form" },
@@ -465,10 +472,14 @@ function stageFormView(e) {
       ...agents.map((a) => el("label", { class: "usage-line", style: "display:block" },
         el("input", { type: "checkbox", checked: e.agents.includes(a) ? "checked" : null,
                       onchange: (ev) => { e.agents = ev.target.checked ? [...new Set([...e.agents, a])]
-                                                                       : e.agents.filter((x) => x !== a); render(); } }),
+                                                                       : e.agents.filter((x) => x !== a);
+                        if (!e.agents.includes(e.main)) e.main = "";
+                        if (!e.agents.includes(e.review)) e.review = "";
+                        if (!e.agents.includes(e.collect)) e.collect = "";
+                        render(); } }),
         ` ${a} `, chip((proven[a] || []).length ? "已跑通：" + proven[a].map(modeName).join("、") : "未跑通",
                        (proven[a] || []).includes(e.mode) ? "ok" : "warn")))),
-    el("div", { class: "row" }, "主 Agent ", pick("main", e.agents)),
+    el("div", { class: "row" }, "主 Agent ", pick("main", e.agents, "请选择主 Agent")),
     el("div", { class: "row" }, "审阅 ", pick("review", e.agents, "不审阅")),
     e.plan !== "none" ? el("div", { class: "row" }, "汇总 ", pick("collect", e.agents, "同主 Agent")) : null,
     el("div", { class: "row" }, "本阶段调用上限 ",
@@ -569,7 +580,7 @@ function renderAuto() {
   }
   bar.hidden = !S.cid || !S.stage;
   const active = document.activeElement;
-  if (bar.hidden || (bar.contains(active) && active.matches(".stage-form textarea, .stage-form input"))) return;
+  if (bar.hidden || (bar.contains(active) && active.matches(".stage-form textarea, .stage-form input:not([type=checkbox])"))) return;
   const lines = [];
   if (s) lines.push(...stageCardView(s));
   if (!open) {

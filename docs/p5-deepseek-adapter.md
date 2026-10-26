@@ -266,8 +266,8 @@ Codex / Claude Code 在严格模式被拦，是因为它们会**在本机启动�
   消费审批前就拒绝 `native_resume` 调用。
 - **没有工具**：一次请求一条消息，没有可阻塞的审批回合。要让 DeepSeek 用工具，
   得等 app-server 那种双向审批通道。
-- **不在 `multi` 里**：`multi` 目前只服务 `codex` 和 `claude-code`（已验收的行为
-  和测试断言都在），加第三个 agent 属于单独变更，等这批稳定后再做。
+- **multi 接入**：`fix/collaboration-resume` 已把 DeepSeek 注册为第三个通道；独立审批门禁和
+  真实/离线模式按各适配器配置，见[协作继续修复](issue-collaboration-resume.md)。
 - **会出境**：提示词与回复都发往 provider。这一条没有任何本地控制能消除。
 
 ## 9. 接入点（给后来的人）
