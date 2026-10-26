@@ -183,3 +183,21 @@ Codex / Claude Code 在严格模式被拦，是因为它们会**在本机启动�
 | `apps/worker/agenthub_kernel/adapters.py` | `DEEPSEEK` kind、`REMOTE_KINDS`、`_build_deepseek()`、`describe()` 的 deepseek 字段 |
 | `tools/demo/serve.py` | `--adapter deepseek`、`--deepseek-stub`、启动横幅 |
 | `tests/adapters/test_deepseek_adapter.py` | 离线测试（凭据、请求体、失败语义、SSE、用量、取消） |
+
+## 10. 为什么没有指向 "DSH Desktop"
+
+最初的说法是"让 deepseek 指向 DeepSeek desktop 那个 agent"。查证结果（2026-10-26）：
+
+- 这台机器**没有装 DeepSeek 桌面客户端**：开始菜单只有 `DSH Desktop.lnk`，
+  `%LOCALAPPDATA%` 无 `deepseek*`，`%APPDATA%` 无 `*deepseek*`，也没有 `dsh` CLI。
+- `E:\ds_agent\DSH Desktop\DSH Desktop.exe` 是个 Electron 应用（代码在 `app.asar`）。
+- 只读探针 `tools/probes/deepseek_endpoint.py`（只发 GET，不带 `Authorization`，不发 prompt）
+  实测：`127.0.0.1:43129` 的 `/` 返回 **401**、`/v1/models` `/models` **404**、
+  `/api/v1/models` **401**；`127.0.0.1:8080` 返回 200 但没有模型列表。
+  结论：**有带鉴权的 HTTP 服务，但没有 OpenAI 兼容接口**，协议未知。
+- 即便挖到"跑回合"的私有接口，让 Hub 驱动另一个**完整 Agent 运行时**，它自己的工具、
+  子 Agent 和审批都会绕过 Hub 的配额与审批 —— 与 Codex 的
+  `native_subagents_uncontrolled` 是同一类问题。
+
+所以这个适配器指向标准的 `api.deepseek.com`。如果将来 DSH（或别的兼容代理）真的开放了
+`/chat/completions`，改 `AGENT_HUB_DEEPSEEK_BASE_URL` 即可，不用改代码。
