@@ -9,6 +9,7 @@
 - 后续只读定位：用户 Administrator PowerShell 原生写入成功，venv Python 同窗口失败；`icacls` 发现项目 venv 的 `python.exe` 带继承 Low 完整性标签，基础 `D:\python\python.exe` 无此标签且直接令牌为 Medium。已记录单文件标签修正建议，助手没有更改权限，用户修正与复测待确认。详见上面诊断文档的后续定位节。
 - 用户已完成单文件标签修正，复核解释器现为 Medium。项目 venv 的 SSL/ctypes 加载恢复，正常测试命令得到 **34 passed in 0.49s**（写入检查回归、S1、hygiene），无需备用解释器。用户侧 home 写入和真实在线启动仍待确认。
 - 用户已回报修复版预检 `True`，用户终端的 Python home 写入权限确认恢复；待从该终端重启旧 8080 后台并选 app-server 做一次页面最小调用，在线结果未认定。助手未启动模型调用。
+- 用户随后完成一次真实 app-server 监督回合；只读核对 `inv-371025d822df` 为 succeeded/terminal/completed，用量完整（输入 16787、输出 77），当前单回合在线恢复确认。真实自动阶段与完整 P4.6d 未据此验收。顶部 blocked 是严格准入标签的显示歧义，已登记 UI 待办。
 
 ---
 

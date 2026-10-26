@@ -76,3 +76,16 @@ E:\plug\agent-hub\.venv\Scripts\python.exe -m pytest -o addopts='' -q tests/test
 这确认了本次观察到的解释器 DLL 加载失败在标签修正后消失；不据此关闭所有历史 DLL 问题。用户同一 PowerShell 下的 home 写入仍待重测，真实 Codex 回合尚未重试。
 
 用户随后在同一 PowerShell 重测，返回 `(True, '...codex-home is writable by this process')`。**用户启动环境下的 Python 写入权限已恢复**。8080 当时仍是旧 Hub，8090 本地代理端口可连接；下一步需从用户这个已验证可写的窗口重启 Hub，明确选择 `--codex-transport app-server` 并清除 exec 身份覆盖及模拟器变量，再由用户在页面做真实最小回合。当前数据目录中的阶段仅有 blocked/completed/stopped，未见活动或额度等待阶段。在线运行是否恢复仍以新回合实际结果为准。
+
+### 用户在线最小回合已完成
+
+用户从修正后的 PowerShell 重启 8080 后，通过页面手动批准一个 Codex 用户监督回合，并提供成功截图。只读核对该次本地记录：
+
+- 调用 `inv-371025d822df`，`status=succeeded`，错误为空，执行模式 `supervised`。
+- 身份为固定的 `codex-app-server@codex-cli 0.163.0-alpha.11.2`（SHA-256 `c81ed464e5e7cafd09a5fa26af390c480bed8e9fab2a87a54b285fbd56e7122a`，336134960 字节）。
+- 适配器为 `finished`，`terminal=true`，`turn_requested=true`，`turn_status=completed`，`native_unfinished=[]`，`tool_process_state=none`。
+- 用量来源 `thread_total_delta`，`completeness=complete`；输入 16787、输出 77，与用户截图相符。
+
+本次确认 **解释器标签修正后，用户监督模式下的真实 Codex 单回合恢复可用**。这是用户操作、助手只读核对，不是助手追加真实运行；没有据此追加证据标签或宣称完成正式 P4.6d/真实自动阶段验收，也不升级 exec、严格模式、工具允许或额度恢复能力。
+
+UI 待办：顶部 `renderAgentPosture()` 只展示 `execution_admission`（严格模式），所以成功监督回合旁仍出现红色 `blocked`。应明确区分“严格受限 / 监督可用”，避免将适配器能力边界误读为本次调用失败；本诊断分支未改该显示代码。
