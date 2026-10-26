@@ -1,5 +1,19 @@
 # 当前交接：main 已合并 P4.6 并统一 8080 入口（2026-10-26）
 
+## 最新：协作阻塞后继续修复 `5a9202e`
+
+- 分支 `fix/collaboration-resume`，工作树 `E:\plug\agent-hub\.worktrees\collaboration-resume`，
+  基于 `a522183`，包含前面 DeepSeek 密钥、HTTP诊断、最终回复与旧消息恢复修复。
+- 用户计划#4第2项在配额拒绝后成为draft+revoked，被误视为进行中。现在只有“未启动且无外部ID，
+  所有审批均关闭”才允许新阶段另建调用；旧审批不复用，已完成的第1项不重跑。未知或在途仍阻止重复。
+- 同时修复阶段表单撤选Agent后的主/审阅/汇总角色同步、提交前校验，以及hidden控件仍显示的问题。
+- 本工作树multi含Codex/Claude Code/DeepSeek，启动横幅打印source，防止切回缺少修复的根目录入口。
+- 相关回归 **180 passed in 35.01s**，包含旧草稿关闭后继续、跳过已完成项、交接和汇总及重复启动保护。
+  Headless Edge验证了表单显示/请求一致、非法选择0次提交、blocked顶部状态隐藏；无JS错误。
+- 18190测试服务已停止。没有碰用户8080、原数据、root策略额度或其他Agent未提交文件；未合入main/推送。
+- 用户需Ctrl+C重启，使用 `docs/issue-collaboration-resume.md` 的本工作树multi启动命令，
+  再以“用会话里最新的计划”授权新阶段继续。保持已调高的根任务调用数，勾Codex/DeepSeek、主/汇总Codex。
+
 ## 最新：DeepSeek 已有真实回复；最终消息投影修复 `15bc92e`
 
 - 用户执行 `inv-630801980461`，`deepseek-flash` / finish_reason=stop，输入34、输出79，
