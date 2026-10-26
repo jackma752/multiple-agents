@@ -239,7 +239,8 @@ def test_approved_card_answers_exactly_that_request_with_accept(make_client):
         "stub-thread-0001", "stub-turn-0001", "item-cmd-1")
     assert card["method"] == "item/commandExecution/requestApproval"
     assert card["details"]["command"] == "echo stub" and card["details"]["cwd"] == "C:\\stub"
-    assert card["available_decisions"] == ["accept", "decline", "cancel"]
+    assert card["available_decisions"] == ["accept", "decline"]
+    assert card["details"]["provider_available_decisions"] == ["accept", "decline", "cancel"]
     assert len(card["card_hash"]) == 64 and card["delivery"] == "pending"
     assert status_of(client, turn["invocation_id"]) == "starting"  # waiting on the user
 
@@ -482,8 +483,8 @@ def test_one_card_answers_only_its_own_request(tmp_path):
     adapter = AppServerCodexAdapter(transport_factory=InMemoryStubFactory(),
                                     workdir_root=str(tmp_path / "runs"))
     turn = _Turn("t", "u")
-    first = ServerRequest(id="srv-1", method="item/commandExecution/requestApproval", params={})
-    second = ServerRequest(id="srv-2", method="item/commandExecution/requestApproval", params={})
+    first = ServerRequest(id="srv-1", method="item/commandExecution/requestApproval", params={"command": "echo one"})
+    second = ServerRequest(id="srv-2", method="item/commandExecution/requestApproval", params={"command": "echo two"})
     turn.cards = {"srv-1": (first, "card-a"), "srv-2": (second, "card-b")}
     gate = FakeGate({"card-a": "approved", "card-b": "pending"})
     client = FakeClient()

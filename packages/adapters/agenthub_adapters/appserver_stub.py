@@ -39,6 +39,7 @@ one the client always speaks. Each scenario exists to pin ONE behaviour:
 ``approval-default`` alpha.11's default decision list (accept / cancel, no
                      decline) and a PowerShell-wrapped command (S3 shape); the
                      answer it receives decides the turn's ending
+``approval-file``    a proposed file diff followed by one file-change approval
 ``settings-mismatch`` thread/start reports a workspace-write sandbox
 ``resume-no-history`` thread/resume returns no earlier turns
 ``replay-twice``     resume sends the previous turn's usage twice
@@ -136,6 +137,7 @@ SCENARIOS = (
     "approval-hold",
     "complete-on-interrupt",
     "approval-default",
+    "approval-file",
     "settings-mismatch",
     "resume-no-history",
     "replay-twice",
@@ -585,7 +587,7 @@ class ScriptedAppServer:
         if scenario == "turn-failed":
             self._finish_turn(TURN_STATUS_FAILED)
             return
-        if scenario == "approval-default":
+        if scenario in ("approval-default", "approval-file"):
             self._drive_default_approval()
             return
         if scenario in RECALL_SCENARIOS:
@@ -732,15 +734,23 @@ class ScriptedAppServer:
 
     def _drive_default_approval(self) -> None:
         """S3 shape: pending item, then the request with the default list (no decline)."""
-        cmd = {"id": "item-cmd-1", "type": "commandExecution", "command": WRAPPED_COMMAND,
+        file_change = self.scenario == "approval-file"
+        cmd = {"id": "item-cmd-1", "type": "fileChange" if file_change else "commandExecution",
                "status": "inProgress", "processId": None}
+        if file_change:
+            cmd["changes"] = [{"path": "C:/stub/note.txt", "kind": {"type": "add"},
+                               "diff": "--- /dev/null\n+++ note.txt\n@@ -0,0 +1 @@\n+offline approved content"}]
+        else:
+            cmd["command"] = WRAPPED_COMMAND
         self.notify(ITEM_STARTED, {"item": cmd, "threadId": self.thread_id, "turnId": self.turn_id})
-        request_id = self.request(APPROVAL_REQUEST, {
+        params = {
             "itemId": "item-cmd-1", "startedAtMs": 1, "threadId": self.thread_id,
-            "turnId": self.turn_id, "command": WRAPPED_COMMAND, "cwd": "C:\\stub",
-            "reason": "列出目录（离线桩）", "environmentId": "local",
-            "availableDecisions": list(DEFAULT_DECISIONS),
-        })
+            "turnId": self.turn_id, "cwd": "C:\\stub",
+            "reason": "修改文件（离线桩）" if file_change else "列出目录（离线桩）", "environmentId": "local",
+        }
+        if not file_change:
+            params.update(command=WRAPPED_COMMAND, availableDecisions=list(DEFAULT_DECISIONS))
+        request_id = self.request("item/fileChange/requestApproval" if file_change else APPROVAL_REQUEST, params)
         decision = None
         end = time.monotonic() + 30.0
         while decision is None and time.monotonic() < end and not self._stop.is_set():

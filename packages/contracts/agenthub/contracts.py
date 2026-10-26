@@ -457,6 +457,9 @@ class AdapterContract:
     #   Only ``approved`` may be answered with ``accept``, once, for that exact
     #   request; every other outcome is answered ``decline`` (or not at all
     #   when the request is gone). Approving a run never approves its tools.
+    #   ``void(card_id)`` clears a provider-resolved request without closing the
+    #   other cards. Offered decisions are request-scoped accept/decline; the
+    #   provider's session grants and rule amendments are never auto-substituted.
     # * ``usage_report(invocation_id) -> dict | None`` - this call's usage for
     #   the kernel ledger (T-1a): ``{"mapping", "usage", "source", "notes",
     #   "model"}`` as defined in :mod:`agenthub.usage` (numbers and machine
@@ -521,6 +524,7 @@ STREAM_EVENT_TYPES = frozenset({
 #: ``accept``. ``expired`` (time ran out) and ``void`` (the request, turn or
 #: transport went away first) never grant anything.
 TOOL_APPROVAL_PENDING = "pending"
+TOOL_APPROVAL_DETAIL_CHARS = 8000  # a single review field must fit the card's stored preview
 TOOL_APPROVAL_APPROVED = "approved"
 TOOL_APPROVAL_DECLINED = "declined"
 TOOL_APPROVAL_EXPIRED = "expired"
