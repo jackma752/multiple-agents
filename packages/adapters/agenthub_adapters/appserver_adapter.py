@@ -564,6 +564,59 @@ def turn_id_of_params(params: dict) -> str:
 
 class AppServerCodexAdapter(AdapterContract):
     """Codex via app-server. Gated like the exec adapter, plus D1-D11."""
+    supports_model_selection = True
+    supports_effort_selection = True
+
+    def model_catalog(self, *, refresh=False):
+        """Explicit metadata-only process; never starts a thread or model turn."""
+        cached = getattr(self, '_model_catalog', None)
+        if not refresh:
+            return cached or {"models": [], "source": "not_loaded", "default_model": None,
+                              "message": "点击刷新读取接入方模型目录；不会产生模型回合"}
+        admission = execution_admission(self, "supervised")
+        if not admission.allowed:
+            raise ValueError("model metadata process is not admitted")
+        import uuid
+        from datetime import datetime, timezone
+        from agenthub.models import MODEL_ID
+        invocation_id = 'model-catalog-' + uuid.uuid4().hex
+        workdir = os.path.join(self.workdir_root, invocation_id)
+        os.makedirs(workdir, exist_ok=True)
+        transport = self.transport_factory(invocation_id, workdir)
+        client = AppServerClient(transport, request_timeout=min(self.request_timeout, 15),
+                                 approval_policy=ApprovalPolicy())
+        choices = []
+        try:
+            client.start()
+            AppServerSession(client).initialize(client_name="agent-hub-models", version=self.version)
+            cursor = None
+            for _ in range(10):
+                page = client.request('model/list', {"limit": 100, "includeHidden": False, "cursor": cursor})
+                for item in page.get('data', []):
+                    model = item.get('model') or item.get('id')
+                    if not isinstance(model, str) or not MODEL_ID.fullmatch(model):
+                        continue
+                    choices.append({"id": model, "display_name": str(item.get('displayName') or model)[:100],
+                        "reasoning_efforts": [e['reasoningEffort'] for e in item.get('supportedReasoningEfforts', [])
+                                              if isinstance(e, dict) and isinstance(e.get('reasoningEffort'), str)],
+                        "default_effort": item.get('defaultReasoningEffort'),
+                        "is_default": bool(item.get('isDefault')), "source": "provider_catalog"})
+                cursor = page.get('nextCursor')
+                if not cursor:
+                    break
+            default = None
+            try:
+                config = client.request('config/read', {"includeLayers": False}).get('config') or {}
+                if isinstance(config.get('model'), str) and MODEL_ID.fullmatch(config['model']):
+                    default = config['model']
+            except AppServerError:
+                pass
+            self._model_catalog = {"models": choices, "source": "provider_catalog", "default_model": default,
+                                   "fetched_at": datetime.now(timezone.utc).isoformat()}
+            return self._model_catalog
+        finally:
+            client.close()
+
 
     name = "codex"
     transport = TRANSPORT
@@ -801,19 +854,21 @@ class AppServerCodexAdapter(AdapterContract):
             if resume_id:
                 facts["opening_method"] = THREAD_RESUME
                 result = client.request(THREAD_RESUME, {"threadId": resume_id, "cwd": workdir,
-                                                        **THREAD_SETTINGS})
+                                                        **THREAD_SETTINGS, **({"model": snapshot.model} if snapshot.model else {})})
                 thread_id = _thread_id(result)
                 if thread_id != resume_id:
                     raise _Refused("thread/resume returned a different thread id")
             else:
                 facts["opening_method"] = THREAD_START
-                result = client.request(THREAD_START, {"cwd": workdir, **THREAD_SETTINGS})
+                result = client.request(THREAD_START, {"cwd": workdir, **THREAD_SETTINGS, **({"model": snapshot.model} if snapshot.model else {})})
                 thread_id = _thread_id(result)
             if not thread_id:
                 raise _Refused("server returned no thread id")
             self.store.set_adapter_id(invocation_id, thread_id)
             model = result.get("model") if isinstance(result, dict) else None
             facts["model"] = model if isinstance(model, str) and len(model) <= 80 else None
+            if snapshot.model and facts["model"] != snapshot.model:
+                raise _Refused("requested model was not confirmed by the thread response; no model turn started")
             problems = settings_problems(result, workdir)
             if problems:
                 raise _Refused("appserver_settings_mismatch: " + ",".join(problems))
@@ -826,6 +881,8 @@ class AppServerCodexAdapter(AdapterContract):
             result = client.request(TURN_START, {
                 "threadId": thread_id, "input": [{"type": "text", "text": snapshot.task_input}],
                 **TURN_POLICY,
+                **({"model": snapshot.model} if snapshot.model else {}),
+                **({"effort": snapshot.reasoning_effort} if snapshot.reasoning_effort else {}),
             })
             turn_id = str((result.get("turn") or {}).get("id") or result.get("turnId") or "")
             if not turn_id:
@@ -1425,7 +1482,7 @@ class AppServerCodexAdapter(AdapterContract):
             # Started, nothing settled (yet): the process may have spent.
             usage, source, notes = {}, "none", ["no_usage_reported", "turn_not_terminal"]
         return {"mapping": MAPPING_CODEX_APPSERVER, "usage": usage, "source": source,
-                "notes": notes, "model": payload.get("model")}
+                "notes": notes, "model": payload.get("model"), "model_source": "thread_configuration"}
 
     # -- stop / cancel / status --------------------------------------------
 

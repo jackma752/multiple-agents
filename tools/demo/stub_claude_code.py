@@ -66,6 +66,7 @@ def main() -> int:
         print("stub: unknown invocation", file=sys.stderr)
         return 2
     scenario = argv[1]
+    chosen_model = argv[argv.index('--model') + 1] if '--model' in argv else 'claude-stub-model'
     data = sys.stdin.buffer.read()
     marker = os.environ.get("STUB_CLAUDE_MARKER")
     if marker:
@@ -81,7 +82,8 @@ def main() -> int:
         # Explicit offline demonstration, never a real quota observation.
         prompt = data.decode("utf-8", errors="replace")
         common = {"total_cost_usd": 0.0123, "usage": USAGE,
-                  "modelUsage": {"claude-stub-model": {"inputTokens": 12, "outputTokens": 3}}}
+                  "modelUsage": {chosen_model: {"inputTokens": 12, "outputTokens": 3,
+                    "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}}}
         if "Review the results above" in prompt:
             reply = "VERDICT: PASS\nOffline review fixture passed."
         elif "Propose a plan" in prompt:
@@ -103,7 +105,8 @@ def main() -> int:
         return 0
     if scenario == "success-usage":
         emit(result(result="OK", total_cost_usd=0.0123, usage=USAGE,
-                    modelUsage={"claude-stub-model": {"inputTokens": 12, "outputTokens": 3}}))
+                    modelUsage={chosen_model: {"inputTokens": 12, "outputTokens": 3,
+                        "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}}))
         return 0
     if scenario == "success-no-usage":
         emit(result(result="OK"))

@@ -739,7 +739,7 @@ class Autopilot:
         if resume_thread:
             extra["context_mode"] = "native_resume"
         request = ConversationTurn(text=text_, agent_id=agent_id, client_request_id=key,
-                                   execution_mode=stage.execution_mode, **extra)
+                                   execution_mode=stage.execution_mode, **rules.models.get(agent_id, {}), **extra)
         adapter = self.worker.adapter
         try:
             turn = submit_turn(session, stage.conversation_id, stage.granted_by, request,
@@ -754,7 +754,9 @@ class Autopilot:
         # Within the rules: the stage's agent, its execution boundary, Hub depth only.
         if (inv.snapshot.get("agent_id") not in rules.agents
                 or inv.snapshot.get("execution_mode", "strict") != stage.execution_mode
-                or int(inv.snapshot.get("depth") or 0) > 1):
+                or int(inv.snapshot.get("depth") or 0) > 1
+                or any(inv.snapshot.get(k) != rules.models.get(agent_id, {}).get(k)
+                       for k in ("model", "reasoning_effort"))):
             PolicyService(session).revoke(appr.id)  # never left approvable by anyone
             raise _Blocked(step, "plan_outside_rules", "call outside the stage rules", inv.id)
         appr.expires_at = stage.expires_at  # stage lifetime, not the manual approval TTL

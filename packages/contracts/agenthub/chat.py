@@ -45,8 +45,12 @@ class ConversationTurn:
     #: item as a sub-task, or collect a finished plan's results.
     plan_item_id: Optional[int] = None
     collect_plan_id: Optional[int] = None
+    model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
     def __post_init__(self) -> None:
+        from agenthub.models import validate_selection
+        validate_selection(self.model, self.reasoning_effort)
         for name in ("plan_item_id", "collect_plan_id"):
             value = getattr(self, name)
             if value is not None and (type(value) is not int or value < 1):
@@ -92,7 +96,8 @@ class ConversationTurn:
             data["file_refs"] = list(data["file_refs"])
         else:
             del data["file_refs"]
-        for key in ("summary_id", "include_history", "output_style", "plan_item_id", "collect_plan_id"):
+        for key in ("summary_id", "include_history", "output_style", "plan_item_id", "collect_plan_id",
+                    "model", "reasoning_effort"):
             # likewise, absent unless used
             if not data[key]:
                 del data[key]

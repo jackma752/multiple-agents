@@ -36,6 +36,7 @@ class StageIn(BaseModel):
     retry_limit: StrictInt = 3
     auto_resume: StrictBool = True
     quota_retry_seconds: StrictInt = 300
+    models: dict = Field(default_factory=dict)
 
 
 def register_stages(app, db) -> None:

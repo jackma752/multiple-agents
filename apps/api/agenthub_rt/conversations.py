@@ -86,6 +86,8 @@ class TurnIn(MessageIn):
     include_history: bool = False
     # Output preference added as a visible, approved hint (agenthub.output).
     output_style: Literal["", "concise", "detailed"] = ""
+    model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
     @field_validator("agent_id", "client_request_id")
     @classmethod
@@ -141,6 +143,8 @@ class DispatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     client_request_id: str = Field(min_length=1, max_length=128)
     execution_mode: Literal["strict", "supervised"] = "strict"
+    model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 class CollectIn(DispatchIn):
@@ -573,6 +577,7 @@ def register_conversations(app, db) -> None:
                 raise HTTPException(404, detail={"code": exc.code, "message": exc.message})
             request = _turn_of({"text": item.goal, "agent_id": item.agent_id,
                                 "client_request_id": body.client_request_id, "execution_mode": body.execution_mode,
+                                "model": body.model, "reasoning_effort": body.reasoning_effort,
                                 "handoff_message_ids": [], "file_refs": [], "plan_item_id": item.id})
             return submit_hub_turn(session, cid, principal, request)
 
@@ -584,6 +589,7 @@ def register_conversations(app, db) -> None:
             require_conversation(session, cid, principal)
             request = _turn_of({"text": body.text.strip() or COLLECT_INSTRUCTION, "agent_id": body.agent_id,
                                 "client_request_id": body.client_request_id, "execution_mode": body.execution_mode,
+                                "model": body.model, "reasoning_effort": body.reasoning_effort,
                                 "handoff_message_ids": [], "file_refs": [], "collect_plan_id": plan_id})
             return submit_hub_turn(session, cid, principal, request)
 

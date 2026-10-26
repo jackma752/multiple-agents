@@ -35,7 +35,11 @@ def test_chat_page_is_served_without_secrets_or_html_injection(make_client):
     # EventSource cannot send Authorization; the page must read SSE with fetch.
     assert "new EventSource" not in html and "Last-Event-ID" in html
     # The token lives in the tab session only, never in localStorage or the URL.
-    assert "localStorage" not in html and "token=" not in html
+    # Non-secret model/display preferences may persist; credentials remain tab-only.
+    import re
+    assert set(re.findall(r"localStorage\.(?:getItem|setItem)\(['\"]([^'\"]+)", html)) <= {
+        "agenthub.models", "agenthub.showGrandTotal"}
+    assert 'sessionStorage.setItem("agenthub.token"' in html and "token=" not in html
 
 
 CALL_RE = re.compile(r'api\("(GET|POST)",\s*`?"?(/api/[^`"]+)[`"]')

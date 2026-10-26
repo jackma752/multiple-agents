@@ -356,6 +356,16 @@ class ScriptedAppServer:
             })
             return
 
+        if method == "model/list":
+            self.reply(request_id, {"data": [
+                {"id": m, "model": m, "displayName": m, "isDefault": i == 0,
+                 "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [
+                    {"reasoningEffort": e} for e in ("low", "medium", "high")]}
+                for i, m in enumerate(("stub-model", "stub-model-2"))], "nextCursor": None})
+            return
+        if method == "config/read":
+            self.reply(request_id, {"config": {"model": "stub-model"}})
+            return
         if method in (THREAD_START, THREAD_RESUME):
             resume = method == THREAD_RESUME
             turns = [] if not resume or self.scenario == "resume-no-history" else list(self.history)
@@ -373,7 +383,7 @@ class ScriptedAppServer:
             self.reply(request_id, {
                 "thread": thread,
                 "cwd": params.get("cwd") or "C:\\stub",
-                "model": "stub-model",
+                "model": params.get("model") or "stub-model",
                 "modelProvider": "stub",
                 "sandbox": sandbox,
                 "approvalPolicy": params.get("approvalPolicy") or "on-request",

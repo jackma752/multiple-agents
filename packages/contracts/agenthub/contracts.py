@@ -169,8 +169,15 @@ class InvocationSnapshot:
     #: by ``payload_hash``. ``None`` for snapshots made before T-1d and for
     #: calls not composed by the conversation path.
     context_preview: Optional[dict] = None
+    #: Requested model and effort are approved options, never prompt text.
+    #: None keeps provider defaults and preserves hashes of older snapshots.
+    model: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    model_provider: Optional[str] = None
 
     def __post_init__(self) -> None:
+        from agenthub.models import validate_selection
+        validate_selection(self.model, self.reasoning_effort)
         if self.execution_mode not in {"strict", "supervised"}:
             raise ValueError("execution_mode must be strict or supervised")
         if self.context_preview is not None:
@@ -213,6 +220,9 @@ class InvocationSnapshot:
             result["handoff"] = [dict(h) for h in self.handoff]
         if self.context_preview is not None:
             result["context_preview"] = self.context_preview
+        for key in ("model", "reasoning_effort", "model_provider"):
+            if getattr(self, key) is not None:
+                result[key] = getattr(self, key)
         return result
 
 
@@ -249,8 +259,13 @@ class Policy:
     #: any reservation that would cross the total. ``soft``: only a known
     #: exhausted budget refuses; the rest is a warning.
     token_budget_mode: str = "strict"
+    #: Canonical JSON [agent, provider-interface, model] -> BudgetPolicy fields.
+    #: These budgets share the root's transaction, but not its counters.
+    model_budgets: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        from agenthub.models import validate_budgets
+        validate_budgets(self.model_budgets)
         if type(self.collaboration_enabled) is not bool:
             raise ValueError("collaboration_enabled must be a boolean")
         for name in ("token_budget_total", "token_budget_per_call"):
@@ -309,6 +324,7 @@ class Policy:
             "token_budget_per_call": self.token_budget_per_call,
             "token_budget_warn_percent": self.token_budget_warn_percent,
             "token_budget_mode": self.token_budget_mode,
+            "model_budgets": self.model_budgets,
             "version": self.version,
         }
 
@@ -468,6 +484,14 @@ class AdapterContract:
     #   right after its own definitive refusal ``None`` proves nothing ran.
     #   Missing usage is reported as such, never as zero. Without this method
     #   the ledger records ``adapter_reports_no_usage`` (unknown).
+    #   Optional ``model_usage`` holds per-model numeric provider fields, never
+    #   an extra charge on top of the call total; ``model_source`` distinguishes
+    #   thread configuration read-back from provider usage model identity.
+    # * ``supports_model_selection`` / ``supports_effort_selection`` - explicit
+    #   adapter declarations checked before approval consumption. Options are
+    #   sent to the provider API/argv, never inserted as prompt instructions.
+    # * ``model_catalog(refresh=False)`` - passive cached metadata. An explicit
+    #   user refresh may run a metadata-only process, never a model turn.
     # * ``context_profile() -> dict`` - what the context preview may say about
     #   this adapter (T-1d, :mod:`agenthub.context`): ``adds_prompt_text``
     #   (False only when ``task_input`` is sent verbatim) and ``observed``, a

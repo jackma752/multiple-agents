@@ -94,6 +94,10 @@
   .usage-panel { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px;
                  color: var(--dim); }
   .usage-panel h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--fg); }
+  .model-usage-group { margin:12px 0; }
+  .model-usage-row { border-left:2px solid var(--line); padding:5px 8px; margin:5px 0; }
+  .agent-subtotal { padding-top:5px; border-top:1px solid var(--line); }
+  .model-budget-form .row { gap:4px; margin:4px 0; }
   .usage-line { margin: 2px 0; word-break: break-word; }
   .summary-form, .plan-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
   .summary-field { display: flex; flex-direction: column; gap: 2px; }
@@ -155,6 +159,11 @@
       <div id="sendPreview"></div>
       <div class="row">
         <label>Agent <select id="agent"></select></label>
+        <label>模型 <input id="modelPicker" list="modelOptions" placeholder="接入方默认 / 输入模型 ID" aria-label="模型" style="width:190px" /><datalist id="modelOptions"></datalist></label>
+        <label>推理强度 <select id="modelEffort" aria-label="推理强度"><option value="">默认强度</option></select></label>
+        <button type="button" class="mini" id="refreshModelsBtn" title="启动本地元数据进程读取模型目录，不发送模型回合">刷新模型</button>
+        <span id="modelHint" class="dim">默认模型未确认</span>
+
         <label title="每次创建调用都要明确选择；不会沿用上一次的选择">执行模式
           <select id="mode" aria-label="执行模式">
             <option value="" selected>请选择</option>
@@ -322,7 +331,7 @@ function absorbMessage(m) {
   if (inv) {
     patch(call(inv.invocation_id), {
       status: inv.status, approval_id: inv.approval_id, approval_status: inv.approval_status,
-      agent_id: inv.agent_id, execution_mode: inv.execution_mode,
+      agent_id: inv.agent_id, execution_mode: inv.execution_mode, model:inv.model, reasoning_effort:inv.reasoning_effort,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
       context_preview: inv.context_preview, plan_item: inv.plan_item, authorized_by: inv.authorized_by,
@@ -410,7 +419,7 @@ async function startStage() {
   if (!e.goal.trim()) { toast("请填写阶段目标"); return; }
   if (!e.mode) { toast("请选择执行边界（严格或用户监督）"); return; }
   if (e.mode === "supervised" && !e.consent) { toast("用户监督模式需要先勾选边界同意"); return; }
-  const body = { goal: e.goal.trim(), criteria: e.criteria.trim(), execution_mode: e.mode,
+  const body = { models:Object.fromEntries(e.agents.map(a => [a, e.models[a] || {}])), goal: e.goal.trim(), criteria: e.criteria.trim(), execution_mode: e.mode,
                  supervised_consent: e.consent === true, plan: e.plan, agents: e.agents, main_agent: e.main,
                  review_agent: e.review || null, collect_agent: e.collect || null, max_calls: Number(e.maxCalls),
                  command_prefixes: e.prefixes.split("\n").map((x) => x.trim()).filter(Boolean),
@@ -418,6 +427,7 @@ async function startStage() {
                  quota_retry_seconds: Number(e.quotaMinutes) * 60 };
   // Shown once, in full: this is the stage's whole authorization.
   const lines = ["按规则自动执行本阶段？以下内容一次授权，执行中不再逐张确认：",
+    `各 Agent 模型：${JSON.stringify(body.models)}`,
     `目标：${body.goal}`, `完成标准：${body.criteria || "（未写）"}`,
     `执行边界：${body.execution_mode === "supervised" ? "用户监督模式" : "严格模式"}`,
     `Agent：${body.agents.join("、")}；主：${body.main_agent}；审阅：${body.review_agent || "不审阅"}` +
@@ -440,6 +450,7 @@ async function startStage() {
 }
 
 function stageFormView(e) {
+  e.models ||= Object.fromEntries(e.agents.map(a => [a, selectionFor(a)]));
   const data = S.stage || {};
   const agents = data.agents || [];
   const proven = data.proven || {};
@@ -469,6 +480,11 @@ function stageFormView(e) {
                                                                        : e.agents.filter((x) => x !== a); render(); } }),
         ` ${a} `, chip((proven[a] || []).length ? "已跑通：" + proven[a].map(modeName).join("、") : "未跑通",
                        (proven[a] || []).includes(e.mode) ? "ok" : "warn")))),
+    ...e.agents.map(a => el('div', {class:'row'}, a + ' 模型 ',
+      el('input', {value:(e.models[a] || {}).model || '', placeholder:'接入方默认 / 完整模型 ID',
+        oninput:ev => {e.models[a] = {...e.models[a], model:ev.target.value.trim() || null};}}),
+      el('input', {value:(e.models[a] || {}).reasoning_effort || '', placeholder:'默认强度', style:'width:90px',
+        oninput:ev => {e.models[a] = {...e.models[a], reasoning_effort:ev.target.value.trim() || null};}}))),
     el("div", { class: "row" }, "主 Agent ", pick("main", e.agents)),
     el("div", { class: "row" }, "审阅 ", pick("review", e.agents, "不审阅")),
     e.plan !== "none" ? el("div", { class: "row" }, "汇总 ", pick("collect", e.agents, "同主 Agent")) : null,
@@ -644,7 +660,7 @@ async function dispatchItem(plan, item) {
   await guarded(`dispatch:${plan.plan_id}:${item.index}`, async () => {
     S.scrollAfter = S.lastMsgId;
     await api("POST", `/api/conversations/${enc(S.cid)}/plans/${plan.plan_id}/items/${item.index}/dispatch`, {
-      execution_mode: mode, client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
+      execution_mode: mode, ...selectionFor(item.agent_id), client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
     toast(`子任务 #${item.index} 已生成待审批调用`);
     needMessages(); await loadPlans();
   });
@@ -656,7 +672,7 @@ async function collectPlan(plan) {
   await guarded(`collect:${plan.plan_id}`, async () => {
     S.scrollAfter = S.lastMsgId;
     await api("POST", `/api/conversations/${enc(S.cid)}/plans/${plan.plan_id}/collect`, {
-      agent_id: $("agent").value, execution_mode: mode,
+      agent_id: $("agent").value, execution_mode: mode, ...selectionFor(),
       client_request_id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random()) });
     toast(`已生成汇总调用，交给 ${$("agent").value}，待审批`);
     needMessages();
@@ -997,7 +1013,7 @@ async function send(event) {
     const untitled = !(S.convs.find((c) => c.conversation_id === cid) || {}).title;
     S.scrollAfter = S.lastMsgId;
     const turn = await api("POST", `/api/conversations/${enc(cid)}/invocations`, {
-      text, agent_id: $("agent").value, execution_mode: mode,
+      text, agent_id: $("agent").value, execution_mode: mode, ...selectionFor(),
       client_request_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now() + Math.random())),
       context_mode: $("resume").checked ? "native_resume" : "independent",
       handoff_message_ids: S.handoff.slice(),
@@ -1651,8 +1667,19 @@ function budgetLine(b) {
 function budgetNotes(c, pending) {
   const b = c.budget;
   if (!b) return [];
-  const notes = [];
+  const notes = [`请求模型：${c.model || "接入方默认（待确认）"}${c.reasoning_effort ? " · 推理强度 " + c.reasoning_effort : ""}`];
+  for (const m of c.usage && c.usage.models || []) notes.push(`${m.model_source === "thread_configuration" ? "线程配置回读" : "接入方报告模型"}：${m.model || "未知"}`);
+  if (c.model && (c.usage && c.usage.models || []).some(m => m.model && m.model !== c.model))
+    notes.push('请求值与报告值不同（可能是别名解析或接入方内部切换）；用量按报告模型保留');
   const tree = (S.usageConv && S.usageConv.budget && S.usageConv.budget.active) ? S.usageConv.budget : b;
+  for (const m of b.model_budgets || []) {
+    if (m.agent_id !== c.agent_id || !m.active) continue;
+    if (!c.model) notes.push('该 Agent 已设置模型预算：先明确选择模型，严格预算不会按未知模型启动');
+    if (m.model === c.model) {
+      notes.push(`模型预算 ${m.model}：${budgetLine(m)}`);
+      if (pending && m.preview && !m.preview.allowed) notes.push(`执行时会被拒绝：${m.preview.message}`);
+    }
+  }
   if (pending && b.active) {
     notes.push(`预算：${budgetLine({ ...b, ...pick(tree, ["known", "unsettled", "reserved", "unbounded",
                                                           "unreserved_in_flight", "remaining"]) })}`);
@@ -1664,7 +1691,7 @@ function budgetNotes(c, pending) {
     if (b.mode === "strict" && agentInfo(c.agent_id).usage_reporting === false)
       notes.push("该 Agent 不报告用量：严格预算模式下不会启动");
   } else if (pending && b.estimate_visible != null) {
-    notes.push(`本次估算：Hub 发送部分约 ${fmtN(b.estimate_visible)} token（provider 侧上下文未知）；未设预算`);
+    notes.push(`本次估算：Hub 发送部分约 ${fmtN(b.estimate_visible)} token（provider 侧上下文未知）；未设整个任务总预算`);
   }
   const t = b.this_call;
   if (t && t.reservation) {
@@ -1725,41 +1752,129 @@ function agentLines(groups) {
 
 /* Conversation total (with its root task when sub-tasks spent too) and the
    instance panel; both are views over the ledger, never a second booking. */
-function renderUsage() {
-  const bar = $("usageConv");
-  const u = S.usageConv;
-  const rootId = u && u.root_task && u.root_task.root_task_id;
-  bar.hidden = !S.cid || !u || (!u.total.calls && !rootId);
-  // Keep a half-typed budget form while events re-render the page.
-  const active = document.activeElement;
-  const editing = bar.contains(active) && active.matches(".budget-form input, .budget-form select");
-  if (!bar.hidden && !editing) {
-    const root = u.root_task && u.root_task.total;
-    const b = u.budget || {};
-    // replaceChildren() would print a null as text: only real nodes go in.
-    bar.replaceChildren(...[
-      el("div", { class: "usage-line" }, el("strong", {}, "本会话用量 "), summaryText(u.total)),
-      cacheLine(u.total),
-      ...(Object.keys(u.by_agent || {}).length > 1 ? agentLines(u.by_agent) : []),
-      root && root.calls !== u.total.calls
-        ? el("div", { class: "usage-line" }, "根任务（含子任务调用）：" + summaryText(root)) : null,
-      b.active ? el("div", { class: "usage-line" }, budgetLine(b)) : null,
-      rootId ? budgetForm(b, rootId) : null,
-    ].filter(Boolean));
-    bar.title = u.mapping_note || "";
-  }
-  const all = S.usageAll;
-  const panel = $("usageAll");
-  panel.hidden = !all;
-  if (all) {
-    panel.replaceChildren(
-      el("h4", {}, "全部会话 · 近 7 天"),
-      el("div", { class: "usage-line" }, summaryText(all.total)),
-      ...agentLines(all.by_agent),
-      el("div", { class: "dim" }, `本 Hub 实例，未区分项目；按 ${all.day_basis || "UTC"}`));
-    panel.title = all.scope_note || "";
-  }
+const MODEL_STATE = {catalogs: {}, selections: {}, loading: new Set()};
+try { MODEL_STATE.selections = JSON.parse(localStorage.getItem('agenthub.models') || '{}') || {}; } catch (_) {}
+let showGrandTotal = false, usageScope = 'root';
+try { showGrandTotal = localStorage.getItem('agenthub.showGrandTotal') === 'true'; } catch (_) {}
+
+function selectionFor(agent = $('agent').value) {
+  const value = MODEL_STATE.selections[agent] || {};
+  return {model: value.model || null, reasoning_effort: value.reasoning_effort || null};
 }
+function rememberModel() {
+  const before = selectionFor();
+  MODEL_STATE.selections[$('agent').value] = {model: $('modelPicker').value.trim() || null,
+    reasoning_effort: before.model === ($('modelPicker').value.trim() || null) ? $('modelEffort').value || null : null};
+  try { localStorage.setItem('agenthub.models', JSON.stringify(MODEL_STATE.selections)); } catch (_) {}
+  renderModelControls(); renderUsage();
+}
+async function loadModels(refresh = false) {
+  const agent = $('agent').value;
+  if (!agent || MODEL_STATE.loading.has(agent)) return;
+  if (!refresh && MODEL_STATE.catalogs[agent]) { renderModelControls(); return; }
+  MODEL_STATE.loading.add(agent);
+  try {
+    MODEL_STATE.catalogs[agent] = await api(refresh ? 'POST' : 'GET',
+      `/api/agents/${enc(agent)}/models${refresh ? '/refresh' : ''}`);
+  } catch (e) { if (refresh) toast('读取模型目录失败：' + e.message); }
+  finally { MODEL_STATE.loading.delete(agent); renderModelControls(); }
+}
+function renderModelControls() {
+  const agent = $('agent').value, catalog = MODEL_STATE.catalogs[agent] || {};
+  const selected = selectionFor(agent);
+  $('modelPicker').disabled = catalog.selection === false;
+  if (document.activeElement !== $('modelPicker')) $('modelPicker').value = selected.model || '';
+  $('modelOptions').replaceChildren(...(catalog.models || []).map(m =>
+    el('option', {value:m.id}, m.display_name || m.id)));
+  const model = (catalog.models || []).find(m => m.id === selected.model);
+  const efforts = model && model.reasoning_efforts || [];
+  if (selected.reasoning_effort && !efforts.includes(selected.reasoning_effort)) efforts.push(selected.reasoning_effort);
+  $('modelEffort').replaceChildren(el('option', {value:''}, '默认强度'),
+    ...efforts.map(e => el('option', {value:e, selected:e === selected.reasoning_effort ? 'selected' : null}, e)));
+  $('modelEffort').disabled = catalog.effort_selection === false || !efforts.length;
+  $('refreshModelsBtn').hidden = catalog.refresh_available === false;
+  $('refreshModelsBtn').disabled = MODEL_STATE.loading.has(agent);
+  $('modelHint').textContent = catalog.default_model ? `接入方默认：${catalog.default_model}` : '默认模型未确认';
+  $('modelHint').title = [catalog.message, catalog.catalog_note, catalog.fetched_at].filter(Boolean).join('\n');
+}
+function modelBudgetForm(b, model, rootId) {
+  const key = JSON.stringify([model.agent_id, model.provider, model.model]);
+  const stored = (b.policy.model_budgets || {})[key] || {};
+  const state = (b.model_budgets || []).find(x => x.key === key);
+  const input = (name, value, placeholder) => el('input', {name, type:'number', min:'1', step:'1',
+    placeholder, value:value ?? '', style:'width:85px'});
+  const form = el('div', {class:'budget-form model-budget-form'},
+    el('div', {class:'row'}, '总 ', input('total', stored.total, '不限'),
+      '单次预留 ', input('per_call', stored.per_call, '不限')),
+    el('div', {class:'row'}, '提醒 ', input('warn_percent', stored.warn_percent ?? 80, '80'), '% ',
+      el('select', {name:'mode'}, ...['strict','soft'].map(x =>
+        el('option', {value:x, selected:x === (stored.mode || 'strict') ? 'selected' : null}, MODE_LABEL[x])))),
+    state && state.active ? el('div', {class:'note'}, budgetLine(state)) : null,
+    el('button', {class:'mini', onclick: async () => {
+      const number = name => {const text = form.querySelector(`[name=${name}]`).value.trim(); return text ? Number(text) : null;};
+      const values = {total:number('total'), per_call:number('per_call'), warn_percent:number('warn_percent') ?? 80,
+        mode:form.querySelector('[name=mode]').value};
+      await guarded('model-budget', async () => {
+        const body = {...b.policy, model_budgets:{...(b.policy.model_budgets || {})}};
+        if (values.total == null && values.per_call == null) delete body.model_budgets[key];
+        else body.model_budgets[key] = values;
+        await api('PATCH', `/api/tasks/${enc(rootId)}/policy`, body);
+        toast('模型预算已保存；未消费审批按策略变更规则失效'); needUsage(); needMessages();
+      });
+    }}, '保存模型预算'));
+  return el('details', {}, el('summary', {}, state && state.active ? '模型预算 · 剩余 ' + fmtN(state.remaining) : '设置模型预算'), form);
+}
+function usageModelGroups(data, b, rootId) {
+  const rows = [...(data.by_model || [])];
+  for (const configured of b.model_budgets || [])
+    if (!rows.some(x => x.agent_id === configured.agent_id && x.provider === configured.provider && x.model === configured.model))
+      rows.push({...configured, total:{calls:0}});
+  const agent = $('agent').value, selected = selectionFor(agent).model;
+  const catalog = MODEL_STATE.catalogs[agent];
+  if (selected && catalog && !rows.some(x => x.agent_id === agent && x.provider === catalog.provider && x.model === selected))
+    rows.push({agent_id:agent, provider:catalog.provider, model:selected, total:{calls:0}});
+  const agents = [...new Set([...Object.keys(data.by_agent || {}), ...rows.map(x => x.agent_id)])];
+  return agents.map(agentId => el('section', {class:'model-usage-group'},
+    el('strong', {}, agentId),
+    ...rows.filter(r => r.agent_id === agentId).map(r => el('div', {class:'model-usage-row'},
+      el('div', {class:'usage-line', title:'接入来源：' + r.provider + '；模型来源：' +
+        ((r.model_source || []).includes('thread_configuration') ? '线程配置回读，推理模型未单独报告' : '接入方用量报告或历史记录')},
+        chip(r.model || '模型未归属', r.model ? 'info' : 'warn')),
+      el('div', {class:'usage-line'}, summaryText(r.total)),
+      r.total.cache && r.total.cache.rate != null ? el('div', {class:'note',
+        title:'接入方从缓存读入的输入比例，不是订阅额度节省量'}, '缓存命中 ' + pct(r.total.cache.rate)) : null,
+      rootId && r.model ? modelBudgetForm(b, r, rootId) : null)),
+    el('div', {class:'usage-line agent-subtotal'}, agentId + ' 合计：' + summaryText((data.by_agent || {})[agentId]))));
+}
+
+function renderUsage() {
+  const bar = $('usageConv'), u = S.usageConv;
+  const rootId = u && u.root_task && u.root_task.root_task_id;
+  bar.hidden = !S.cid || !u;
+  const active = document.activeElement;
+  if (u && !(bar.contains(active) && active.matches('.budget-form input, .budget-form select'))) {
+    const b = u.budget || {policy:{}, model_budgets:[]};
+    const data = usageScope === 'all' ? S.usageAll || u : usageScope === 'conversation' ? u : u.root_task || u;
+    const scope = el('select', {id:'usageScope', onchange:e => {usageScope = e.target.value; renderUsage();}},
+      ...[['root','当前根任务（含子任务）'],['conversation','当前会话'],['all','全部会话 · 近7天']].map(([value,label]) =>
+        el('option', {value, selected:usageScope === value ? 'selected' : null}, label)));
+    const grand = el('input', {id:'showGrandTotal', type:'checkbox', checked:showGrandTotal ? 'checked' : null,
+      onchange:e => {showGrandTotal = e.target.checked; try {localStorage.setItem('agenthub.showGrandTotal', String(showGrandTotal));} catch (_) {} renderUsage();}});
+    bar.replaceChildren(...[
+      el('div', {class:'usage-line'}, '统计范围 ', scope),
+      el('div', {class:'note'}, '预算范围：当前根任务树；包含压缩续聊、子任务、审阅与汇总'),
+      ...usageModelGroups(data, b, rootId),
+      !data.total.calls ? el('div', {class:'dim'}, '暂无已结算的调用；选择模型后可设置预算') : null,
+      el('label', {class:'usage-line'}, grand, ' 显示全部 Agent 总计'),
+      showGrandTotal ? el('div', {class:'usage-line'}, '全部 Agent 总计：' + summaryText(data.total)) : null,
+      rootId ? el('details', {}, el('summary', {}, '整个任务总预算（可选）'),
+        b.active ? el('div', {class:'note'}, budgetLine(b)) : null, budgetForm(b, rootId)) : null,
+    ].filter(Boolean));
+  }
+  // Model detail and budget controls live in the right panel, not the conversation list.
+  $('usageAll').hidden = true;
+}
+
 
 function render() {
   // A timer, not requestAnimationFrame: rAF is paused while the page is not
@@ -1945,6 +2060,7 @@ function renderAdapter() {
 
 /* Admission labels for the agent selected now (behind a router each agent differs). */
 function renderAgentPosture() {
+  loadModels();
   const a = agentInfo($("agent").value);
   const adm = a.execution_admission || {};
   const supervised = a.supervised_admission || {};
@@ -2013,7 +2129,10 @@ $("text").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("composer").requestSubmit();
 });
 // The plan's collect button names the selected agent: redraw it too.
-$("agent").addEventListener("change", () => { renderAgentPosture(); renderComposer(); renderPlans(); });
+$("agent").addEventListener("change", () => { renderAgentPosture(); renderComposer(); renderPlans(); loadModels(); });
+$('modelPicker').addEventListener('input', rememberModel);
+$('modelEffort').addEventListener('change', rememberModel);
+$('refreshModelsBtn').addEventListener('click', () => loadModels(true));
 $("mode").addEventListener("change", renderComposer);
 $("outputStyle").addEventListener("change", () => previewSend());
 window.addEventListener("hashchange", () => {
