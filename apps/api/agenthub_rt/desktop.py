@@ -18,6 +18,7 @@ def register_desktop(app):
     app.state.desktop_ticket = secrets.token_urlsafe(32)
     app.state.desktop_ticket_deadline = time.monotonic() + 180
     app.state.desktop_session = None
+    app.state.desktop_control = secrets.token_urlsafe(32)
 
     @app.middleware("http")
     async def loopback_only(request, call_next):
@@ -43,6 +44,19 @@ def register_desktop(app):
         response.set_cookie("agenthub_session", token, httponly=True, samesite="strict", path="/")
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.post("/api/desktop/reopen")
+    def reopen(request: Request, body: dict):
+        # Only the per-user launcher knows this ephemeral control capability.
+        # Browsers cannot obtain it from any API. A new ticket does not approve
+        # tasks or modify stage rules; it only opens the signed-in user's UI.
+        if request.headers.get("origin") or not secrets.compare_digest(
+                str(body.get("control", "")), app.state.desktop_control):
+            raise HTTPException(403, "local launcher required")
+        app.state.desktop_ticket = secrets.token_urlsafe(32)
+        app.state.desktop_ticket_deadline = time.monotonic() + 180
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"ticket":app.state.desktop_ticket},headers={"Cache-Control":"no-store"})
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page():

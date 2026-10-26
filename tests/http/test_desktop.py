@@ -69,6 +69,19 @@ def test_expired_pair_and_untrusted_host(release):
     assert client.get('/chat', headers={'Host':'evil.example'}).status_code == 403
 
 
+def test_only_local_launcher_can_mint_reopen_ticket(release):
+    client,_=release
+    old=pair(client)
+    assert post(client,'/api/desktop/reopen',{'control':client.app.state.desktop_control}).status_code==403
+    assert client.post('/api/desktop/reopen',json={'control':'unknown'}).status_code==403
+    response=client.post('/api/desktop/reopen',json={'control':client.app.state.desktop_control})
+    assert response.status_code==200
+    ticket=response.json()['ticket']; assert ticket!=old
+    assert 'control' not in client.get('/api/desktop/settings').text
+    assert client.post('/api/desktop/session',json={'ticket':ticket}).status_code==200
+    assert client.post('/api/desktop/session',json={'ticket':ticket}).status_code==401
+
+
 def test_no_agents_is_valid_and_disabled_agents_are_not_routed(release):
     client, tmp = release
     pair(client)

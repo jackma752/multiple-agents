@@ -61,6 +61,25 @@ def main():
         sock.bind(("127.0.0.1", args.port))
         sock.listen(128)
     except OSError:
+        sock.close()
+        # An existing instance can mint a fresh single-use browser ticket only
+        # for the local user's launcher. Never put a permanent token in a URL.
+        try:
+            import json
+            import urllib.request
+            instance = json.loads((data/'instance.json').read_text(encoding='utf-8'))
+            if instance.get('port') != args.port:
+                raise ValueError('another port')
+            request=urllib.request.Request(f'http://127.0.0.1:{args.port}/api/desktop/reopen',
+                data=json.dumps({'control':instance['control']}).encode(),
+                headers={'Content-Type':'application/json'},method='POST')
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request,timeout=3) as response:
+                ticket=json.load(response)['ticket']
+            if not args.headless:
+                webbrowser.open(f'http://127.0.0.1:{args.port}/chat#pair={ticket}')
+            return 0
+        except (OSError, ValueError, KeyError):
+            pass
         if not args.headless:
             notify(f"端口 {args.port} 已被占用。请关闭之前的 Hub，或使用 --port 指定其他端口。不会停止其他服务。")
         return 1
@@ -71,6 +90,8 @@ def main():
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
             log_config=None, access_log=False, loop="asyncio", http="h11", ws="none"))
         app.state.desktop_shutdown = lambda: setattr(server, "should_exit", True)
+        desktop.atomic_json(data/'instance.json',{'pid':os.getpid(),'port':args.port,
+                                                 'control':app.state.desktop_control})
         if not args.headless:
             def open_page():
                 for _ in range(100):
@@ -95,6 +116,13 @@ def main():
         return 1
     finally:
         sock.close()
+        try:
+            import json
+            instance_file=data/'instance.json'
+            if json.loads(instance_file.read_text(encoding='utf-8')).get('pid') == os.getpid():
+                instance_file.unlink()
+        except (OSError, ValueError):
+            pass
 
 
 if __name__ == "__main__":

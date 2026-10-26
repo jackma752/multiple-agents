@@ -33,6 +33,7 @@
 - E 盘测试目录有 Low 继承标签，安装器只把自己的 AgentHub.exe/Uninstall.exe 设为 Medium；不改项目、已有 Agent 或其账号目录。安装/卸载复验确认 Medium 与正确清理。
 - NSIS 3.11 来自 Tauri 官方维护镜像 `https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip`，ZIP SHA-256 `c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1`；编译器留在隔离构建目录，不入安装包。
 - PyInstaller onedir 包审核文件列表和实际嵌入模块表，排除 tests/pytest、stdio 桩、Mock、开发令牌模块和 tools；包中静态页面移除固定开发令牌。只携带用户 README、程序、依赖许可证、MANIFEST 和 PACKAGE_AUDIT。
+- 补充开始菜单重开：运行中的 Hub 只向持有当前用户私有临时控制能力的启动器发新配对票据，拒绝浏览器 Origin 和未知控制值，票据单次消费。控制能力位于受用户 ACL 保护的运行目录，正常退出移除，不是安装预置令牌。新增这一项后认证/hygiene/桌面回归 **36 passed in 3.45s**。
 
 ## 交付范围
 
