@@ -1,5 +1,20 @@
 # 当前交接：main 已合并 P4.6 并统一 8080 入口（2026-10-26）
 
+## 最新：第一条真实在线回合（codex / app-server，2026-10-26 12:00）
+
+- **结果**：`inv-371025d822df` 经 `codex` / `app-server` 通道完成，`turn/completed with status
+  completed`，thread `01a1765d-493e-7bb2-be9a-127cb19749cb`，用量 输入 16,787（缓存读 12,416，
+  命中 74%）/ 输出 77（含 reasoning 42），审批 consumed，该次 stderr 日志 **0 字节**。
+  详见 `docs/p47-codex-real-run-2026-10-26.md`。
+- **前提**：python 进程此前为 `Low` 完整性级别（读不到 MSIX 包目录、写不了 `CODEX_HOME` 状态库），
+  用户调整权限后为 `Medium`，同一通道随即成功。只观测到这一组对照，不宣称是唯一原因。
+- **口径**：取消/中断、工具调用拦截、原生子 Agent 受控、会话恢复、流式、适配器版本标识**都仍未验证**；
+  严格模式准入仍是 `blocked / native_subagents_uncontrolled`（徽标显示 blocked 指严格模式，与本次
+  "用户监督模式"成功不矛盾）；模型自称的 "GPT-6" 是自述，不是证据。
+- **待写成 issue 的环境阻断**：`codex exec` 钉住的 `0.162.0-alpha.17.2` 目录被自动更新移除；
+  `app-server` 需可写 `CODEX_HOME`；`python.exe` 曾被降为 `Low` 导致读不到 MSIX 目录。
+- **未提交**：本节与 `docs/p47-codex-real-run-2026-10-26.md` 需由用户执行 git（本会话 shell 不可用）。
+
 ## 本轮（整合 + 合入 main + 统一 8080）
 
 - **运行目录/日常入口**：`E:\plug\agent-hub`（根工作树，已切到 `main`）。不再需要进任何阶段工作树。
