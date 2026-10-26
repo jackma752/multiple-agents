@@ -186,6 +186,8 @@ def test_restored_replies_come_from_each_agents_own_store(hub):
 def test_describe_and_the_adapter_endpoint_list_each_agent(hub):
     client, router, _prompts = hub
     info = client.get("/api/adapter", headers=USER).json()
+    # This fixture builds a two-agent router on purpose: /api/adapter must report
+    # whatever that router serves, not what build_adapter() would serve.
     assert info["kind"] == "multi" and info["agent_ids"] == ["claude-code", "codex"]
     assert info["execution_admission"]["allowed"] is False  # the router itself admits nothing
     for agent in ("codex", "claude-code"):

@@ -93,6 +93,27 @@
 - **刻意不做**：不进 `multi`（`multi` 仍是 codex + claude-code，已验收的断言不动）；首版不含 tools
   与会话恢复。
 
+## P4.6d 离线验收：四步全部通过（2026-10-26 19:56）
+
+按 `docs/p46-offline-acceptance.md` 在 8080 上跑完，**全部是离线桩**（`--appserver-stub demo`
+`--claude-code-stub autopilot`），不涉及真实模型调用。
+
+| 步 | 内容 | 结果 |
+|---|---|---|
+| 1 | 手动发起并批准一次调用 | **PASS** — 已完成、严格模式、审批 consumed、回复 `Offline stage step completed.`、用量 输入 12 / 输出 3 |
+| 2 | `DEMO_RETRY` 失败后自动修复 | **PASS** — 两次调用（"按阶段规则自动批准（main）"），修复计数 `main 1/3`，第二次含 `Repair attempt 1 of 3 …` |
+| 3 | `DEMO_QUOTA` 等待→自动继续 | **PASS** — `10:44:26` 失败（`usage limit reached (offline fixture)`）→ `10:44:32` 自动重试**已完成**，提示词带 `Continue the interrupted stage step…`，阶段已完成，调用 2/12 |
+| 4 | 依赖计划 + 汇总 | **PASS** — `plan → item:1 → item:2 → collect` 依次**已完成**，调用 4/12，用量 输入 48 / 输出 12，全程无逐张批准，汇总结论见消息 #53（交接 #49 / #51） |
+
+- 第 3 步附带修掉一个真缺陷：暂停/策略升级会撤销未消费审批，使额度探测调用停在 `draft`，
+  而租约没人收回 → 阶段永久"等待额度恢复"。修复见 `be31c25`
+  （`quota_probe_stranded` 事件 + 释放租约），回归测试
+  `tests/http/test_autopilot_recovery.py::test_probe_stranded_by_a_revoked_approval_does_not_pin_the_bucket`。
+- 第 4 步在**新会话**里跑（旧树里前几轮的子 Agent 已占满 `max_subagents_total=3`），
+  并先把「子 Agent 总量」抬到 10、「并发」抬到 3（策略 v2）。
+- **这一步证明的是**：拆分/依赖顺序/逐次审批替代/阶段收尾与本地汇总这条链在离线桩上成立。
+  **不证明**：任何真实 provider 的行为，也不证明"真实子 Agent 已被 Hub 配额约束"。
+
 ## 第一条真实在线回合（codex / app-server，2026-10-26 12:00）
 
 - **结果**：`inv-371025d822df` 经 `codex` / `app-server` 通道完成，`turn/completed with status
@@ -141,9 +162,14 @@ Set-Location 'E:\plug\agent-hub'
 
 ### 待办
 
-- P4.6d 人工验收（按 `docs/p46-offline-acceptance.md`，把端口换成 8080）。
 - 三支仍有独有提交的分支待定：`feat/p3-wrapup` `42a61bb`、`fix/approved-only` `071c918`、`plan/branch-consolidation` `9026aa0`（只核对结论，不机械合并）。
-- 之后才进入 P5。
+- 真实通道的未验证项仍按各自文档挂着：取消/中断、工具拦截、原生子 Agent 受控、会话恢复，
+  以及 DeepSeek 的真实往返（`docs/p5-deepseek-adapter.md` §7）。
+- 三份环境阻断 issue 仍 OPEN（`docs/issue-codex-exec-pin-removed.md`、
+  `docs/issue-appserver-codex-home-sqlite.md`、`docs/issue-python-low-integrity.md`）。
+
+P4.6d 离线验收四步已全部通过，见本文件顶部「P4.6d 离线验收」一节；P5 的 DeepSeek 通道已落地，
+仍未跑过一次真实往返。
 
 ---
 
