@@ -3,6 +3,28 @@
 状态：**已实现，离线验证通过；真实往返未验证**（需要你自己的 `sk-...` key）。
 日期：2026-10-26。分支：`main`（未推送、无 remote）。
 
+## 2026-10-26 补充：已定位空 HTTP 400 的鉴权原因
+
+新诊断中 `inv-2ba9cef72e46` / `inv-c7e3811851eb` 已使用 `deepseek-flash`，仍返回空 400，
+带 `server=openresty`、`content-length=0`、`x-ds-trace-id`。更换默认模型没有解决该鉴权故障。
+
+只读检查 `/models`（不生成模型回复）：原凭据经代理/直连均返回 400；密钥格式检查发现
+末尾第 36 位为 **U+0016（Ctrl+V）**。只记录这个非法字符，没有输出密钥正文。
+读取时在内存清理已确认的末尾 Ctrl+V 粘贴残留，内部控制字符仍拒绝。凭据文件不重写。
+修复后同一路径 GET `/models` 返回 **200**，模型列表为 `deepseek-flash` / `deepseek-v4-pro`。
+此对照确认了本次空 400 的鉴权原因；尚未发起真实 chat completion，不宣称生成回复已验收。
+
+离线验证（含此前测试，不能与下面旧结果相加）：
+
+```text
+python -m pytest -o addopts='' -q tests/http/test_deepseek_failures.py tests/adapters/test_deepseek_adapter.py
+47 passed in 0.94s
+```
+
+新增验证覆盖：末尾 Ctrl+V 在实际 Authorization 头生成前清理且不改写凭据；内部控制字符在
+启动和 HTTP 之前拒绝。用户应在原服务器窗口 Ctrl+C 后用下节同一命令重启，再发送一条简短消息
+批准一次；保留先前失败记录。
+
 ## 2026-10-26 HTTP 400 修复（分支 `fix/deepseek-http400`）
 
 用户报告的三个失败调用均绑定 `deepseek:deepseek-chat@api.deepseek.com`；适配器记录只有

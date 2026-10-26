@@ -146,12 +146,22 @@ def load_api_key(credentials_path: str, *, repo_root: str = "") -> str:
     except ValueError:
         raise DeepSeekRefused("deepseek_credentials_invalid", f"{path} is not valid JSON") from None
     key = document.get("api_key") if isinstance(document, dict) else None
-    if not isinstance(key, str) or len(key.strip()) < 8:
+    if not isinstance(key, str):
         raise DeepSeekRefused(
             "deepseek_credentials_invalid",
             f'{path} must contain {{"api_key": "sk-..."}}',
         )
-    return key.strip()
+    # Some Windows hidden-input terminals retain a literal Ctrl+V after a
+    # paste. It is not a token character: sending it in Authorization makes
+    # the HTTP gateway reject even GET /models with an empty 400. Normalize
+    # this known trailing paste artifact in memory, without rewriting a key.
+    key = key.strip().rstrip("\x16").strip()
+    if len(key) < 8 or any(ord(char) < 32 or ord(char) == 127 for char in key):
+        raise DeepSeekRefused(
+            "deepseek_credentials_invalid",
+            "API key is too short or contains an embedded control character; re-enter the key",
+        )
+    return key
 
 
 def credential_status(credentials_path: str) -> dict:

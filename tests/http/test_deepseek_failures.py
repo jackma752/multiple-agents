@@ -8,7 +8,7 @@ from email.message import Message
 from fastapi.testclient import TestClient
 
 from agenthub.contracts import InvocationSnapshot
-from agenthub_adapters.deepseek import DeepSeekAdapter, HttpTransport
+from agenthub_adapters.deepseek import DeepSeekAdapter, DeepSeekRefused, HttpTransport, load_api_key
 from agenthub_adapters.store import ExecutionStore
 from agenthub_kernel import config
 from agenthub_kernel.db import Database
@@ -17,6 +17,45 @@ from agenthub_rt.api import create_app
 USER = {"Authorization": "Bearer dev-user-token"}
 KEY = "test-secret-without-sk-prefix"
 PROMPT = "private input must not appear in a diagnostic"
+
+
+def test_windows_ctrl_v_suffix_is_removed_before_authorization_without_rewriting(tmp_path, monkeypatch):
+    call, _, _ = make_adapter(tmp_path, monkeypatch)
+    path = tmp_path / "credential.json"
+    original = json.dumps({"api_key": KEY + "\x16\r\n"})
+    path.write_text(original, encoding="utf-8")
+    captured = []
+
+    class Opener:
+        def open(self, request, timeout=None):
+            captured.append(request.get_header("Authorization"))
+            event = {"model": "deepseek-flash", "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}
+            return io.BytesIO(b'data: ' + json.dumps(event).encode() + b'\n\ndata: [DONE]\n')
+
+    # Exercise the actual factory: the loaded (normalized) credential must be
+    # the one used in the header, rather than this fixture's injected key.
+    call._transport = None
+    monkeypatch.setattr(HttpTransport, "_opener", lambda self: Opener())
+    snap = InvocationSnapshot(agent_id="deepseek", task_input="test", depth=0,
+                              parent_task_id=None, adapter_version=call.binding_identity())
+    result = call.start("inv-test", snap, gate_token="approved")
+    assert result.ok
+    assert captured == ["Bearer " + KEY]
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_embedded_control_character_is_refused_before_http(tmp_path, monkeypatch):
+    import pytest
+    call, requests, _ = make_adapter(tmp_path, monkeypatch)
+    path = tmp_path / "credential.json"
+    path.write_text(json.dumps({"api_key": KEY[:8] + "\x16" + KEY[8:]}), encoding="utf-8")
+    with pytest.raises(DeepSeekRefused) as caught:
+        load_api_key(str(path))
+    assert caught.value.code == "deepseek_credentials_invalid"
+    snap = InvocationSnapshot(agent_id="deepseek", task_input="test", depth=0,
+                              parent_task_id=None, adapter_version=call.binding_identity())
+    result = call.start("inv-test", snap, gate_token="approved")
+    assert not result.ok and requests == [] and call.store.get("inv-test") is None
 
 
 def make_adapter(tmp_path, monkeypatch, *, response_body=b"", status=400, model=""):
