@@ -12,6 +12,9 @@ logs/
 .worktrees/
 *.log
 
+# IDE local state (JetBrains); not part of the project
+.idea/
+
 # P2 local generated artifacts (reproducible via tools/bootstrap/*; not committed)
 /wheelhouse/
 /var/
