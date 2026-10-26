@@ -128,6 +128,7 @@ THREAD_SETTINGS = {"sandbox": "read-only", "approvalPolicy": "on-request", "appr
 #: Policy repeated on every turn/start.
 TURN_POLICY = {"approvalPolicy": "on-request", "approvalsReviewer": "user",
                "sandboxPolicy": {"type": "readOnly", "networkAccess": False}}
+IS_WINDOWS = os.name == "nt"
 #: What the context preview may say about this adapter (T-1d): ``task_input``
 #: is the turn's only text input, verbatim. ``observed`` are real runs under
 #: this pin with a very short prompt (docs/t0-usage-baseline.md §4.1, §4.3):
@@ -229,6 +230,36 @@ def request_decisions(method: str, params: dict, *, enabled: bool) -> tuple[list
     return ["accept", "decline"], ""
 
 
+def workspace_thread_config(client: Any, cwd: str) -> dict:
+    """Scope write policy to this thread; never edit the user's config file.
+
+    Windows without a selected sandbox backend downgrades workspace-write to
+    read-only. Use the non-admin backend only when none was configured, keeping
+    an existing elevated/MXC selection and the provider's managed requirements.
+    Empty extra roots means the implicit cwd is the only project write root.
+    """
+    config = {"sandbox_workspace_write.writable_roots": [],
+              "sandbox_workspace_write.network_access": False,
+              "sandbox_workspace_write.exclude_tmpdir_env_var": True,
+              "sandbox_workspace_write.exclude_slash_tmp": True}
+    if IS_WINDOWS:
+        effective = client.request("config/read", {"includeLayers": False, "cwd": cwd})["config"]
+        windows = effective.get("windows") or {}
+        if windows.get("sandbox") is None:
+            config["windows.sandbox"] = "unelevated"
+    return config
+
+
+def settings_readback(result: dict) -> dict:
+    """Diagnostic configuration fields only, without prompts or credentials."""
+    sandbox = result.get("sandbox")
+    if isinstance(sandbox, dict):
+        sandbox = {k: sandbox[k] for k in ("type", "writableRoots", "networkAccess",
+                   "excludeTmpdirEnvVar", "excludeSlashTmp") if k in sandbox}
+    return {"cwd": result.get("cwd"), "approvalPolicy": result.get("approvalPolicy"),
+            "approvalsReviewer": result.get("approvalsReviewer"), "sandbox": sandbox}
+
+
 def settings_problems(result: dict, cwd: str, *, writable: bool = False) -> list[str]:
     """Read-back of a thread/start or thread/resume answer (S3-S5 rule)."""
     problems = []
@@ -241,6 +272,9 @@ def settings_problems(result: dict, cwd: str, *, writable: bool = False) -> list
         roots = sandbox.get("writableRoots", []) if isinstance(sandbox, dict) else []
         if not (isinstance(sandbox, dict) and sandbox.get("type") == "workspaceWrite"
                 and sandbox.get("networkAccess", False) is False
+                and sandbox.get("excludeTmpdirEnvVar") is True
+                and sandbox.get("excludeSlashTmp") is True
+                and isinstance(roots, list)
                 and all(os.path.normcase(os.path.realpath(p)) == os.path.normcase(cwd) for p in roots)):
             problems.append("sandbox")
     elif not (isinstance(sandbox, dict) and sandbox.get("type") == "readOnly"
@@ -877,6 +911,8 @@ class AppServerCodexAdapter(AdapterContract):
         try:
             client.start()
             session.initialize(client_name="agent-hub", version=self.version)
+            if writable:
+                thread_settings["config"] = workspace_thread_config(client, workdir)
             if resume_id:
                 facts["opening_method"] = THREAD_RESUME
                 result = client.request(THREAD_RESUME, {"threadId": resume_id, "cwd": workdir,
@@ -893,6 +929,7 @@ class AppServerCodexAdapter(AdapterContract):
             self.store.set_adapter_id(invocation_id, thread_id)
             model = result.get("model") if isinstance(result, dict) else None
             facts["model"] = model if isinstance(model, str) and len(model) <= 80 else None
+            facts["settings_readback"] = settings_readback(result)
             if snapshot.model and facts["model"] != snapshot.model:
                 raise _Refused("requested model was not confirmed by the thread response; no model turn started")
             problems = settings_problems(result, workdir, writable=writable)
