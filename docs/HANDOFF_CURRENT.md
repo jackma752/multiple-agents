@@ -1,4 +1,61 @@
-# 当前交接：P4.5 界面整理（2026-10-25，分支 `feat/p45-ui`，基于 `feat/p4-collab`）
+# 当前交接：P4.6 代码完成，待用户离线验收（2026-10-26）
+
+- 工作树：`E:\plug\agent-hub\.worktrees\p46-autopilot`，分支 `feat/p46-autopilot`。
+- 起点：main `fd54556`；设计/授权规则提交 `68cdb10`。
+- 实现提交：`02e34ba`；同秒新阶段排序修正：`635169f`。
+- Claude Code 先完成阶段契约、表、调度器、API 和部分页面；额度耗尽后，用户在本 Codex 会话要求接续完成。Codex 补齐恢复、页面、验证和文档；两个执行者均记入实现提交。
+- main 仍为 `fd54556`，没有合并、推送、真实模型调用或新增真实验收标签。
+
+## 已实现
+
+1. **P4.6a 阶段授权与调度**：同用户、Agent、适配器身份及执行边界手动成功一次后，可一次授权阶段目标与规则；自动启动、依赖分派、可选审阅及汇总。所有调用仍走原审批/配额/预算执行入口。工具卡按明确前缀或文件规则决定，并记录阶段授权来源。
+2. **P4.6b 重试与收口**：普通错误首次失败后默认最多三次修复，检查点跨调用/重启保存。修复输入包含失败事实及改方法、再验证的要求；审阅失败交回主 Agent 修复并重新审阅。完成/阻塞均保存本地总结，不额外花一次模型调用才能写总结。未知执行状态不自动重试。
+3. **P4.6c 额度恢复**：明确额度错误进入持久等待；可靠 reset/Retry-After 优先，否则从可设间隔退避（默认 5 分钟，最长 60 分钟）。同接入方共用一次恢复探测；等待不占普通重试次数，调用仍入账。独立节点可继续。服务重新启动先恢复调用状态，再推进阶段。暂停/停止优先。
+4. **页面**：右栏自动执行表单、一次规则确认、修复/等待/总结状态，顶栏暂停/停止；手动调用与工具操作按钮改名，避免两个“拒绝”混淆。
+5. **演示**：Claude Code `autopilot` 离线场景，含正常、`DEMO_RETRY`、`DEMO_QUOTA` 和两项依赖计划。服务普通 API 入口与 `serve.py` 都启用后台调度；测试可禁用后台循环并注入时钟。
+6. **收尾修复**：同秒创建的调用/阶段使用 SQLite 插入次序打破时间戳平局；避免随机 ID 排序将旧失败调用或旧阶段误作最新。
+
+## 实际验证
+
+在当前工作树，使用 `E:\plug\agent-hub\.venv\Scripts\python.exe`：
+
+```text
+python -m pytest -o addopts='' -q
+1 failed, 1583 passed in 314.24s
+```
+
+唯一失败为 `test_independent_item_runs_while_provider_waits_and_completed_items_are_not_repeated`，暴露同秒重试排序错误，已修复并补固定复现用例。之后没有再跑整套或压力循环；对最终修复跑相关范围：
+
+```text
+python -m pytest -o addopts='' -q tests/http/test_autopilot.py tests/http/test_autopilot_recovery.py tests/http/test_collab.py tests/http/test_chat_page.py tests/http/test_async_and_tool_approval.py tests/http/test_conversations.py tests/http/test_usage_ledger.py tests/policy tests/adapters/test_claude_code_adapter.py tests/adapters/test_appserver_stdio.py
+418 passed in 49.24s
+```
+
+追加阶段排序修正后的相关验证：
+
+```text
+python -m pytest -o addopts='' -q tests/http/test_autopilot.py tests/http/test_autopilot_recovery.py
+50 passed in 12.02s
+```
+
+两组有重叠，不把数量相加，不将本轮描述成“最终代码全量已通过”。最新失败缓存为空，差异格式检查通过。
+
+离线 Edge 页面走查：手动成功证明 → 表单授权 → 普通失败自动修复 → 额度等待 → 暂停 → 刷新页面 → 继续 → 完成总结，PASS，无页面脚本错误。最终页面 JavaScript 语法检查通过。脚本和截图在被忽略的 `var/p46-browser-check/`，最终演示数据在 `var/p46-browser-final/data`；只使用模拟输入。
+
+本轮自己启动的 8186 演示服务已通过 shutdown 接口正常关闭。没有停止用户其他服务。
+
+## 下一步与边界
+
+- **P4.6d 用户验收尚未进行**：按 [离线操作指南](p46-offline-acceptance.md) 从打开 PowerShell、启动后台开始。先只用 Claude Code 模拟器跑通自动重试与额度恢复，再看协作；用户继续自己操作。验收后再决定合并 main、进入 P5，不重复旧真实运行。
+- 真实额度错误格式、真实自动阶段和真实工具自动允许均**未验证**。本轮没有消耗 Codex / Claude Code 真实调用额度。
+- Claude Code 仍不支持原生续接；独立调用携带原目标/依赖结果/失败证据。Codex 恢复绑定失败调用自己的 thread。没有只读额度查询接口，恢复探测会算一次受规则限制的调用。
+- 自动模式不扩大原生派生、工具沙箱、远端停止边界。阶段停止阻止新调用；在途调用是否停止必须看适配器确认。规则不可原地编辑，变更需停止旧阶段并重新授权。当前额度桶按一个 Hub 内一个接入方一套凭据划分，未实现多账号桶。
+- Hub 预算/累计调用/子任务上限可能先于三次修复耗尽，程序按阻塞总结，不自动扩额。未设审阅 Agent 时，以成功调用并收到回复作为流程完成依据，业务质量仍需验收。
+- 仓库外的 `E:\plug\AGENT_HUB_PLAN.md`、`E:\plug\AGENT_HUB_AUTOMATION_REQUIREMENTS.md` 已同步状态；它们不属于此仓库提交。
+
+---
+
+# 历史交接：P4.5 界面整理（2026-10-25，分支 `feat/p45-ui`，基于 `feat/p4-collab`）
 
 - 已实现：
   - 三栏布局：用量与预算、阶段摘要、协作计划移到可折叠的右栏，窄窗口时改为抽屉；
