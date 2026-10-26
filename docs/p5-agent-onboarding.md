@@ -1,6 +1,13 @@
 # P5 设计：Agent 接入档案（discover / adopt / preflight / profile）
 
-**状态：设计（未实现）。** 本文只描述方案，不改任何现有安全语义（审批、配额、执行准入一律不动）。
+**状态：2026-10-27 已实现桌面安装版的扫描、手动采用、配置与消费。**
+
+实际入口为 `/settings`，档案是 `%LOCALAPPDATA%\AgentHub\desktop\profile.json`，默认直连。
+未启用任何 Agent 时 Hub 仍可启动；仅启用用户确认的通道。采用记录写入本机审计文件，
+exe 更新后拒绝执行，重新确认后使用新身份。工作区与权限进入审批快照。
+采用身份不代表严格控制验证通过，Codex/Claude 仍只提供用户监督入口。
+CLI 的 `doctor --adopt`、旧方案中的 `AGENT_HUB_PROFILE` 格式没有实现；下文保留为历史设计，
+当前行为、验证和安装步骤以 [P5 安装交付](p5-distribution.md) 与 README 为准。
 
 最后更新：2026-10-26。
 

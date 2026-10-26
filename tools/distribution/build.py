@@ -73,6 +73,7 @@ def build(args):
         'files':[{'path':p.relative_to(payload).as_posix(),'size':p.stat().st_size,'sha256':sha(p)} for p in files]}
     (payload/'MANIFEST.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     installer=output/f'AgentHub-{VERSION}-windows-x64-setup.exe'
+    staging_installer=output/f'AgentHub-{VERSION}-candidate-{os.getpid()}.exe'
     script=output/'installer.nsi'
     # Uninstaller deletes only the exact released files, never recursively
     # removes a directory chosen by a user.
@@ -80,12 +81,13 @@ def build(args):
     dirs=sorted((p for p in payload.rglob('*') if p.is_dir()),key=lambda p:len(p.parts),reverse=True)
     delete+='\n'+'\n'.join('  RMDir "$INSTDIR\\'+str(p.relative_to(payload))+'"' for p in dirs)
     template=(ROOT/'tools/distribution/installer.nsi.in').read_text(encoding='utf-8')
-    for key,value in {'@VERSION@':VERSION,'@PAYLOAD@':str(payload),'@OUTPUT@':str(installer),
+    for key,value in {'@VERSION@':VERSION,'@PAYLOAD@':str(payload),'@OUTPUT@':str(staging_installer),
                       '@DELETE@':delete}.items():template=template.replace(key,value)
     script.write_text(template,encoding='utf-8-sig')
     compiler_tmp=output/'compiler-tmp'; compiler_tmp.mkdir(exist_ok=True)
     subprocess.run([args.nsis,'/V2',str(script)],check=True,
                    env={**os.environ,'TMP':str(compiler_tmp),'TEMP':str(compiler_tmp)})
+    os.replace(staging_installer,installer)
     if os.name == 'nt':
         subprocess.run(['icacls',str(installer),'/setintegritylevel','M'],check=True,capture_output=True)
     archive=output/f'AgentHub-{VERSION}-windows-x64-portable.zip'

@@ -21,3 +21,21 @@
 - Codex/Claude 仍是用户监督通道；原生子 Agent 不保证能由 Hub 限额或停止。
 - 新机器真实模型和原生读写行为必须在该机器配置账号后验收；本次仅本地协议测试与安装检查。
 - 自动执行规则、配额、预算与审批后端约束必须保持。
+
+## 2026-10-27 验证记录
+
+- 独立入口、扫描/手动设置、无 Agent 启动、目录权限快照、采用身份、独立 API 凭据、桌面随机配对已实现。
+- `tests/http/test_desktop.py` + `tests/adapters/test_desktop_workspace.py`：16 项通过；本机配置、跨源拒绝、开发令牌拒绝、单次/过期配对、旧审批撤销、exe 改变拒绝、真实 cwd/只读策略进入本地协议桩。
+- 适配器/原认证针对性范围 93 项通过；中断竞态与桌面相关回归 37 项通过；认证/桌面/DeepSeek 66 项通过。
+- 完整集：1730 passed，1 failed，336.87 秒。唯一失败为 hygiene 测试在旧 auth.py 中搜索 `os.environ` 的位置断言；开发认证已拆到不分发的 dev_auth.py。测试改为真正验证环境令牌在两次配置间生效，随后 `tests/test_hygiene.py tests/http/test_auth.py tests/http/test_desktop.py` **35 passed in 3.12s**。其余 1730 项来自完整集，没有改动它们对应的运行代码；没有为此再跑第三轮完整集。
+- 窗口版在独立空数据目录、18197 端口，用无头 Edge 走完首次配对 → 无 Agent 设置 → 只启用合成 API 配置 → 清空密钥输入框 → 对话 → 模型选择器 → 工作区显示在待审批卡。页面脚本错误 0，真实调用 0。截图与临时记录仅保存在仓库外 `E:\plug\p5-qa`，不分发。
+- 安装器实际静默安装到专用新目录，exit 0；安装的程序在 18198 空配置启动，client-config 返回 desktop=true / development_token=""；卸载 exit 0。程序移除，开始菜单和卸载注册移除，安装目录中额外的用户文件、独立运行数据库和工作区保留。
+- E 盘测试目录有 Low 继承标签，安装器只把自己的 AgentHub.exe/Uninstall.exe 设为 Medium；不改项目、已有 Agent 或其账号目录。安装/卸载复验确认 Medium 与正确清理。
+- NSIS 3.11 来自 Tauri 官方维护镜像 `https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip`，ZIP SHA-256 `c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1`；编译器留在隔离构建目录，不入安装包。
+- PyInstaller onedir 包审核文件列表和实际嵌入模块表，排除 tests/pytest、stdio 桩、Mock、开发令牌模块和 tools；包中静态页面移除固定开发令牌。只携带用户 README、程序、依赖许可证、MANIFEST 和 PACKAGE_AUDIT。
+
+## 交付范围
+
+本轮完成 P5 的本地 Git 整合和 Windows 安装/换机配置子阶段，未推送、未公开发布、无新增真实模型请求。
+尚未在另一台物理电脑或干净 Windows VM 上实测；程序未做商业签名。新机器需使用自己的 Agent/账号完成真实验收。
+更广义 P5 的 PR、部署与备份恢复流程，以及 P6 新 Agent 接入不作为本安装交付完成项。
