@@ -571,6 +571,7 @@ class DeepSeekAdapter(AdapterContract):
 
         self.store.set_status(invocation_id, FINISHED, f"finished:{finish_reason}")
         self.store.set_payload(invocation_id, {
+            "final_message": reply,
             "reply": reply,
             "finish_reason": finish_reason,
             "model": reported_model or self.model,
@@ -653,6 +654,25 @@ class DeepSeekAdapter(AdapterContract):
 
     def lookup_by_invocation(self, invocation_id: str) -> Optional[dict[str, Any]]:
         return self.store.get(invocation_id)
+
+    def last_result(self, invocation_id: str) -> Optional[dict[str, Any]]:
+        """Project a confirmed complete reply into the kernel's result contract.
+
+        Older successful records kept only ``reply``. They can be projected at
+        recovery without sending another HTTP request or rewriting the record.
+        Failed/in-flight streams can never become handoff material this way.
+        """
+        record = self.store.get(invocation_id)
+        if not record or record.get("status") != FINISHED:
+            return None
+        payload = record.get("payload") or {}
+        if not isinstance(payload, dict) or not payload.get("finish_reason"):
+            return None
+        reply = payload.get("final_message", payload.get("reply"))
+        if not isinstance(reply, str) or not reply.strip():
+            return None
+        return {"status": FINISHED, "thread_id": None, "final_message": reply,
+                "usage": payload.get("usage"), "model": payload.get("model")}
 
     def find_invocation_for_adapter_id(self, adapter_invocation_id: str) -> Optional[str]:
         for record in self.store.all_records():

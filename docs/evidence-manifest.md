@@ -1,5 +1,15 @@
 # 真实运行证据清单
 
+## DeepSeek 用户批准的真实单次回复（2026-10-26）
+
+`inv-630801980461` 由用户在页面批准执行；模型 `deepseek-flash`，provider 结束标记 `stop`，
+输入34 / 输出79。只确认本次 HTTP 回复及用量；当时助手消息投影缺失，随后修复仅离线验。
+下表文件由原适配器库只读提取数值、状态、回复字节数及哈希，不含密钥、提示词或回复原文。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `deepseek-http400/var/deepseek-real-success-metadata.json` | 650 | `ba0e553ed49e4f5f08e32cb5ccefedfbeadf89e14e292fa3338b0e7bd4ac4045` |
+
 规则见 [Git 工作流](git-workflow.md) 第 4 节：证据文件不入库，只登记它们的路径、大小和 SHA-256。路径相对于 `E:\plug\agent-hub\.worktrees\`。2026-10-21 登记：只计算了哈希，没有读取文件内容。
 
 ## app-server S1：零模型握手（2026-10-17）

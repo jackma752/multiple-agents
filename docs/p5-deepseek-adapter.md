@@ -1,7 +1,32 @@
 # P5 · DeepSeek 适配器（OpenAI 兼容 chat/completions）
 
-状态：**已实现，离线验证通过；真实往返未验证**（需要你自己的 `sk-...` key）。
-日期：2026-10-26。分支：`main`（未推送、无 remote）。
+状态：**用户已完成一次真实 HTTP 回复和用量记录；最终助手消息投影修复离线通过，待重启确认**。
+日期：2026-10-26。初版位于 `main`；本次修复分支 `fix/deepseek-http400` 尚未合入 main/推送。
+
+## 2026-10-26 补充：最终回复与协作交接契约
+
+用户手动批准的 `inv-630801980461` 已完成：模型 `deepseek-flash`、`finish_reason=stop`，
+输入 34 / 输出 79；页面收到回复，但显示“未形成最终回复”。原因包括两项：
+
+1. 成功 payload 只写 `reply`，缺少内核要求的 `final_message`；
+2. 适配器缺少内核 `capture_reply()` 调用的 `last_result()` 方法。只补 payload 字段仍无法落库。
+
+现已在成功 payload 同时保留 `reply` 和 `final_message`，并实现 `last_result()`：只将适配器
+已确认 FINISHED、有 finish_reason、有非空最终文本的记录投影给内核；截断、失败、在途记录
+均不返回最终回复。HTTP 不具备原生 thread，投影不声明 native_session。
+
+旧成功记录允许从 `reply` 读取，因此原有启动恢复流程可补回助手消息，无需再次发送 HTTP，
+也不重写适配器原记录。下一项依赖以已保存助手消息为依据，随后可分派、交接及汇总。
+
+```text
+python -m pytest -o addopts='' -q tests/http/test_deepseek_replies.py tests/http/test_deepseek_failures.py tests/adapters/test_deepseek_adapter.py tests/http/test_collab.py tests/http/test_conversations.py
+96 passed in 11.57s
+```
+
+覆盖完整/截断消息、旧记录一次性恢复且不发请求、依赖解锁、交接两项结果、汇总。真实模型
+调用由用户执行；本轮只读已有成功记录，抽出无提示词/回复原文的元数据，登记于
+[证据清单](evidence-manifest.md)。本轮没有追加真实生成。重启同一服务后刷新原会话即可检查
+旧回复是否转为正式助手消息，无需重新发送“OK”测试。
 
 ## 2026-10-26 补充：已定位空 HTTP 400 的鉴权原因
 
@@ -225,7 +250,7 @@ Codex / Claude Code 在严格模式被拦，是因为它们会**在本机启动�
 
 以下都没有真实证据，只有实现与离线测试：
 
-- **真实 api.deepseek.com 往返**：本机还没发过一次带 key 的请求。
+- **真实 api.deepseek.com 往返**：用户已完成一次，见顶部记录；更广泛场景仍未验证。
 - **真实 SSE 分片节奏**：桩是两段，真实可能是几十段或整段一次到。
 - **`prompt_cache_hit_tokens` 的真实语义**：DeepSeek 文档描述与 OpenAI 的
   `cached_tokens` 不完全等价，我没有实测数字可对照。
