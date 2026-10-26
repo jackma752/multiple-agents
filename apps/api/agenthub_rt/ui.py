@@ -24,7 +24,7 @@ import os
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from agenthub.contracts import ApprovalStatus, InvocationStatus
@@ -305,6 +305,16 @@ def register_ui(app: FastAPI, db: Database) -> None:
                 return HTMLResponse(fh.read())
         except OSError:
             raise HTTPException(status_code=500, detail="UI asset missing")
+
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        """Send the bare host address to the chat page.
+
+        `/chat` is the daily entry (docs/HANDOFF_CURRENT.md); typing only the host
+        and getting a 404 made a trial start with a doubt about whether the service
+        was even up. 307 keeps the method on the rare client that re-issues it.
+        """
+        return RedirectResponse(url="/chat", status_code=307)
 
     @app.get("/chat", response_class=HTMLResponse)
     def chat() -> HTMLResponse:

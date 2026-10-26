@@ -1,10 +1,49 @@
-# 当前交接：P4.6 代码完成，待用户离线验收（2026-10-26）
+# 当前交接：main 已合并 P4.6 并统一 8080 入口（2026-10-26）
+
+## 本轮（整合 + 合入 main + 统一 8080）
+
+- **运行目录/日常入口**：`E:\plug\agent-hub`（根工作树，已切到 `main`）。不再需要进任何阶段工作树。
+- **合并方式**：`main` `fd54556` → **fast-forward** `d1fe9f8`（= `feat/p46-autopilot`），25 files changed, +2609 −29。没有 merge commit，没有推送，没有删除任何分支/工作树/标签。
+- **合并后修复（本提交）**：
+  1. `tools/probes/appserver_s1.py` 的"CODEX_HOME 位于仓库之外"检查把工作区写成 `REPO/../..`，归一化后是**盘符根**（`E:\`），导致同盘任何路径都被判为"仓库内"、该检查永不可能通过 → 改为 `dirname(REPO)`。
+  2. `tests/test_appserver_s1.py` 该用例改用 hermetic 的假 REPO，并**新增**一个负向回归（仓库内 / 紧邻仓库都必须被拒）。
+  3. 根路径 `/` → `/chat`（307），避免直接敲地址得到 404。
+- **测试（实际输出）**：
+  ```text
+  python -m pytest -o addopts='' -q --basetemp='E:\plug\.tmp\pt'
+  1587 passed, 1 skipped in 305.19s
+  ```
+  修复前同命令：`6 failed, 1580 passed, 1 skipped`；其中 5 个是**临时目录落在仓库内**造成的假失败
+  （`TEMP` 不可写时 `tempfile.gettempdir()` 回退到 cwd=仓库根，凡是"路径必须在仓库外"的用例全部假失败），
+  1 个是上面的探针 bug。**在本沙箱跑测试必须带 `--basetemp` 指向仓库外，否则会出现这类假失败。**
+- **8080 统一入口**：`http://127.0.0.1:8080/chat`（`/ui` 控制台、`/docs` API、事件流同源；`/` 跳 `/chat`）。
+  启动命令与数据目录见下节；`.claude\launch.json` 已收敛为单一 `agent-hub-8080`，旧 15 个配置归档到 `.claude\launch.archive.json`。
+- **仍未改变的口径**：P4.6d **用户人工验收尚未进行**；真实额度错误格式、真实自动阶段、真实工具自动允许仍**未验证**；未新增真实模型调用；未推送。
+
+### 日常启动（PowerShell）
+
+```powershell
+Set-Location 'E:\plug\agent-hub'
+& 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools/demo/serve.py --host 127.0.0.1 --port 8080 --adapter multi --appserver-stub demo --claude-code-stub autopilot --data-dir var/p46-user-demo/data --files-root docs
+```
+
+停止：`& 'E:\plug\agent-hub\.venv\Scripts\python.exe' tools/demo/stop.py --port 8080`（按 PID，脚本会校验归属）。
+
+### 待办
+
+- P4.6d 人工验收（按 `docs/p46-offline-acceptance.md`，把端口换成 8080）。
+- 三支仍有独有提交的分支待定：`feat/p3-wrapup` `42a61bb`、`fix/approved-only` `071c918`、`plan/branch-consolidation` `9026aa0`（只核对结论，不机械合并）。
+- 之后才进入 P5。
+
+---
+
+# 历史交接：P4.6 代码完成，待用户离线验收（2026-10-26，分支 `feat/p46-autopilot`）
 
 - 工作树：`E:\plug\agent-hub\.worktrees\p46-autopilot`，分支 `feat/p46-autopilot`。
 - 起点：main `fd54556`；设计/授权规则提交 `68cdb10`。
 - 实现提交：`02e34ba`；同秒新阶段排序修正：`635169f`。
 - Claude Code 先完成阶段契约、表、调度器、API 和部分页面；额度耗尽后，用户在本 Codex 会话要求接续完成。Codex 补齐恢复、页面、验证和文档；两个执行者均记入实现提交。
-- main 仍为 `fd54556`，没有合并、推送、真实模型调用或新增真实验收标签。
+- 本段历史时点：main 仍为 `fd54556`，尚未合并（现已被上一节取代）。
 
 ## 已实现
 

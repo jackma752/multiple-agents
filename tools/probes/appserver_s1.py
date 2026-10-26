@@ -351,8 +351,18 @@ def preflight(codex_home: str, identity: "tuple[str, str, int] | None" = None) -
     report("固定可执行文件存在", os.path.isfile(codex_path), codex_path)
     report("size 与固定值一致", os.path.getsize(codex_path) == expected_size)
     report("sha256 与固定值一致", sha256(codex_path) == expected_sha)
+    # The home must be outside the repository AND outside the workspace that holds
+    # it: a credential beside the repo is one careless `git init` away from being
+    # committed.
+    #
+    # The workspace used to be written as os.path.join(REPO, "..", ".."), which
+    # normalises to the DRIVE ROOT (E:\) - so `_inside()` was true for *every* path
+    # on the repo's drive and this check could never pass there, even for a
+    # perfectly good location like %TEMP% on the same drive. One level up is what
+    # was meant.
+    workspace = os.path.dirname(os.path.abspath(REPO))
     report("CODEX_HOME 位于仓库之外", not _inside(codex_home, REPO)
-           and not _inside(codex_home, os.path.join(REPO, "..", "..")))
+           and not _inside(codex_home, workspace))
     report("CODEX_HOME 是目录", os.path.isdir(codex_home))
     report("CODEX_HOME 有登录凭证", os.path.isfile(os.path.join(codex_home, "auth.json")))
     writable, detail = config.codex_home_write_check(codex_home)

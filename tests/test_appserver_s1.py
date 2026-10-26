@@ -150,6 +150,15 @@ def test_cleanup_failure_prevents_pass(tmp_path, monkeypatch):
 
 
 def test_real_preflight_checks_requested_home(tmp_path, monkeypatch):
+    # The rule under test is "the home is outside the repository and its workspace".
+    # Pin the probe's REPO to a scratch layout so the assertion does not depend on
+    # where pytest's tmp_path happens to live: in a confined environment TMP can fall
+    # back to a directory inside the real repository's parent, which would make this
+    # test fail for a reason that has nothing to do with the rule.
+    fake_repo = tmp_path / "workspace" / "repo"
+    fake_repo.mkdir(parents=True)
+    monkeypatch.setattr(P, "REPO", str(fake_repo))
+
     binary = tmp_path / "codex.exe"
     binary.write_bytes(b"not executed")
     home = tmp_path / "home"
@@ -166,3 +175,27 @@ def test_real_preflight_checks_requested_home(tmp_path, monkeypatch):
     _, env = P.preflight(str(home))
     check.assert_called_once_with(str(home))
     assert env["CODEX_HOME"] == str(home)
+
+
+def test_preflight_rejects_a_home_next_to_the_repository(tmp_path, monkeypatch):
+    """The workspace clause must bite: the drive root must NOT swallow it.
+
+    Regression for the `REPO/../..` bug: that expression normalises to `E:\\`, which
+    contains every path on the drive, so the check rejected legitimate locations.
+    """
+    fake_repo = tmp_path / "workspace" / "repo"
+    fake_repo.mkdir(parents=True)
+    monkeypatch.setattr(P, "REPO", str(fake_repo))
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"not executed")
+    monkeypatch.setattr(P, "S1_CODEX_PATH", str(binary))
+    monkeypatch.setattr(P, "S1_CODEX_SIZE", binary.stat().st_size)
+    monkeypatch.setattr(P, "S1_CODEX_SHA256", P.sha256(str(binary)))
+    for key in (config.ENV_CODEX_PATH, config.ENV_CODEX_SIZE, config.ENV_CODEX_SHA256):
+        monkeypatch.delenv(key, raising=False)
+    for label, location in (("inside the repo", fake_repo / "home"),
+                            ("beside the repo", tmp_path / "workspace" / "home")):
+        location.mkdir(parents=True, exist_ok=True)
+        (location / "auth.json").touch()
+        with pytest.raises(P.CheckFailed):
+            P.preflight(str(location))
