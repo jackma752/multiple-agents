@@ -11,9 +11,11 @@
 - **口径**：取消/中断、工具调用拦截、原生子 Agent 受控、会话恢复、流式、适配器版本标识**都仍未验证**；
   严格模式准入仍是 `blocked / native_subagents_uncontrolled`（徽标显示 blocked 指严格模式，与本次
   "用户监督模式"成功不矛盾）；模型自称的 "GPT-6" 是自述，不是证据。
-- **待写成 issue 的环境阻断**：`codex exec` 钉住的 `0.162.0-alpha.17.2` 目录被自动更新移除；
-  `app-server` 需可写 `CODEX_HOME`；`python.exe` 曾被降为 `Low` 导致读不到 MSIX 目录。
-- **未提交**：本节与 `docs/p47-codex-real-run-2026-10-26.md` 需由用户执行 git（本会话 shell 不可用）。
+- **环境阻断（已各自留痕，全部 OPEN）**：
+  `docs/issue-codex-exec-pin-removed.md`（exec 钉住的 `0.162.0-alpha.17.2` 目录被自动更新移除）、
+  `docs/issue-appserver-codex-home-sqlite.md`（app-server 需可写 `CODEX_HOME`）、
+  `docs/issue-python-low-integrity.md`（`python.exe` 曾被降为 `Low`，读不到 MSIX 目录）。
+  这三条跟踪的是**根因**，不是"现在能不能跑"；不要因为一次成功调用把它们标记为已修复。
 
 ## 本轮（整合 + 合入 main + 统一 8080）
 
