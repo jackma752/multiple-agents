@@ -1,5 +1,21 @@
 # 当前交接：main 已合并 P4.6 并统一 8080 入口（2026-10-26）
 
+## 最新集成入口：模型管理 + 协作恢复 + 复制修复（`86338b8`）
+
+- 分支 `fix/model-collaboration-integration`，工作树 `E:\plug\agent-hub\.worktrees\model-collaboration`。
+  基于协作修复 `7be4526`，接入工具允许 `243af8f` 和模型管理 `8d61668`（原提交 `b8a8891` / `c8e7961`）。
+  冲突已同时保留错误显示、阶段选择校验和旧草稿恢复。main仍为83eb1ad，根目录未提交改动原样保留。
+- 用户提出模型选择消失，原因是此前给出的collaboration-resume入口缺模型分支；此入口包含两者。
+  Codex/Claude Code/DeepSeek模型选择、阶段固定模型、按模型用量和预算同时可用。DeepSeek目录为
+  文档/配置候选，无自动远程查询；本次模型/强度进入请求，实际报告模型单独记录。
+- 阶段两秒轮询原来每次替换整个消息DOM，导致选区丢失。现在无内容变化不替换，选区存在时暂存
+  消息区更新并在取消选区后应用；侧栏仍更新。新增复制回复、复制完整发送内容按钮。
+- 受影响回归 **704 passed in 108.80s**；Headless Edge在真实两秒轮询与摘要编辑下验证原生选字、
+  延迟更新恢复、两种剪贴板复制、模型/强度控件，无JS错误。测试服务18191已停止，无真实模型调用。
+- 用户先保存未完成摘要，再Ctrl+C重启本工作树的8080 multi。保留原data目录；完整命令见
+  `docs/model-collaboration-integration.md`。此命令Codex/DeepSeek真实、Claude Code离线桩。
+- 历史和现有阶段不改写：底部模型选择仅影响新调用，进行中的阶段仍按原授权模型执行。
+
 ## 最新：协作阻塞后继续修复 `5a9202e`
 
 - 分支 `fix/collaboration-resume`，工作树 `E:\plug\agent-hub\.worktrees\collaboration-resume`，
