@@ -30,6 +30,11 @@ Authorization: Bearer <key>        # 只出现在这个 header 里
   在发出前再拦一次，**没有 `tools`**。
 - 事件流按 SSE 逐行解析，`data: [DONE]` 结束；每一段文本通过 `STREAM_DELTA`
   转给页面，所以聊天窗口是逐字出现的。
+- 结束时写进执行记录的两个键：`final_message`（内核
+  `conversations.capture_reply` 只认这个键，用来生成会话里的助手消息，也是
+  协作交接能拿到结果的唯一来源）与 `reply`（同一个字符串，给直接读适配器
+  payload 的调用方）。截断的回合**不写** `final_message`，避免把半句话当成
+  完成品交接给下一个 Agent。
 
 ## 2. 为什么这个通道可以进严格模式
 
@@ -62,6 +67,11 @@ Codex / Claude Code 在严格模式被拦，是因为它们会**在本机启动�
 - key 只出现在 `Authorization` header；不进请求体、不进事件、不进数据库记录。
   日志路径上还有一层 `redact()`：任何形如 `sk-...` 的字符串会被替换成 `sk-***`。
 - 页面/接口只显示"文件存在 / 大小"，**从不显示内容**（`credential_status()`）。
+- **粘贴残留会被就地清理**：某些 Windows 隐藏输入终端在粘贴后会留下一个字面
+  `Ctrl+V`（`\x16`），它被写进文件再进 `Authorization` 时，网关会返回一个
+  正文为空的 `HTTP 400`——看起来像"接口/模型写错了"，实际是头上多了一个字节。
+  `load_api_key()` 会在内存里 `strip().rstrip("\x16").strip()`（**不改写文件**），
+  并对仍然嵌在中间的控制字符直接报 `deepseek_credentials_invalid`。
 
 ## 4. 失败语义（与项目其余部分一致）
 
@@ -74,10 +84,16 @@ Codex / Claude Code 在严格模式被拦，是因为它们会**在本机启动�
 | 429 | `refused: deepseek_rate_limited` + `provider_quota` | 否 | 阶段层据此进入"等待额度恢复"并按 `reset_at` 重试 |
 | 连接中断 / 超时 / SSL | `unknown: transport_error` | **是** | 请求可能已被受理并计费，不能宣称"没发生" |
 | 流结束但没有 `finish_reason` | `failed: stream ended before finish_reason` | 否 | 连接已关闭、无残留工作，但回复不完整，绝不算成功 |
+| 400 且请求体带 `stream_options` | 先原样重发**一次**不带该字段的请求 | 否 | 代理网关常整单拒掉这个字段；400 不计费，重试是免费的 |
+| 仍 400 | `refused: deepseek_http_400` | 否 | payload 里同时留 `first_error` / `first_detail` / `retried_without_stream_options`，不把"删字段成功"当成结论 |
 
 "流断了"判成 unknown 而不是 failed，是因为只有 provider 能证明那次请求没被
 计费——我们证明不了。反过来"没有 `finish_reason`"可以判 failed，因为我们确实
 拿到了连接关闭这个事实。
+
+`stream_options` 的重试只针对 400：401/403/402/429 一律不重试（重试只会重复
+同一次拒绝）。而且只在**请求还没拿到任何字节**时发生——400 是整单被拒，所以
+不会出现"回复了一半又重发"导致重复计费。
 
 ## 5. 用量
 

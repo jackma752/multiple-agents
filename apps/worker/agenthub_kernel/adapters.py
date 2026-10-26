@@ -69,7 +69,14 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
         # Otherwise the same construction as each single kind, so nothing is
         # trusted that would not be trusted on its own.
         codex = _build_appserver({**config.codex_settings(), "transport": "app-server"})
-        return RoutingAdapter({CODEX: codex, CLAUDE_CODE: build_adapter(CLAUDE_CODE)})
+        # DeepSeek is a network-only channel: it runs no local process, so being
+        # in this router changes nothing about what it is trusted to do. Each
+        # agent is still admitted, bound and approved on its own adapter.
+        return RoutingAdapter({
+            CODEX: codex,
+            CLAUDE_CODE: build_adapter(CLAUDE_CODE),
+            DEEPSEEK: build_adapter(DEEPSEEK),
+        })
 
     if kind == CLAUDE_CODE:
         return _build_claude_code(config.claude_code_settings())

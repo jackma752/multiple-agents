@@ -143,12 +143,23 @@ def load_api_key(credentials_path: str, *, repo_root: str = "") -> str:
     except ValueError:
         raise DeepSeekRefused("deepseek_credentials_invalid", f"{path} is not valid JSON") from None
     key = document.get("api_key") if isinstance(document, dict) else None
-    if not isinstance(key, str) or len(key.strip()) < 8:
+    if not isinstance(key, str):
         raise DeepSeekRefused(
             "deepseek_credentials_invalid",
             f'{path} must contain {{"api_key": "sk-..."}}',
         )
-    return key.strip()
+    # Some Windows hidden-input terminals retain a literal Ctrl+V after a paste.
+    # It is not a token character, and sending it in ``Authorization`` makes the
+    # gateway reject the request with an empty 400 (billed nothing, but reported
+    # as an API error, which is the misleading part). Normalize this known paste
+    # artifact in memory; the stored file is never rewritten.
+    key = key.strip().rstrip("\x16").strip()
+    if len(key) < 8 or any(ord(char) < 32 or ord(char) == 127 for char in key):
+        raise DeepSeekRefused(
+            "deepseek_credentials_invalid",
+            "API key is too short or contains an embedded control character; re-enter the key",
+        )
+    return key
 
 
 def credential_status(credentials_path: str) -> dict:
@@ -465,33 +476,55 @@ class DeepSeekAdapter(AdapterContract):
         if emit is not None:
             _safe_emit(emit, STREAM_TURN_STARTED,
                        {"thread_id": adapter_id, "turn_id": adapter_id, "resumed": False})
+
+        # ``stream_options`` is not implemented by every gateway in front of this
+        # API, and a 400 bills nothing. So the very same call is retried once
+        # without it, and the first error is kept: a 400 about something else
+        # must never be reported as "a field was dropped and it worked".
+        attempts = [payload]
+        if "stream_options" in payload:
+            attempts.append({k: v for k, v in payload.items() if k != "stream_options"})
+        dropped: Optional[dict] = None
         try:
-            for event in transport(payload, headers):
-                events += 1
-                if isinstance(event.get("model"), str) and event["model"]:
-                    reported_model = event["model"]
-                if isinstance(event.get("usage"), dict):
-                    usage = event["usage"]
-                for choice in event.get("choices") or []:
-                    if not isinstance(choice, dict):
+            for index, body_payload in enumerate(attempts):
+                try:
+                    for event in transport(body_payload, headers):
+                        events += 1
+                        if isinstance(event.get("model"), str) and event["model"]:
+                            reported_model = event["model"]
+                        if isinstance(event.get("usage"), dict):
+                            usage = event["usage"]
+                        for choice in event.get("choices") or []:
+                            if not isinstance(choice, dict):
+                                continue
+                            delta = choice.get("delta") or {}
+                            piece = delta.get("content") if isinstance(delta, dict) else None
+                            if isinstance(piece, str) and piece:
+                                text_parts.append(piece)
+                                if emit is not None:
+                                    _safe_emit(emit, STREAM_DELTA, {"item_id": adapter_id, "text": piece})
+                            if choice.get("finish_reason"):
+                                finish_reason = str(choice["finish_reason"])
+                    break
+                except DeepSeekRefused as exc:
+                    if exc.code == "deepseek_http_400" and index + 1 < len(attempts):
+                        dropped = {
+                            "first_error": exc.code,
+                            "first_detail": redact(exc.detail)[:300],
+                            "retried_without_stream_options": True,
+                        }
                         continue
-                    delta = choice.get("delta") or {}
-                    piece = delta.get("content") if isinstance(delta, dict) else None
-                    if isinstance(piece, str) and piece:
-                        text_parts.append(piece)
-                        if emit is not None:
-                            _safe_emit(emit, STREAM_DELTA, {"item_id": adapter_id, "text": piece})
-                    if choice.get("finish_reason"):
-                        finish_reason = str(choice["finish_reason"])
+                    raise
         except DeepSeekRateLimited as exc:
             self._finish_failed(invocation_id, adapter_id, "rate_limited",
-                                detail=exc.detail, extra={"provider_quota": exc.evidence},
+                                detail=exc.detail,
+                                extra={"provider_quota": exc.evidence, **(dropped or {})},
                                 elapsed=time.monotonic() - started)
             return AdapterStartResult(adapter_invocation_id=adapter_id, ok=False, terminal=True,
                                       detail=f"refused: deepseek_rate_limited")
         except DeepSeekRefused as exc:
             self._finish_failed(invocation_id, adapter_id, exc.code, detail=exc.detail,
-                                elapsed=time.monotonic() - started)
+                                extra=dropped, elapsed=time.monotonic() - started)
             return AdapterStartResult(adapter_invocation_id=adapter_id, ok=False, terminal=True,
                                       detail=f"refused: {exc.code}")
         except DeepSeekTransportError as exc:
@@ -520,6 +553,11 @@ class DeepSeekAdapter(AdapterContract):
 
         self.store.set_status(invocation_id, FINISHED, f"finished:{finish_reason}")
         self.store.set_payload(invocation_id, {
+            # ``final_message`` is the key the kernel reads in
+            # ``conversations.capture_reply``; without it a finished turn leaves no
+            # assistant message, so a handoff downstream sees "no result".
+            # ``reply`` stays for callers that read the adapter payload directly.
+            "final_message": reply,
             "reply": reply,
             "finish_reason": finish_reason,
             "model": reported_model or self.model,

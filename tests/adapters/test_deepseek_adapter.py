@@ -153,6 +153,27 @@ def test_a_key_in_the_environment_is_never_consulted(tmp_path, monkeypatch):
     assert caught.value.code == "deepseek_credentials_missing"
 
 
+def test_a_trailing_ctrl_v_paste_artifact_is_ignored(tmp_path):
+    """A pasted key can keep a literal Ctrl+V; it must not reach the header.
+
+    Real symptom before this guard: every call died with an empty-bodied
+    ``HTTP 400`` from the gateway, which reads like "wrong API" but was one
+    stray byte in ``Authorization``.
+    """
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({"api_key": KEY + "\x16"}), encoding="utf-8")
+    assert load_api_key(str(path)) == KEY
+
+
+def test_an_embedded_control_character_is_refused(tmp_path):
+    path = tmp_path / "creds.json"
+    path.write_text(json.dumps({"api_key": "sk-" + "a" * 10 + "\x01" + "b" * 10}), encoding="utf-8")
+    with pytest.raises(DeepSeekRefused) as caught:
+        load_api_key(str(path))
+    assert caught.value.code == "deepseek_credentials_invalid"
+    assert "control character" in caught.value.detail
+
+
 def test_credential_status_never_returns_the_content(tmp_path):
     path = write_credentials(tmp_path)
     status = credential_status(path)
@@ -272,6 +293,9 @@ def test_finished_turn_streams_deltas_and_records_the_reply(tmp_path):
     record = call.store.get("inv-1")
     assert record["status"] == FINISHED
     assert record["payload"]["reply"] == "你好，我是 DeepSeek。"
+    # The kernel builds the assistant message from ``final_message`` only, so a
+    # finished turn without it looks like "no result" to a handoff.
+    assert record["payload"]["final_message"] == "你好，我是 DeepSeek。"
     assert record["payload"]["finish_reason"] == "stop"
     assert call.find_invocation_for_adapter_id(result.adapter_invocation_id) == "inv-1"
 
@@ -322,6 +346,8 @@ def test_a_stream_that_ends_without_finish_reason_is_failed_not_success(tmp_path
     record = call.store.get("inv-1")
     assert record["status"] == FAILED
     assert record["payload"]["error"] == "stream_incomplete"
+    # Partial text must never be handed on as if it were a finished answer.
+    assert "final_message" not in record["payload"]
 
 
 def test_rate_limit_carries_quota_evidence_for_the_stage_layer(tmp_path):
@@ -379,6 +405,82 @@ def test_status_lookup_by_adapter_id(tmp_path):
     status = call.get_status(result.adapter_invocation_id)
     assert status["ok"] is True and status["status"] == FINISHED
     assert call.get_status("deepseek-unknown")["ok"] is False
+
+
+class RejectsStreamOptions:
+    """A gateway that answers 400 to any body carrying ``stream_options``.
+
+    This is the shape seen in the wild: the API itself accepts the field, but a
+    proxy in front of it refuses the whole request. A 400 bills nothing, so the
+    adapter retries once without the field.
+    """
+
+    def __init__(self, *, always_fail: bool = False) -> None:
+        self.payloads: list[dict] = []
+        self.always_fail = always_fail
+
+    def __call__(self, payload, headers):
+        self.payloads.append(payload)
+        if self.always_fail or "stream_options" in payload:
+            raise DeepSeekRefused(
+                "deepseek_http_400",
+                'HTTP 400: {"error":{"message":"stream_options is not supported"}}',
+            )
+        yield from ok_events()
+
+
+def test_a_400_on_stream_options_is_retried_once_without_it(tmp_path):
+    write_credentials(tmp_path)
+    transport = RejectsStreamOptions()
+    call = adapter(tmp_path, transport=transport)
+
+    result = call.start("inv-1", snapshot(), gate_token="gate-1")
+
+    assert result.ok is True and result.terminal is True
+    assert len(transport.payloads) == 2, "exactly one retry, never a loop"
+    assert "stream_options" in transport.payloads[0]
+    assert "stream_options" not in transport.payloads[1]
+    # The retry body is otherwise identical: same model, same one user message.
+    assert {k: v for k, v in transport.payloads[0].items() if k != "stream_options"} == \
+        transport.payloads[1]
+    record = call.store.get("inv-1")
+    assert record["status"] == FINISHED
+    assert record["payload"]["reply"] == "你好，我是 DeepSeek。"
+
+
+def test_a_second_400_keeps_both_errors_instead_of_inventing_a_fix(tmp_path):
+    write_credentials(tmp_path)
+    transport = RejectsStreamOptions(always_fail=True)
+    call = adapter(tmp_path, transport=transport)
+
+    result = call.start("inv-1", snapshot(), gate_token="gate-1")
+
+    assert result.ok is False and result.detail == "refused: deepseek_http_400"
+    assert len(transport.payloads) == 2
+    body = call.store.get("inv-1")["payload"]
+    assert body["error"] == "deepseek_http_400"
+    assert body["retried_without_stream_options"] is True
+    assert "stream_options is not supported" in body["first_detail"]
+
+
+def test_only_a_400_is_retried(tmp_path):
+    write_credentials(tmp_path)
+
+    class Unauthorized:
+        def __init__(self) -> None:
+            self.payloads: list[dict] = []
+
+        def __call__(self, payload, headers):
+            self.payloads.append(payload)
+            raise DeepSeekRefused("deepseek_unauthorized", "HTTP 401: bad key")
+            yield  # pragma: no cover - keeps this a generator
+
+    transport = Unauthorized()
+    call = adapter(tmp_path, transport=transport)
+    result = call.start("inv-1", snapshot(), gate_token="gate-1")
+
+    assert result.detail == "refused: deepseek_unauthorized"
+    assert len(transport.payloads) == 1, "an auth failure must not be retried"
 
 
 # --------------------------------------------------------------------------- #
