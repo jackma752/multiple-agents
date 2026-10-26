@@ -1,5 +1,23 @@
 # 当前交接：main 已合并 P4.6 并统一 8080 入口（2026-10-26）
 
+## 本工作树最新：DeepSeek HTTP 400 修复
+
+- 实现提交 `7c95189`，分支 `fix/deepseek-http400`，目录
+  `E:\plug\agent-hub\.worktrees\deepseek-http400`，基于 main `83eb1ad`，没有合入 main/推送。
+- 三次历史失败都使用 `deepseek-chat`；官方已公告该名字 2026-07-24 退役。默认配置和空值
+  回退改为当前 `deepseek-flash`。旧 400 响应为空，唯一根因不能由旧证据确认；真实成功待验证。
+- 错误保留限长 HTTP 诊断和正文状态，关闭错误响应，移除回显密钥/输入；聊天页终态及刷新后
+  显示判定说明。一个批准只发一次请求，不加入猜测性重试。
+- 验证：受影响范围 **171 passed in 25.17s**；补用例后的 DeepSeek 专项 **45 passed in 0.91s**
+  （两组重叠，不相加）。Headless Edge 在独立离线 18189 服务验证即时/刷新错误展示，无 JS 错误，
+  截图 `var/browser400/failure.png`。自建测试服务已停止，用户 8080 未操作。
+- 只读核对了三次适配器失败与快照身份；没有读取真实凭据，没有发送带真实密钥的请求。
+  官方端点不带鉴权的 GET/空 POST 返回 401，只用于连通诊断。旧数据未变。
+- main 原有未提交改动（stream_options 重试、multi 接入、登录/探测工具等）原样保留，未复制或提交。
+- 用户从本工作树启动，设 `AGENT_HUB_DEEPSEEK_MODEL=deepseek-flash`，清除 DeepSeek stub 后用
+  `--port 8080 --adapter deepseek --data-dir E:\plug\agent-hub\var\p46-user-demo\data`；完整命令与
+  来源见 `docs/p5-deepseek-adapter.md` 顶部修复节。批准一次简短消息进行真实验证。
+
 ## 最新：DeepSeek 适配器落地（P5，2026-10-26 17:00）
 
 - **形态**：一次调用 = 一条 OpenAI 兼容 `POST {base}/chat/completions` 流式请求。请求体只有
