@@ -63,3 +63,14 @@ icacls 'E:\plug\agent-hub\.venv\Scripts\python.exe' /setintegritylevel M
 ```
 
 如果修改标签被拒，可使用管理员 PowerShell执行这一步。不要递归修改整个工作区、磁盘或凭据目录。标签变化只影响以后新启动的进程；成功后重新运行上文的修正版写入检查，并验证 `_ssl` 能否导入。此命令尚未由助手执行，用户操作结果待确认；在线恢复仍未认定。
+
+### 用户修改标签后的复核
+
+用户随后执行上面的单文件命令，报告成功处理 1 个文件。助手被动复核确认该解释器现在为 `Mandatory Label\Medium Mandatory Level:(NW)`。同一项目解释器的 `_ssl`、`ctypes` 均正常加载，退出码 0；不再需要备用解释器或禁用 pytest 插件来运行本次相关测试：
+
+```text
+E:\plug\agent-hub\.venv\Scripts\python.exe -m pytest -o addopts='' -q tests/test_codex_home_write_check.py tests/test_appserver_s1.py tests/test_hygiene.py --basetemp=E:\plug\.tmp\home-write-probe-post-label-20261026
+34 passed in 0.49s
+```
+
+这确认了本次观察到的解释器 DLL 加载失败在标签修正后消失；不据此关闭所有历史 DLL 问题。用户同一 PowerShell 下的 home 写入仍待重测，真实 Codex 回合尚未重试。
