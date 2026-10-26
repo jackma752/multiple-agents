@@ -24,7 +24,7 @@ import os
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy import select
 
 from agenthub.contracts import ApprovalStatus, InvocationStatus
@@ -291,6 +291,14 @@ def register_ui(app: FastAPI, db: Database) -> None:
                 raise HTTPException(status_code=404, detail="task not found")
             root_id = task.root_task_id
         return _task_view(db, root_id)
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        return FileResponse(os.path.join(STATIC_DIR, "brand", "app.ico"), media_type="image/vnd.microsoft.icon")
+
+    @app.get("/assets/app-icon.png", include_in_schema=False)
+    def brand_icon():
+        return FileResponse(os.path.join(STATIC_DIR, "brand", "app-icon-256.png"), media_type="image/png")
 
     @app.get("/ui", response_class=HTMLResponse)
     def ui() -> HTMLResponse:

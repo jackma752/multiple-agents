@@ -5,6 +5,8 @@ OutFile "@OUTPUT@"
 InstallDir "$LOCALAPPDATA\Programs\AgentHub"
 InstallDirRegKey HKCU "Software\AgentHub" "InstallDir"
 !include "MUI2.nsh"
+!define MUI_ICON "@ICON@"
+!define MUI_UNICON "@ICON@"
 !define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY

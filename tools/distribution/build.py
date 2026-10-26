@@ -14,7 +14,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = '0.5.0'
+VERSION = '0.5.1'
 EXCLUDED = ['pytest', '_pytest', 'httpx', 'IPython', 'tkinter', 'unittest', 'doctest',
             'agenthub_adapters.appserver_stub', 'agenthub_adapters.mock', 'agenthub_rt.dev_auth', 'tests', 'tools']
 
@@ -29,7 +29,8 @@ def build(args):
     work = output/'build'
     command=[sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir',
         '--console' if args.console else '--windowed',
-        '--noupx','--name','AgentHub','--distpath',str(output/'payload'),'--workpath',str(work),
+        '--noupx','--name','AgentHub','--icon',str(ROOT/'apps/api/agenthub_rt/static/brand/app.ico'),
+        '--distpath',str(output/'payload'),'--workpath',str(work),
         '--specpath',str(work), '--add-data',f'{ROOT / "apps/api/agenthub_rt/static"};agenthub_rt/static',
         '--hidden-import','sqlalchemy.dialects.sqlite','--hidden-import','uvicorn.loops.asyncio',
         '--hidden-import','uvicorn.protocols.http.h11_impl','--hidden-import','uvicorn.lifespan.on',
@@ -45,6 +46,10 @@ def build(args):
         subprocess.run(['icacls',str(payload/'AgentHub.exe'),'/setintegritylevel','M'],check=True,capture_output=True)
     import shutil
     shutil.copyfile(ROOT/'README.md',payload/'README.md')
+    # README in the repository and the installed folder both show the same art.
+    readme=(payload/'README.md').read_text(encoding='utf-8').replace(
+        'apps/api/agenthub_rt/static/brand/', '_internal/agenthub_rt/static/brand/')
+    (payload/'README.md').write_text(readme,encoding='utf-8')
     # The release uses local pairing only; remove development defaults and its
     # unused token field placeholder from the actual packaged HTML resources.
     for page in (payload/'_internal/agenthub_rt/static').glob('*.html'):
@@ -82,6 +87,7 @@ def build(args):
     delete+='\n'+'\n'.join('  RMDir "$INSTDIR\\'+str(p.relative_to(payload))+'"' for p in dirs)
     template=(ROOT/'tools/distribution/installer.nsi.in').read_text(encoding='utf-8')
     for key,value in {'@VERSION@':VERSION,'@PAYLOAD@':str(payload),'@OUTPUT@':str(staging_installer),
+                      '@ICON@':str(ROOT/'apps/api/agenthub_rt/static/brand/app.ico'),
                       '@DELETE@':delete}.items():template=template.replace(key,value)
     script.write_text(template,encoding='utf-8-sig')
     compiler_tmp=output/'compiler-tmp'; compiler_tmp.mkdir(exist_ok=True)
@@ -94,6 +100,10 @@ def build(args):
     with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
         for p in payload.rglob('*'):
             if p.is_file():z.write(p,'AgentHub/'+p.relative_to(payload).as_posix())
+    if os.name == 'nt':
+        # ZIP is also a user-facing artifact; do not leave an inherited Low
+        # label from a sandboxed build folder on the released archive.
+        subprocess.run(['icacls',str(archive),'/setintegritylevel','M'],check=True,capture_output=True)
     (output/'SHA256SUMS.txt').write_text('\n'.join(f'{sha(p)}  {p.name}' for p in [installer,archive])+'\n')
     print(json.dumps({'installer':str(installer),'zip':str(archive),'files':len(files)},indent=2))
 

@@ -1,5 +1,7 @@
 # Agent Hub
 
+<img src="apps/api/agenthub_rt/static/brand/app-icon-256.png" alt="Agent Hub 项目图标" width="96" height="96">
+
 **在一个对话窗口中使用你自己的 Agent，查看模型与用量，并按你批准的规则完成协作任务。**
 
 Agent Hub 连接本机 Codex、Claude Code，以及 DeepSeek API。它保存调用审批、工具决定、上下文、任务依赖与用量记录。账号、订阅和 API 费用仍由各服务提供方管理。
@@ -12,7 +14,7 @@ Agent Hub 连接本机 Codex、Claude Code，以及 DeepSeek API。它保存调�
 
 ## 安装与首次配置
 
-1. 运行 `AgentHub-0.5.0-windows-x64-setup.exe`，按向导安装到当前用户目录。目标系统为 Windows 10/11 x64。
+1. 运行 `AgentHub-0.5.1-windows-x64-setup.exe`，按向导安装到当前用户目录。目标系统为 Windows 10/11 x64。
 2. 从开始菜单打开 **Agent Hub**。浏览器自动打开本机页面并完成一次配对，无需复制开发令牌。
 3. 首次进入 **本机设置**，选择实际的项目文件夹，默认使用只读权限。需要 Codex 修改文件时，可明确选择允许写入。
 4. 点击 **扫描常见安装位置**，选择已安装的 CLI；没有发现时，手动填写原生 `.exe` 完整路径和该 Agent 已登录的配置目录。只勾选你要使用的 Agent。
@@ -141,6 +143,8 @@ CLI 更新或被移动时，身份检查会拒绝启动；回设置页重新扫�
 ## 数据与卸载
 
 程序默认安装在 `%LOCALAPPDATA%\Programs\AgentHub`，用户数据独立保存在 `%LOCALAPPDATA%\AgentHub\desktop`。
+
+安装目录可在安装向导中选择；数据目录目前通过环境变量 `AGENT_HUB_DESKTOP_HOME` 自定义，尚无图形化迁移入口。改变数据目录不会自动搬迁旧记录，需要退出 Hub 后迁移并重新启动。工作区则单独在「本机设置」中选择。
 
 | 内容 | 位置/处理 |
 | --- | --- |
