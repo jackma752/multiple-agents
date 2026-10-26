@@ -61,14 +61,18 @@ def test_no_obvious_credentials_in_source_tree():
     assert not offenders, f"possible committed credentials: {offenders}"
 
 
-def test_user_token_is_read_from_environment_not_hardcoded():
-    """The auth module must consult the environment for the user token."""
-    auth_path = os.path.join(REPO_ROOT, "apps", "api", "agenthub_rt", "auth.py")
-    assert os.path.exists(auth_path), auth_path
-    with open(auth_path, "r", encoding="utf-8") as fh:
-        src = fh.read()
-    assert "AGENT_HUB_USER_TOKEN" in src
-    assert "os.environ" in src
+def test_user_token_is_read_from_environment_not_hardcoded(monkeypatch):
+    """Source mode reads runtime configuration even after dev auth was split out.
+
+    Desktop rejects this entire path; its tests assert known defaults fail.
+    """
+    from agenthub_rt.auth import _dev_tokens
+    monkeypatch.setenv("AGENT_HUB_USER_TOKEN", "synthetic-configured-user-one")
+    assert _dev_tokens()["synthetic-configured-user-one"].can_approve
+    assert "dev-user-token" not in _dev_tokens()
+    monkeypatch.setenv("AGENT_HUB_USER_TOKEN", "synthetic-configured-user-two")
+    assert _dev_tokens()["synthetic-configured-user-two"].can_approve
+    assert "synthetic-configured-user-one" not in _dev_tokens()
 
 
 # --------------------------------------------------------------------------- #

@@ -19,6 +19,21 @@ Section "Agent Hub"
   SetOutPath "$INSTDIR"
   File /r "@PAYLOAD@\*"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  ; Some development/custom drives carry a Low inherited mandatory label.
+  ; Label only our two entry points at the installing user's normal level.
+  ; Never alter the workspace, Agent executables or their credential homes.
+  nsExec::ExecToStack '"$SYSDIR\icacls.exe" "$INSTDIR\AgentHub.exe" /setintegritylevel M'
+  Pop $0
+  Pop $1
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "无法设置应用运行级别，请选择当前用户的普通安装目录。"
+    Abort
+  nsExec::ExecToStack '"$SYSDIR\icacls.exe" "$INSTDIR\Uninstall.exe" /setintegritylevel M'
+  Pop $0
+  Pop $1
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "无法设置卸载程序运行级别，请选择其他安装目录。"
+    Abort
   CreateDirectory "$SMPROGRAMS\Agent Hub"
   CreateShortcut "$SMPROGRAMS\Agent Hub\Agent Hub.lnk" "$INSTDIR\AgentHub.exe"
   CreateShortcut "$SMPROGRAMS\Agent Hub\使用说明.lnk" "$INSTDIR\README.md"
