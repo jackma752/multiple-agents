@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 #: ``auto_error=False`` so a missing header reaches our own handler, which
@@ -61,17 +61,12 @@ def _dev_tokens() -> dict[str, Principal]:
     repository. The agent/worker tokens exist so tests (and a real deployment)
     can prove those identities are refused by the approval endpoints.
     """
-    user_token = os.environ.get("AGENT_HUB_USER_TOKEN", "dev-user-token")
-    agent_token = os.environ.get("AGENT_HUB_AGENT_TOKEN", "dev-agent-token")
-    worker_token = os.environ.get("AGENT_HUB_WORKER_TOKEN", "dev-worker-token")
-    return {
-        user_token: Principal(identity="local-user", role=ROLE_USER),
-        agent_token: Principal(identity="agent", role=ROLE_AGENT),
-        worker_token: Principal(identity="worker", role=ROLE_WORKER),
-    }
+    from agenthub_rt.dev_auth import development_tokens
+    return development_tokens()
 
 
 def authenticate(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     x_agent_hub_token: Optional[str] = Header(default=None),
 ) -> Principal:
@@ -80,6 +75,19 @@ def authenticate(
     No anonymous fallback: an unauthenticated request can never reach an
     approval endpoint, and cannot approve by omission.
     """
+    from agenthub_kernel.desktop import enabled
+    if enabled():
+        import hashlib
+        import secrets
+        session = request.cookies.get("agenthub_session", "")
+        expected = getattr(request.app.state, "desktop_session", None)
+        if (not session or not expected or not secrets.compare_digest(
+                hashlib.sha256(session.encode()).hexdigest(), expected)):
+            raise HTTPException(401, "请从开始菜单打开 Agent Hub 完成本机配对")
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            if request.headers.get("origin") != str(request.base_url).rstrip("/"):
+                raise HTTPException(403, "same-origin user request required")
+        return Principal(identity="desktop-user", role=ROLE_USER)
     token: Optional[str] = None
     if credentials is not None and credentials.credentials:
         token = credentials.credentials.strip()

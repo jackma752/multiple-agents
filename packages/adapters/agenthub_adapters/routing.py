@@ -27,8 +27,8 @@ class RoutingAdapter:
     name = "router"
     version = "router"
 
-    def __init__(self, adapters: dict[str, Any]) -> None:
-        if not adapters:
+    def __init__(self, adapters: dict[str, Any], *, allow_empty: bool = False) -> None:
+        if not adapters and not allow_empty:
             raise ValueError("a router needs at least one agent")
         served = {}
         for agent_id, adapter in adapters.items():

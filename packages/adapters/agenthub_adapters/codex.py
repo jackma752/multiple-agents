@@ -217,6 +217,14 @@ def build_env(
     UnknownIssuer".
     """
     env = dict(base_env if base_env is not None else os.environ)
+    for key in list(env):
+        if key.upper().startswith("AGENT_HUB_"):
+            del env[key]
+    if os.environ.get("AGENT_HUB_DESKTOP") == "1":
+        for key in list(env):
+            if key.upper() in {"HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+                               "CODEX_CA_CERTIFICATE", "NODE_EXTRA_CA_CERTS"}:
+                del env[key]
     env["CODEX_HOME"] = codex_home
     if proxy:
         for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):

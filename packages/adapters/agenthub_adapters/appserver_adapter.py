@@ -229,7 +229,7 @@ def request_decisions(method: str, params: dict, *, enabled: bool) -> tuple[list
     return ["accept", "decline"], ""
 
 
-def settings_problems(result: dict, cwd: str) -> list[str]:
+def settings_problems(result: dict, cwd: str, *, writable: bool = False) -> list[str]:
     """Read-back of a thread/start or thread/resume answer (S3-S5 rule)."""
     problems = []
     if result.get("approvalsReviewer") != "user":
@@ -237,7 +237,13 @@ def settings_problems(result: dict, cwd: str) -> list[str]:
     if result.get("approvalPolicy") != "on-request":
         problems.append("approvalPolicy")
     sandbox = result.get("sandbox")
-    if not (isinstance(sandbox, dict) and sandbox.get("type") == "readOnly"
+    if writable:
+        roots = sandbox.get("writableRoots", []) if isinstance(sandbox, dict) else []
+        if not (isinstance(sandbox, dict) and sandbox.get("type") == "workspaceWrite"
+                and sandbox.get("networkAccess", False) is False
+                and all(os.path.normcase(os.path.realpath(p)) == os.path.normcase(cwd) for p in roots)):
+            problems.append("sandbox")
+    elif not (isinstance(sandbox, dict) and sandbox.get("type") == "readOnly"
             and sandbox.get("networkAccess", False) is False
             and set(sandbox) <= {"type", "networkAccess"}):
         problems.append("sandbox")
@@ -364,7 +370,8 @@ class CodexAppServerFactory:
 
     def __init__(self, *, codex_path: str, codex_home: str, expected_identity: Optional[dict],
                  version: str = "unknown", proxy: Optional[str] = None,
-                 ca_bundle: Optional[str] = None, env_overrides: tuple[str, ...] = ()) -> None:
+                 ca_bundle: Optional[str] = None, env_overrides: tuple[str, ...] = (),
+                 adopted_identity: Optional[dict] = None) -> None:
         self.codex_path = codex_path
         self.codex_home = codex_home
         self.expected_identity = expected_identity
@@ -374,6 +381,7 @@ class CodexAppServerFactory:
         #: Identity environment variables that were set (they are never used
         #: here; their presence blocks supervised admission).
         self.env_overrides = tuple(env_overrides)
+        self._adopted_identity = dict(adopted_identity) if adopted_identity else None
         self.argv = [codex_path, *APPSERVER_ARGV_TAIL]
 
     @classmethod
@@ -411,7 +419,7 @@ class CodexAppServerFactory:
         problems = []
         if self.env_overrides:
             problems.append("env_override:" + ",".join(self.env_overrides))
-        pinned = PINNED_APPSERVER
+        pinned = self._adopted_identity or PINNED_APPSERVER
         if (os.path.normcase(self.codex_path or "") != os.path.normcase(pinned["path"])
                 or (self.expected_identity or {}) != {"sha256": pinned["sha256"], "size": pinned["size"]}
                 or self.version != pinned["version"]):
@@ -422,9 +430,10 @@ class CodexAppServerFactory:
             problems.append("size_mismatch")
         if self.argv != [self.codex_path, *APPSERVER_ARGV_TAIL]:
             problems.append("argv_changed")
-        if not self.proxy:
+        if not self.proxy and not self._adopted_identity:
             problems.append("proxy_missing")
-        if not (self.ca_bundle and os.path.isfile(self.ca_bundle) and os.access(self.ca_bundle, os.R_OK)):
+        if ((self.ca_bundle or not self._adopted_identity) and not
+                (self.ca_bundle and os.path.isfile(self.ca_bundle) and os.access(self.ca_bundle, os.R_OK))):
             problems.append("ca_unreadable")
         return problems
 
@@ -439,8 +448,9 @@ class CodexAppServerFactory:
         if not ok:
             raise LaunchRefused(f"launch refused: {why}")
         env = build_env(codex_home=self.codex_home, proxy=self.proxy, ca_bundle=self.ca_bundle)
+        diagnostic_cwd = os.path.join(getattr(self, "log_root", os.path.dirname(workdir)), invocation_id)
         return StdioTransport(list(self.argv), env=env, cwd=workdir,
-                              stderr_path=log_path(workdir, invocation_id, "appserver-stderr"))
+                              stderr_path=log_path(diagnostic_cwd, invocation_id, "appserver-stderr"))
 
 
 def log_path(workdir: str, invocation_id: str, kind: str) -> str:
@@ -451,6 +461,8 @@ def log_path(workdir: str, invocation_id: str, kind: str) -> str:
 
 
 def _trusted_offline(factory: Any) -> bool:
+    if type(factory) is CodexAppServerFactory:
+        return False
     from agenthub_adapters.appserver_stub import InMemoryStubFactory, StdioStubFactory, bundled_stdio_stub_path
     import sys
 
@@ -794,6 +806,17 @@ class AppServerCodexAdapter(AdapterContract):
 
     def _run(self, invocation_id: str, snapshot: InvocationSnapshot,
              resume_id: Optional[str], emit: Emit, gate: Any = None) -> AdapterStartResult:
+        from agenthub.workspace import approved_workspace
+        try:
+            workspace = approved_workspace(snapshot)
+        except ValueError as exc:
+            return AdapterStartResult("", ok=False, terminal=True, detail=f"refused: {exc}")
+        writable = bool(workspace and snapshot.permissions.get("workspace_access") == "workspace-write")
+        thread_settings = {**THREAD_SETTINGS, **({"sandbox": "workspace-write"} if writable else {})}
+        turn_policy = {**TURN_POLICY}
+        if writable:
+            turn_policy["sandboxPolicy"] = {"type": "workspaceWrite", "writableRoots": [workspace],
+                "networkAccess": False, "excludeTmpdirEnvVar": True, "excludeSlashTmp": True}
         previous_turn_id = ""
         if resume_id:
             home = self._thread_home(resume_id)
@@ -802,9 +825,12 @@ class AppServerCodexAdapter(AdapterContract):
                     "", ok=False, terminal=True,
                     detail="refused: no recorded work directory for this provider thread; nothing started")
             workdir, previous_turn_id = home
+            if workspace and os.path.normcase(workdir) != os.path.normcase(workspace):
+                return AdapterStartResult("", ok=False, terminal=True,
+                                          detail="refused: resume thread belongs to another workspace")
         else:
             try:
-                workdir = os.path.join(self.workdir_root, invocation_id)
+                workdir = workspace or os.path.join(self.workdir_root, invocation_id)
                 os.makedirs(workdir, exist_ok=True)
             except OSError as exc:
                 return AdapterStartResult("", ok=False, terminal=True,
@@ -854,13 +880,13 @@ class AppServerCodexAdapter(AdapterContract):
             if resume_id:
                 facts["opening_method"] = THREAD_RESUME
                 result = client.request(THREAD_RESUME, {"threadId": resume_id, "cwd": workdir,
-                                                        **THREAD_SETTINGS, **({"model": snapshot.model} if snapshot.model else {})})
+                                                        **thread_settings, **({"model": snapshot.model} if snapshot.model else {})})
                 thread_id = _thread_id(result)
                 if thread_id != resume_id:
                     raise _Refused("thread/resume returned a different thread id")
             else:
                 facts["opening_method"] = THREAD_START
-                result = client.request(THREAD_START, {"cwd": workdir, **THREAD_SETTINGS, **({"model": snapshot.model} if snapshot.model else {})})
+                result = client.request(THREAD_START, {"cwd": workdir, **thread_settings, **({"model": snapshot.model} if snapshot.model else {})})
                 thread_id = _thread_id(result)
             if not thread_id:
                 raise _Refused("server returned no thread id")
@@ -869,7 +895,7 @@ class AppServerCodexAdapter(AdapterContract):
             facts["model"] = model if isinstance(model, str) and len(model) <= 80 else None
             if snapshot.model and facts["model"] != snapshot.model:
                 raise _Refused("requested model was not confirmed by the thread response; no model turn started")
-            problems = settings_problems(result, workdir)
+            problems = settings_problems(result, workdir, writable=writable)
             if problems:
                 raise _Refused("appserver_settings_mismatch: " + ",".join(problems))
             if resume_id:
@@ -880,7 +906,7 @@ class AppServerCodexAdapter(AdapterContract):
             facts["input_sha256"] = hashlib.sha256(snapshot.task_input.encode("utf-8")).hexdigest()
             result = client.request(TURN_START, {
                 "threadId": thread_id, "input": [{"type": "text", "text": snapshot.task_input}],
-                **TURN_POLICY,
+                **turn_policy,
                 **({"model": snapshot.model} if snapshot.model else {}),
                 **({"effort": snapshot.reasoning_effort} if snapshot.reasoning_effort else {}),
             })

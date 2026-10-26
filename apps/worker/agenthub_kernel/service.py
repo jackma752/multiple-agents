@@ -172,6 +172,14 @@ class PolicyService:
         task = self.session.get(TaskRow, task_id)
         if task is None:
             raise QuotaError("no_task", f"task {task_id} not found")
+        from agenthub_kernel.desktop import workspace_permissions
+        from dataclasses import replace
+        try:
+            workspace = workspace_permissions()
+        except ValueError as exc:
+            raise QuotaError("workspace_required", str(exc)) from exc
+        if workspace:
+            snapshot = replace(snapshot, permissions={**snapshot.permissions, **workspace})
         inv = InvocationRow(
             id=new_id("inv"),
             task_id=task_id,

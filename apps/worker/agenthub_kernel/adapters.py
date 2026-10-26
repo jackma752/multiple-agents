@@ -58,6 +58,9 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
     ``force_mock`` lets tests guarantee no real process can be launched even if
     the environment happens to set ``AGENT_HUB_ADAPTER=codex``.
     """
+    from agenthub_kernel import desktop
+    if desktop.enabled() and not force_mock:
+        return desktop.build_router()
     kind = MOCK if force_mock else (kind or adapter_kind())
 
     if kind == MULTI:
@@ -116,12 +119,22 @@ def build_adapter(kind: Optional[str] = None, *, force_mock: bool = False) -> An
 
 def _build_appserver(s: dict) -> Any:
     from agenthub_adapters.appserver_adapter import AppServerCodexAdapter, CodexAppServerFactory
-    from agenthub_adapters.appserver_stub import SCENARIOS, StdioStubFactory
     from agenthub_adapters.store import ExecutionStore, ensure_parent
+    from agenthub_kernel.desktop import enabled
+    SCENARIOS = ()
+    if not enabled():
+        from agenthub_adapters.appserver_stub import SCENARIOS, StdioStubFactory
 
     if s.get("appserver_stub") in SCENARIOS:
         factory: Any = StdioStubFactory(s["appserver_stub"])
         version = "appserver-stub"
+    elif s.get("adopted"):
+        item = s["adopted"]
+        factory = CodexAppServerFactory(codex_path=item["path"], codex_home=s["codex_home"],
+            expected_identity={k: item[k] for k in ("sha256", "size")}, version=item["version"],
+            proxy=s["proxy"] or None, ca_bundle=s["ca_bundle"] or None, adopted_identity=item)
+        factory.log_root = s["workdir_root"]
+        version = factory.version
     else:
         # Identity from the reviewed constant only; exec's env overrides are
         # recorded so supervised admission can refuse them (D7).
@@ -167,6 +180,12 @@ def _build_claude_code(s: dict) -> Any:
 
     if s.get("stub") in STUB_SCENARIOS:
         launcher: Any = StubClaudeLauncher(s["stub"])
+    elif s.get("adopted"):
+        item = s["adopted"]
+        launcher = ClaudeCodeLauncher(path=item["path"],
+            expected_identity={k: item[k] for k in ("sha256", "size")}, version=item["version"],
+            config_dir=s["config_dir"], proxy=s["proxy"] or None,
+            ca_bundle=s["ca_bundle"] or None, adopted_identity=item)
     else:
         # Identity from the reviewed constant only; supervised admission decides.
         launcher = ClaudeCodeLauncher.pinned(config_dir=s["config_dir"], proxy=s["proxy"] or None,

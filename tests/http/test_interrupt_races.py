@@ -270,7 +270,10 @@ def test_adapter_sends_nothing_unless_the_gate_confirms_open(tmp_path, gate_kind
     adapter._route_requests(client, turn, lambda *_: None, Gate(), None)
     assert client.sent == []
     assert turn.closed_requests == {"srv-1", "srv-2"}
-    assert adapter._has_unrouted(client, turn) is False  # never re-routed
+    # A second routing pass must keep closed requests closed without sending.
+    adapter._route_requests(client, turn, lambda *_: None, Gate(), None)
+    assert client.sent == []
+    assert turn.closed_requests == {"srv-1", "srv-2"}
 
 
 # --------------------------------------------------------------------------- #

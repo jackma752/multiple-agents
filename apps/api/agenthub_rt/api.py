@@ -41,7 +41,6 @@ from agenthub_kernel.adapters import adapter_binding
 from agenthub_kernel.db import Database, TaskRow
 from agenthub_kernel.service import PolicyService, QuotaError
 
-from agenthub_adapters.mock import MockAdapter
 from agenthub_rt.auth import Principal, authenticate, require_approver
 
 
@@ -168,9 +167,22 @@ def create_app(
     register_stages(app, db)
     from agenthub_rt.models import register_models
     register_models(app, db)
+    from agenthub_rt.desktop import register_desktop
+    register_desktop(app)
+
+    @app.get("/api/client-config")
+    def client_config():
+        from agenthub_kernel.desktop import enabled
+        if enabled():
+            return {"desktop": True, "development_token": ""}
+        from agenthub_rt.dev_auth import DEFAULT_USER_TOKEN
+        return {"desktop": False, "development_token": DEFAULT_USER_TOKEN}
 
     @app.get("/api/agents")
     def list_agents() -> list[dict[str, Any]]:
+        from agenthub_kernel.desktop import enabled, load
+        if enabled():
+            return [{"id":k,"name":k,"version":v.get("version", "API")} for k,v in load()["agents"].items()]
         return [{"id": "mock", "name": "Mock Agent", "version": "0.1.0"}]
 
     @app.post("/api/agents")

@@ -1,0 +1,44 @@
+Unicode true
+RequestExecutionLevel user
+Name "Agent Hub @VERSION@"
+OutFile "@OUTPUT@"
+InstallDir "$LOCALAPPDATA\Programs\AgentHub"
+InstallDirRegKey HKCU "Software\AgentHub" "InstallDir"
+!include "MUI2.nsh"
+!define MUI_ABORTWARNING
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "SimpChinese"
+
+Section "Agent Hub"
+  SetShellVarContext current
+  SetOutPath "$INSTDIR"
+  File /r "@PAYLOAD@\*"
+  WriteUninstaller "$INSTDIR\Uninstall.exe"
+  CreateDirectory "$SMPROGRAMS\Agent Hub"
+  CreateShortcut "$SMPROGRAMS\Agent Hub\Agent Hub.lnk" "$INSTDIR\AgentHub.exe"
+  CreateShortcut "$SMPROGRAMS\Agent Hub\使用说明.lnk" "$INSTDIR\README.md"
+  WriteRegStr HKCU "Software\AgentHub" "InstallDir" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentHub" "DisplayName" "Agent Hub"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentHub" "DisplayVersion" "@VERSION@"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentHub" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentHub" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentHub" "NoRepair" 1
+SectionEnd
+
+Section "Uninstall"
+  SetShellVarContext current
+@DELETE@
+  Delete "$INSTDIR\Uninstall.exe"
+  RMDir "$INSTDIR"
+  Delete "$SMPROGRAMS\Agent Hub\Agent Hub.lnk"
+  Delete "$SMPROGRAMS\Agent Hub\使用说明.lnk"
+  RMDir "$SMPROGRAMS\Agent Hub"
+  DeleteRegKey HKCU "Software\AgentHub"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentHub"
+  ; User data, credentials, workspace and Agent installations are preserved.
+SectionEnd

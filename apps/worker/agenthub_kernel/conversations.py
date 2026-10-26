@@ -96,6 +96,8 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "payload_hash": inv.payload_hash, "status": inv.status,
         "error": inv.error,
         "execution_mode": inv.snapshot.get("execution_mode", "strict"),
+        "workspace": (inv.snapshot.get("permissions") or {}).get("workspace"),
+        "workspace_access": (inv.snapshot.get("permissions") or {}).get("workspace_access"),
         "agent_id": inv.snapshot["agent_id"],
         "model": inv.snapshot.get("model"), "reasoning_effort": inv.snapshot.get("reasoning_effort"),
         "model_provider": inv.snapshot.get("model_provider"),

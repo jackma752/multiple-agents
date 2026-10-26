@@ -136,6 +136,8 @@
   <button id="panelToggle" class="drawer-btn" type="button">面板</button>
   <input id="token" type="password" autocomplete="off" placeholder="用户 token（默认 dev-user-token）" />
   <button id="connectBtn">连接</button>
+  <a id="settingsLink" href="/settings" hidden>本机设置</a>
+  <button id="desktopExit" hidden>退出 Hub</button>
 </header>
 <div class="layout">
   <aside class="left" id="leftPanel">
@@ -1440,6 +1442,7 @@ function renderCall(c) {
                                 onclick: () => stopLocal(c) }, "停止本地进程"));
   }
   const notes = [];
+  if(c.workspace) notes.push(`工作区：${c.workspace} · ${c.workspace_access === 'workspace-write' ? '允许写入（工具仍需授权）' : '只读'}`);
   const handoff = c.handoff || [];
   const parts = (c.context_preview || {}).parts || [];
   const fileCount = parts.filter((x) => x.kind === "file_snippet").length;
@@ -2103,7 +2106,7 @@ function renderComposer() {
 
 function renderAdapter() {
   const all = S.adapter || {};
-  const agents = all.agent_ids && all.agent_ids.length ? all.agent_ids : ["mock"];
+  const agents = all.agent_ids && all.agent_ids.length ? all.agent_ids : (S.desktop ? [] : ["mock"]);
   const keep = $("agent").value;
   $("agent").replaceChildren(...agents.map((id) => el("option", { value: id }, id)));
   if (agents.includes(keep)) $("agent").value = keep;
@@ -2135,7 +2138,7 @@ function renderAgentPosture() {
 /* ------------------------------------------------------------- boot --- */
 
 async function connect() {
-  S.token = $("token").value.trim() || "dev-user-token";
+  S.token = S.desktop ? "desktop-session" : ($("token").value.trim() || S.developmentToken || "dev-user-token");
   try { sessionStorage.setItem("agenthub.token", S.token); } catch (_) { /* storage blocked */ }
   try {
     S.adapter = await api("GET", "/api/adapter");
@@ -2214,11 +2217,28 @@ setInterval(async () => {
   finally { stagePolling = false; }
 }, 2000);
 
-(function boot() {
+(async function boot() {
+  try {
+    const config = await (await fetch('/api/client-config')).json();
+    S.desktop = config.desktop; S.developmentToken = config.development_token;
+    if (S.desktop) {
+      $('token').hidden = true; $('connectBtn').textContent = '重新连接'; $('settingsLink').hidden = false;
+      $('desktopExit').hidden = false;
+      $('desktopExit').onclick = async()=>{if(confirm('退出 Hub 后自动执行与额度等待将暂停。确认退出？')){await api('POST','/api/desktop/shutdown',{});setConn('', '服务已退出');}};
+      const params = new URLSearchParams(location.hash.slice(1));
+      const ticket = params.get('pair');
+      if (ticket) {
+        history.replaceState(null, '', location.pathname);
+        const r = await fetch('/api/desktop/session', {method:'POST', headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket})});
+        if (!r.ok) throw Error('配对已过期，请从开始菜单重新打开 Agent Hub');
+      }
+    }
+  } catch(e) { toast(e.message); }
   let saved = "";
   try { saved = sessionStorage.getItem("agenthub.token") || ""; } catch (_) { /* storage blocked */ }
   $("token").value = saved;
-  connect();
+  await connect();
+  if (S.desktop && S.adapter && !S.adapter.agent_ids.length) location.assign('/settings');
 })();
 </script>
 </body>

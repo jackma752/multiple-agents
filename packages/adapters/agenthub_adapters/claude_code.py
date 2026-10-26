@@ -200,7 +200,7 @@ def build_env(*, config_dir: str, proxy: Optional[str] = None, ca_bundle: Option
     env, stripped = {}, []
     for name, value in source.items():
         upper = name.upper()
-        if upper.startswith(STRIPPED_ENV_PREFIXES) or upper in STRIPPED_ENV_NAMES:
+        if upper.startswith((*STRIPPED_ENV_PREFIXES, "AGENT_HUB_")) or upper in STRIPPED_ENV_NAMES:
             stripped.append(name)
             continue
         env[name] = value
@@ -250,13 +250,14 @@ class ClaudeCodeLauncher:
 
     def __init__(self, *, path: str, expected_identity: Optional[dict], version: str = "unknown",
                  config_dir: str = "", proxy: Optional[str] = None,
-                 ca_bundle: Optional[str] = None) -> None:
+                 ca_bundle: Optional[str] = None, adopted_identity: Optional[dict] = None) -> None:
         self.path = path
         self.expected_identity = expected_identity
         self.version = version
         self.config_dir = config_dir
         self.proxy = proxy
         self.ca_bundle = ca_bundle
+        self._adopted_identity = dict(adopted_identity) if adopted_identity else None
         self.argv = [path, *CLAUDE_ARGV_TAIL]
 
     @classmethod
@@ -286,12 +287,12 @@ class ClaudeCodeLauncher:
     def supervised_problems(self) -> list[str]:
         """Cheap checks (they run under the kernel's writer lock); the hash is at launch."""
         problems = []
-        pinned = PINNED_CLAUDE_CODE
+        pinned = self._adopted_identity or PINNED_CLAUDE_CODE
         if (os.path.normcase(self.path or "") != os.path.normcase(pinned["path"])
                 or (self.expected_identity or {}) != {"sha256": pinned["sha256"], "size": pinned["size"]}
                 or self.version != pinned["version"]):
             problems.append("identity_not_pinned_constant")
-        if not ZERO_MODEL_IDENTITY_REPORT:
+        if not ZERO_MODEL_IDENTITY_REPORT and not self._adopted_identity:
             problems.append("identity_unconfirmed")  # real-test Step A not recorded
         if not self.path or not os.path.isfile(self.path):
             problems.append("executable_missing")
@@ -301,9 +302,10 @@ class ClaudeCodeLauncher:
             problems.append("argv_changed")
         if not self.config_dir or not os.path.isabs(self.config_dir) or _inside(self.config_dir, REPO_ROOT):
             problems.append("config_dir_not_outside_repository")
-        if not self.proxy:
+        if not self.proxy and not self._adopted_identity:
             problems.append("proxy_missing")
-        if not (self.ca_bundle and os.path.isfile(self.ca_bundle) and os.access(self.ca_bundle, os.R_OK)):
+        if ((self.ca_bundle or not self._adopted_identity) and not
+                (self.ca_bundle and os.path.isfile(self.ca_bundle) and os.access(self.ca_bundle, os.R_OK))):
             problems.append("ca_unreadable")
         return problems
 
@@ -749,9 +751,11 @@ class ClaudeCodeAdapter(AdapterContract):
                 return AdapterStartResult("", ok=False, terminal=True,
                                           detail="refused before launch: " + ", ".join(problems))
         try:
-            workdir = os.path.join(self.workdir_root, invocation_id)
+            from agenthub.workspace import approved_workspace
+            workspace = approved_workspace(snapshot)
+            workdir = workspace or os.path.join(self.workdir_root, invocation_id)
             os.makedirs(workdir, exist_ok=True)
-            if os.listdir(workdir):
+            if not workspace and os.listdir(workdir):
                 return AdapterStartResult("", ok=False, terminal=True,
                                           detail="refused: work directory is not empty; nothing started")
             logs = os.path.join(self.workdir_root, "_logs")
@@ -759,7 +763,7 @@ class ClaudeCodeAdapter(AdapterContract):
             os.makedirs(logs, exist_ok=True)
             os.makedirs(scratch, exist_ok=True)
             env, stripped, added = self.launcher.environment()
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             return AdapterStartResult("", ok=False, terminal=True,
                                       detail=f"refused: launch preparation failed ({type(exc).__name__})")
 

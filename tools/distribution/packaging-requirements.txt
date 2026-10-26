@@ -1,0 +1,8 @@
+# Build in a separate Python 3.12 x64 environment; do not bundle this directory.
+pyinstaller==6.17.0
+fastapi==0.115.6
+uvicorn==0.32.1
+SQLAlchemy==2.0.36
+pydantic==2.10.4
+python-multipart==0.0.20
+certifi==2026.10.19
