@@ -1,5 +1,9 @@
 # 会话页面 `/chat`：前端演示闭环（2026-10-22）
 
+**2026-10-26 复制修复**：阶段轮询不再无条件重建消息 DOM；文字选中时保留选区，清除选区后
+应用积累的消息变更。回复及调用卡增加复制按钮。真实浏览器离线验证见
+[模型与协作集成](model-collaboration-integration.md)，其中包含当前8080启动入口。
+
 分支 `feat/chat-frontend`，基于 `feat/async-tool-approval`。和 `/ui` 一样是零构建单页（`apps/api/agenthub_rt/static/chat.html`），旧控制台 `/ui` 没有改动。全程离线，没有真实模型调用。
 
 ## 启动

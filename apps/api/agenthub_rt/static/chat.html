@@ -248,6 +248,7 @@ const S = {
   createPromise: null, // the one conversation creation in flight, shared by every caller
   stats: { reconnects: 0, resyncs: 0, created: 0 }, // diagnostics (exposed as data-* on <main>)
   pointerDown: false,
+  timelineSignature: null, timelineDirty: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -276,6 +277,19 @@ function toast(message) {
   t.style.display = "block";
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => { t.style.display = "none"; }, 6000);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制");
+  } catch (_) { toast("复制未成功，请选中文字后按 Ctrl+C"); }
+}
+
+function timelineSelected() {
+  const selection = window.getSelection();
+  return !!(selection && !selection.isCollapsed && selection.rangeCount &&
+            selection.getRangeAt(0).intersectsNode($("timeline")));
 }
 
 /* ---------------------------------------------------------------- API --- */
@@ -1516,6 +1530,9 @@ function renderCall(c) {
       SETTLED.includes(c.status) && usageText(c.usage)
         ? chip("用量 " + usageText(c.usage), c.usage.completeness === "complete" ? "" : "warn") : null,
       el("span", { class: "grow" }), actions),
+    el("button", { class: "mini", onclick: () => copyText(c.sent_text ||
+      (S.messages.find(m => m.role === "user" && m.invocation && m.invocation.invocation_id === c.id) || {}).text || "") },
+      "复制发送内容"),
     consentBox,
     preview,
     sent,
@@ -1934,6 +1951,13 @@ function renderNow() {
   banner.hidden = !S.banner;
   banner.replaceChildren(S.banner, " ",
     el("button", { class: "mini", title: "关闭这条通知", onclick: () => { S.banner = ""; render(); } }, "×"));
+  // Stage/status polling must not detach unchanged messages or clear a user's
+  // selected text. Stream data still accumulates while selection defers this
+  // pane; selectionchange applies it as soon as the user clears the selection.
+  const signature = JSON.stringify([S.cid, S.messages, [...S.calls], [...S.cards],
+                                    S.handoff, [...S.busy], [...S.consent], S.foldOpen]);
+  const changed = signature !== S.timelineSignature;
+  if (changed && (switched || !timelineSelected())) {
   tl.replaceChildren();
   if (!S.cid) {
     tl.append(el("div", { class: "empty" }, "选择或新建一个会话。发送消息只会生成待审批调用，不会直接调用 Agent。"));
@@ -1963,6 +1987,7 @@ function renderNow() {
         el("div", { class: "who" }, (m.invocation && m.invocation.agent_id) || "Agent",
            meta.native_session ? chip("thread " + short(meta.native_session.thread_id), "") : null,
            used ? chip("用量 " + used, "") : null,
+           el("button", { class: "mini", onclick: () => copyText(m.text), title: "复制这条回复的完整文本" }, "复制回复"),
            el("button", { class: "mini" + (chosen ? " on" : ""), "data-handoff": m.message_id,
                           title: "把这条回复附在下一次调用里交给所选 Agent；发送前会在审批卡里完整显示",
                           onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent"),
@@ -1986,6 +2011,9 @@ function renderNow() {
   } else {
     tl.scrollTop = Math.min(prevTop, Math.max(0, tl.scrollHeight - tl.clientHeight));
   }
+  S.timelineSignature = signature;
+  S.timelineDirty = false;
+  } else if (changed) S.timelineDirty = true;
   exposeStats();
   renderUsage();
   renderSummary();
@@ -2164,6 +2192,9 @@ window.addEventListener("hashchange", () => {
   if (cid && cid !== S.cid) select(cid);
 });
 document.addEventListener("pointerdown", () => { S.pointerDown = true; }, true);
+document.addEventListener("selectionchange", () => {
+  if (S.timelineDirty && !timelineSelected()) render();
+});
 for (const type of ["pointerup", "pointercancel"]) {
   document.addEventListener(type, () => { S.pointerDown = false; }, true);
 }

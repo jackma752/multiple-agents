@@ -1,6 +1,10 @@
 # P5 · DeepSeek 适配器（OpenAI 兼容 chat/completions）
 
 状态：**用户已完成一次真实 HTTP 回复和用量记录；最终助手消息投影修复离线通过，待重启确认**。
+
+**当前整合入口**：`fix/model-collaboration-integration` 同时提供模型管理与协作恢复，见
+[启动与复制说明](model-collaboration-integration.md)。DeepSeek可选择完整模型ID及none/low/high/max
+强度，进入本次审批并传入请求；候选目录不请求服务商，实际回复模型独立记录。
 日期：2026-10-26。初版位于 `main`；本次修复分支 `fix/deepseek-http400` 尚未合入 main/推送。
 
 ## 2026-10-26 补充：最终回复与协作交接契约
@@ -122,7 +126,7 @@ Authorization: Bearer <key>        # 只出现在这个 header 里
 
 - `base_url` 默认 `https://api.deepseek.com`，`AGENT_HUB_DEEPSEEK_BASE_URL` 可覆盖
   （将来若有别的兼容端点，改环境变量即可，不改代码）。
-- 请求体只允许四个键：`model` / `messages` / `stream` / `stream_options`。
+- 请求体只允许 `model` / `messages` / `stream` / `stream_options` / 可选 `reasoning_effort`。
   `packages/adapters/agenthub_adapters/deepseek.py` 里的 `ALLOWED_BODY_KEYS`
   在发出前再拦一次，**没有 `tools`**。
 - 事件流按 SSE 逐行解析，`data: [DONE]` 结束；每一段文本通过 `STREAM_DELTA`

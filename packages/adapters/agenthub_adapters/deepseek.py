@@ -74,7 +74,7 @@ DEFAULT_MODEL = "deepseek-flash"
 
 #: Every key this adapter is allowed to put in a request body. Anything else
 #: (``tools`` above all) would be a capability this channel does not have.
-ALLOWED_BODY_KEYS = frozenset({"model", "messages", "stream", "stream_options"})
+ALLOWED_BODY_KEYS = frozenset({"model", "messages", "stream", "stream_options", "reasoning_effort"})
 
 CREDENTIALS_FILENAME = "credentials.json"
 
@@ -361,6 +361,8 @@ class DeepSeekAdapter(AdapterContract):
     name = "deepseek"
     version = "0.1.0"
     AGENT_IDS = AGENT_IDS
+    supports_model_selection = True
+    supports_effort_selection = True
 
     def __init__(
         self,
@@ -440,6 +442,18 @@ class DeepSeekAdapter(AdapterContract):
     def context_profile(self) -> dict:
         return {"adds_prompt_text": False, "observed": []}
 
+    def model_catalog(self, *, refresh: bool = False) -> dict:
+        """Documented candidates and configuration, without a paid/metadata request."""
+        models = [self.model]
+        if urlsplit(self.base_url).hostname == "api.deepseek.com":
+            models.extend(("deepseek-flash", "deepseek-v4-pro"))
+        return {"default_model": self.model, "default_source": "adapter_configuration",
+                "refresh_available": False,
+                "models": [{"id": model, "display_name": model,
+                            "source": "adapter_configuration" if model == self.model else "documented",
+                            "reasoning_efforts": ["none", "low", "high", "max"]}
+                           for model in dict.fromkeys(models)]}
+
     def binding_identity(self) -> str:
         """What an approval binds to: this model at this endpoint (no local binary)."""
         return f"deepseek:{self.model}@{_host_of(self.base_url)}"
@@ -483,6 +497,9 @@ class DeepSeekAdapter(AdapterContract):
                 terminal=True,
                 detail="refused: missing_gate_token",
             )
+        if snapshot.reasoning_effort not in (None, "none", "low", "high", "max"):
+            return AdapterStartResult(adapter_invocation_id="", ok=False, terminal=True,
+                                      detail="refused: unsupported_reasoning_effort")
         try:
             # The offline stub needs no credential; a real call always does.
             api_key = "" if self.stub else load_api_key(self.credentials_path, repo_root=self.repo_root)
@@ -574,7 +591,8 @@ class DeepSeekAdapter(AdapterContract):
             "final_message": reply,
             "reply": reply,
             "finish_reason": finish_reason,
-            "model": reported_model or self.model,
+            "model": reported_model or payload["model"],
+            "model_source": "provider_report" if reported_model else "request_configuration",
             "usage": usage,
             "events": events,
             "elapsed": round(elapsed, 3),
@@ -592,13 +610,15 @@ class DeepSeekAdapter(AdapterContract):
 
     def _payload(self, snapshot: InvocationSnapshot) -> dict:
         body = {
-            "model": self.model,
+            "model": snapshot.model or self.model,
             "messages": [{"role": "user", "content": snapshot.task_input}],
             "stream": True,
             # Explicitly request usage. Current DeepSeek also reports usage in
             # its final chunk when this option is omitted (official API docs).
             "stream_options": {"include_usage": True},
         }
+        if snapshot.reasoning_effort:
+            body["reasoning_effort"] = snapshot.reasoning_effort
         return body
 
     def _transport_for(self, api_key: str) -> Callable[[dict, dict], Iterable[dict]]:
@@ -698,6 +718,7 @@ class DeepSeekAdapter(AdapterContract):
             "source": "sse_final_chunk",
             "notes": [],
             "model": payload.get("model") or self.model,
+            "model_source": payload.get("model_source", "provider_report"),
         }
 
 

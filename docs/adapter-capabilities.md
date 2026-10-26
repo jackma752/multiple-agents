@@ -1,5 +1,9 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-26 集成入口**：`fix/model-collaboration-integration` 组合模型选择、分模型预算、
+协作恢复与 DeepSeek 接入。DeepSeek 本次 model/effort、按模型归账及预算已离线验证；候选为
+配置/官方文档列表，不宣称账号实时可用。详见[集成与复制修复](model-collaboration-integration.md)。
+
 ## 2026-10-26：P4 模型管理与分模型预算
 
 `feat/p4-model-management` 新增模型选择、分模型明细和预算，首次真实运行仍待用户验收。实现及实际测试记录见 [P4 模型管理](p4-model-management.md)。
