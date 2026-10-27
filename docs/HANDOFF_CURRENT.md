@@ -1,4 +1,18 @@
-# 当前交接：Windows 可写工作区修复（2026-10-27，0.5.2）
+# 当前交接：线上改进整合与执行时限（2026-10-28，0.5.4）
+
+- 超时源码 `b6d5aec`、五项需求整合源码 `e01e905`；分支 `feat/desktop-timeout`，worktree `.worktrees/desktop-timeout`。
+- 来源 `E:\plug\线上测试改进需求.txt`：主题、读写说明、Markdown/SVG、默认不限时与累计调用数、删除会话均完成。
+- 安装版 execution_timeout_seconds 默认 0，兼容旧明确 Codex 值；进入审批，Codex/Claude 与后台时限一致。网络/工具等待独立保留。
+- Policy 累计调用/子任务总量与 StageRules.max_calls 默认 0 不限，旧存储策略不自动放宽；并发、层级、授权、预算和最多三次修复仍有效。
+- 会话删除采用 additive 标记表，拒绝在途/未知/开放阶段，撤销未用审批，不删除工作区文件或用量审计。页面关闭旧事件流避免复现已删除聊天。
+- 549 项定向回归通过；Headless Edge 显示/原文复制/SVG 清除/主题/确认删除/760px 布局检查通过。
+- 0.5.4 新包在主目录 `dist/p5-release-0.5.4`；实际冻结程序的启动、认证、保存、渲染、删除和退出检查通过，0 次真实模型调用。见[发行记录与校验值](p5-release-0.5.4.md)。
+- 未操作用户当前 8080 服务、实际安装或项目输出文件；需用户退出后同目录覆盖升级。旧未知调用先核实结束再人工登记，不能接回已终止的进程。
+- 未合 main、未推送；main 仍 `98d515b`，主目录用户未提交 README 改动保持原样。
+
+---
+
+# 之前交接：Windows 可写工作区修复（2026-10-27，0.5.2）
 
 - 修复源码 `77d785b`，分支 `fix/desktop-workspace`，worktree `.worktrees/desktop-workspace`。
 - 原因：Windows 未选沙箱后端时 Codex 把 workspace-write 降成 readOnly。在线调用在模型回合前被拒绝。
