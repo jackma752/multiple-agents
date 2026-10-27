@@ -756,14 +756,15 @@ class AppServerCodexAdapter(AdapterContract):
             problems = factory.supervised_problems()
         except Exception:  # noqa: BLE001
             problems = ["factory_check_failed"]
-        if not (isinstance(self.timeout_seconds, (int, float)) and math.isfinite(self.timeout_seconds)
-                and 0 < self.timeout_seconds <= 600):
+        adopted = bool(factory._adopted_identity)
+        if not (type(self.timeout_seconds) in (int, float) and math.isfinite(self.timeout_seconds)
+                and (0 <= self.timeout_seconds <= 86400 if adopted else 0 < self.timeout_seconds <= 600)):
             problems.append("timeout")
         if problems:
             return ExecutionAdmission(
                 False, "blocked", "appserver_supervised_conditions",
                 "用户监督模式要求代码常量中的固定身份（无环境变量覆盖）、验证过的启动参数、"
-                "代理和可读的 CA、最多 600 秒的本地时限。未满足：" + ", ".join(problems))
+                "代理和可读的 CA、有效的执行时限（安装版可设 0 为不限时）。未满足：" + ", ".join(problems))
         return ExecutionAdmission(True, "supervised", "user_supervised_boundary", SUPERVISED_REASON)
 
     def supports_native_resume(self) -> bool:
@@ -840,9 +841,12 @@ class AppServerCodexAdapter(AdapterContract):
 
     def _run(self, invocation_id: str, snapshot: InvocationSnapshot,
              resume_id: Optional[str], emit: Emit, gate: Any = None) -> AdapterStartResult:
-        from agenthub.workspace import approved_workspace
+        from agenthub.workspace import approved_workspace, execution_timeout
         try:
             workspace = approved_workspace(snapshot)
+            timeout = execution_timeout(snapshot, self.timeout_seconds)
+            if timeout != self.timeout_seconds:
+                raise ValueError("approved execution time limit differs from the current adapter; create a new approval")
         except ValueError as exc:
             return AdapterStartResult("", ok=False, terminal=True, detail=f"refused: {exc}")
         writable = bool(workspace and snapshot.permissions.get("workspace_access") == "workspace-write")
@@ -999,9 +1003,9 @@ class AppServerCodexAdapter(AdapterContract):
 
     def _pump(self, client: AppServerClient, turn: _Turn, emit: Emit, gate: Any = None) -> bool:
         """Follow this turn until its terminal event. False on timeout."""
-        deadline = time.monotonic() + self.timeout_seconds
-        wall_deadline = _utc_naive() + dt.timedelta(seconds=self.timeout_seconds)
-        while time.monotonic() < deadline:
+        deadline = time.monotonic() + self.timeout_seconds if self.timeout_seconds else None
+        wall_deadline = _utc_naive() + dt.timedelta(seconds=self.timeout_seconds) if self.timeout_seconds else None
+        while deadline is None or time.monotonic() < deadline:
             # Observe queued terminal/resolved notifications before claiming a
             # decision, including when its card was opened in an earlier pass.
             if self._observe_batch(client.notifications(), turn, emit):
@@ -1233,7 +1237,7 @@ class AppServerCodexAdapter(AdapterContract):
         return details
 
     def _route_requests(self, client: AppServerClient, turn: _Turn, emit: Emit,
-                        gate: Any, wall_deadline: dt.datetime) -> None:
+                        gate: Any, wall_deadline: Optional[dt.datetime]) -> None:
         """New tool requests of THIS turn become cards; everything else is declined."""
         for request in client.server_requests():
             if request.answered or request.id in turn.cards or request.id in turn.closed_requests:

@@ -175,7 +175,7 @@ class PolicyService:
         from agenthub_kernel.desktop import workspace_permissions
         from dataclasses import replace
         try:
-            workspace = workspace_permissions()
+            workspace = workspace_permissions(snapshot.agent_id)
         except ValueError as exc:
             raise QuotaError("workspace_required", str(exc)) from exc
         if workspace:
@@ -1015,7 +1015,11 @@ class PolicyService:
             if task is None:
                 continue
             policy = self._quotas(r)
-            deadline = r.started_at + dt.timedelta(seconds=policy.run_time_limit_seconds)
+            from agenthub.workspace import execution_timeout
+            limit = execution_timeout(InvocationSnapshot(**r.snapshot), policy.run_time_limit_seconds)
+            if limit == 0:
+                continue
+            deadline = r.started_at + dt.timedelta(seconds=limit)
             if current >= deadline:
                 overdue.append(
                     {
@@ -1023,7 +1027,7 @@ class PolicyService:
                         "root_task_id": task.root_task_id,
                         "started_at": r.started_at,
                         "deadline": deadline,
-                        "limit_seconds": policy.run_time_limit_seconds,
+                        "limit_seconds": limit,
                     }
                 )
         return overdue

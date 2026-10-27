@@ -176,6 +176,8 @@ class InvocationSnapshot:
     model_provider: Optional[str] = None
 
     def __post_init__(self) -> None:
+        from agenthub.workspace import execution_timeout
+        execution_timeout(self, None)
         from agenthub.models import validate_selection
         validate_selection(self.model, self.reasoning_effort)
         if self.execution_mode not in {"strict", "supervised"}:

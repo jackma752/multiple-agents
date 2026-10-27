@@ -26,10 +26,11 @@ def load() -> dict:
     path = home() / "profile.json"
     if not path.exists():
         return {"schema": 1, "agents": {}, "workspace": "", "workspace_access": "read-only",
-                "proxy": "", "ca_bundle": ""}
+                "proxy": "", "ca_bundle": "", "codex_timeout_seconds": 600}
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != 1:
         raise ValueError("Unsupported profile version; keep a backup before upgrading")
+    data.setdefault("codex_timeout_seconds", 600)
     return data
 
 
@@ -92,14 +93,17 @@ def discover() -> list[dict]:
     return found
 
 
-def workspace_permissions() -> dict:
+def workspace_permissions(agent_id=None) -> dict:
     if not enabled():
         return {}
     profile = load()
     path = profile.get("workspace")
     if not path:
         raise ValueError("请先在设置中选择工作区")
-    return {"workspace": path, "workspace_access": profile["workspace_access"]}
+    permissions = {"workspace": path, "workspace_access": profile["workspace_access"]}
+    if agent_id == "codex":
+        permissions["execution_timeout_seconds"] = profile["codex_timeout_seconds"]
+    return permissions
 
 
 def save_configuration(body: dict) -> dict:
@@ -118,6 +122,8 @@ def save_configuration(body: dict) -> dict:
     access = body.get("workspace_access", "read-only")
     if access not in ("read-only", "workspace-write"):
         raise ValueError("工作区权限只能为只读或允许写入")
+    from agenthub.workspace import validate_execution_timeout
+    timeout = validate_execution_timeout(body.get("codex_timeout_seconds", current["codex_timeout_seconds"]))
     proxy = str(body.get("proxy", "")).strip()
     if proxy and (urlsplit(proxy).scheme not in ("http", "https") or not urlsplit(proxy).hostname
                   or urlsplit(proxy).username or urlsplit(proxy).password):
@@ -169,7 +175,7 @@ def save_configuration(body: dict) -> dict:
             raise ValueError(f"{channel} 配置目录不存在，请先在该 Agent 中登录")
         agents[channel] = {**item, "enabled": True, "version": version, "config_dir": login_home}
     saved = {"schema": 1, "agents": agents, "workspace": workspace, "workspace_access": access,
-             "proxy": proxy, "ca_bundle": ca}
+             "proxy": proxy, "ca_bundle": ca, "codex_timeout_seconds": timeout}
     # No prompts, credentials or raw CLI output in audit records.
     from datetime import datetime, timezone
     audit = home() / "adoptions.jsonl"
@@ -177,7 +183,7 @@ def save_configuration(body: dict) -> dict:
     with audit.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "agents": {
             k: {x: v.get(x) for x in ("path", "sha256", "size", "version")} for k, v in agents.items()},
-            "workspace": workspace, "access": access}, ensure_ascii=False) + "\n")
+            "workspace": workspace, "access": access, "codex_timeout_seconds": timeout}, ensure_ascii=False) + "\n")
     if pending_key:
         atomic_json(pending_key[0], {"api_key": pending_key[1]})
     atomic_json(home() / "profile.json", saved)
@@ -196,7 +202,8 @@ def build_router():
         settings = {"proxy": profile.get("proxy", ""), "ca_bundle": profile.get("ca_bundle", ""),
                     "timeout_seconds": 600, "adopted": item}
         if channel == "codex":
-            settings.update(codex_home=item["config_dir"], workdir_root=str(home() / "runs/codex"),
+            settings.update(timeout_seconds=profile["codex_timeout_seconds"],
+                            codex_home=item["config_dir"], workdir_root=str(home() / "runs/codex"),
                             appserver_store_path=str(home() / "executions/codex.db"))
             adapters[channel] = _build_appserver(settings)
         elif channel == "claude-code":

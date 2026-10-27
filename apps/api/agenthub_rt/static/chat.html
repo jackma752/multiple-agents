@@ -354,6 +354,7 @@ function absorbMessage(m) {
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
       context_preview: inv.context_preview, plan_item: inv.plan_item, authorized_by: inv.authorized_by,
+      workspace: inv.workspace, workspace_access: inv.workspace_access, execution_timeout_seconds: inv.execution_timeout_seconds,
     });
   }
 }
@@ -439,6 +440,9 @@ async function startStage() {
   if (!e.mode) { toast("请选择执行边界（严格或用户监督）"); return; }
   if (e.mode === "supervised" && !e.consent) { toast("用户监督模式需要先勾选边界同意"); return; }
   if (!e.agents.includes(e.main)) { toast("请从已勾选的 Agent 中重新选择主 Agent"); return; }
+  if (!Number.isFinite(Number(e.quotaMinutes)) || Number(e.quotaMinutes) < 1 || Number(e.quotaMinutes) > 60) {
+    toast("额度恢复复查间隔须为 1～60 分钟；Codex 执行时限请到本机设置调整，填 0 可不限时。"); return;
+  }
   if ((e.review && !e.agents.includes(e.review)) || (e.collect && !e.agents.includes(e.collect))) {
     toast("请从已勾选的 Agent 中重新选择审阅和汇总 Agent"); return;
   }
@@ -1019,6 +1023,16 @@ function stopLocal(c) {
   });
 }
 
+function settleEnded(c) {
+  if (!confirm("确认这次调用及相关执行已结束？将人工登记为超时并释放名额，保留现有文件；不会重跑任务，也不表示产物已验收。若仍在运行，请先停止并核实。")) return;
+  return guarded("settle:" + c.id, async () => {
+    const r = await api("POST", `/api/invocations/${enc(c.id)}/reconcile`, { action: "settle", outcome: "timed_out" });
+    patch(c, { status: r.outcome });
+    await loadStage(); needUsage(); needMessages();
+    toast("已登记结束，现有文件保留。可到本机设置调整后续调用的执行时限。");
+  });
+}
+
 function interruptCall(c) {
   return guarded("interrupt:" + c.id, async () => {
     c.interrupt = { interrupt_requested: true, pending: true };
@@ -1442,9 +1456,13 @@ function renderCall(c) {
                                 onclick: () => interruptCall(c) }, "中断本轮"),
                  el("button", { class: "danger", disabled: S.busy.has("stop:" + c.id),
                                 onclick: () => stopLocal(c) }, "停止本地进程"));
+  } else if (c.status === "unknown" && /deadline|timeout|timed.out/i.test(c.error || "")) {
+    actions.push(el("button", { disabled: S.busy.has("settle:" + c.id), onclick: () => settleEnded(c) }, "登记超时调用已结束"));
   }
   const notes = [];
   if(c.workspace) notes.push(`工作区：${c.workspace} · ${c.workspace_access === 'workspace-write' ? '允许写入（工具仍需授权）' : '只读'}`);
+  if (c.execution_timeout_seconds !== undefined && c.execution_timeout_seconds !== null)
+    notes.push(`单次执行时限：${c.execution_timeout_seconds === 0 ? '不限时（可手动停止）' : (c.execution_timeout_seconds / 60) + ' 分钟'}`);
   const handoff = c.handoff || [];
   const parts = (c.context_preview || {}).parts || [];
   const fileCount = parts.filter((x) => x.kind === "file_snippet").length;
@@ -1456,17 +1474,20 @@ function renderCall(c) {
                (extras.length ? `下面的完整内容（你的消息 + ${extras.join(" + ")}）` : "本条消息原文") +
                (c.context_mode === "native_resume" ? `，并续接 thread ${short(c.resume_thread_id)} 的上下文。` : "。"));
   if (c.turn) notes.push(c.turn.resumed ? `模型回合已开始（续接 thread ${short(c.turn.thread_id)}）` : "模型回合已开始");
+  const endedLocally = ["succeeded", "failed", "canceled", "timed_out"].includes(c.status);
   if (c.ended && c.ended.native_unfinished && c.ended.native_unfinished.length) {
     notes.push(`父回合实际终态：${c.ended.turn_status || "无状态"}；原生子 Agent（thread ` +
-               `${c.ended.native_unfinished.map(short).join(", ")}）没有可信的结束证据：调用保持未知，` +
-               "名额保留；这些子 Agent 不计入 Hub 配额，Hub 也不能确认它们已停止。");
+               `${c.ended.native_unfinished.map(short).join(", ")}）没有可信的结束证据：` +
+               (endedLocally ? "调用已登记结束；" : "调用保持未知，名额保留；") +
+               "这些子 Agent 不计入 Hub 配额，Hub 也不能确认它们已停止。");
   } else if (c.ended) {
     notes.push(`provider 报告回合结束：${c.ended.turn_status || "无状态"}` +
-               (c.ended.terminal ? "" : "（未确认终态，名额保留）"));
+               (c.ended.terminal ? "" : endedLocally
+                 ? "（接入方终态未确认；调用已登记结束，产物仍需验收）" : "（未确认终态，名额保留）"));
   }
   notes.push(...budgetNotes(c, awaiting || c.status === "queued"));
   if (c.declined.length) notes.push(`已自动拒绝 ${c.declined.length} 个非本回合或无法登记的请求`);
-  if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，名额保留`);
+  if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，${endedLocally ? "调用已登记结束" : "名额保留"}`);
   if (c.interrupt) {
     const i = c.interrupt;
     const settled = ["canceled", "succeeded", "failed", "timed_out"].includes(c.status);

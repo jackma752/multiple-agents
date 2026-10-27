@@ -1,5 +1,7 @@
 # 适配器能力矩阵（P0）
 
+**2026-10-28 安装版 0.5.3 执行时限**：用户采用的 Codex app-server 可在本机设置调整单次总执行时限，0 为不限时，默认 600 秒；批准值进入快照，适配器与后台超时检查一致。手动中断、工具卡有效期与连接超时保留。Claude/DeepSeek 以及固定评审运行时边界不扩展。本次为离线协议与发行检查，未新增真实模型验收。详见[问题与验证记录](issue-desktop-execution-timeout.md)。
+
 **2026-10-26 集成入口**：`fix/model-collaboration-integration` 组合模型选择、分模型预算、
 协作恢复与 DeepSeek 接入。DeepSeek 本次 model/effort、按模型归账及预算已离线验证；候选为
 配置/官方文档列表，不宣称账号实时可用。详见[集成与复制修复](model-collaboration-integration.md)。
