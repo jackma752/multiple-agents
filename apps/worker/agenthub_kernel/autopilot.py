@@ -729,7 +729,7 @@ class Autopilot:
         rules = rules_of(stage.rules)
         used = session.scalar(select(func.count()).select_from(StageGrantRow)
                               .where(StageGrantRow.stage_id == stage.id)) or 0
-        if used >= rules.max_calls:
+        if rules.max_calls and used >= rules.max_calls:
             raise _Blocked(step, "max_calls_reached", f"{used}/{rules.max_calls}")
         if agent_id not in rules.agents:
             raise _Blocked(step, "plan_outside_rules", agent_id)

@@ -3,9 +3,9 @@ import os
 
 
 def validate_execution_timeout(value):
-    """Approved Codex wall-clock seconds: zero disables this deadline."""
+    """Approved wall-clock seconds: zero disables this deadline."""
     if type(value) is not int or not 0 <= value <= 86400:
-        raise ValueError("Codex 执行时限须为 0～86400 秒；0 表示不限时")
+        raise ValueError("执行时限须为 0～86400 秒；0 表示不限时")
     return value
 
 

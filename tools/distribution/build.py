@@ -14,7 +14,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = '0.5.3'
+VERSION = '0.5.4'
 EXCLUDED = ['pytest', '_pytest', 'httpx', 'IPython', 'tkinter', 'unittest', 'doctest',
             'agenthub_adapters.appserver_stub', 'agenthub_adapters.mock', 'agenthub_rt.dev_auth', 'tests', 'tools']
 

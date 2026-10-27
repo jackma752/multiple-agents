@@ -159,7 +159,7 @@ def test_runtime_changes_refused_while_call_running(release):
 
 def test_codex_unlimited_is_approved_and_not_reaped_by_old_tree_limit(release):
     client,tmp=release; pair(client)
-    body=settings(tmp)
+    body=settings(tmp,codex_timeout_seconds=600)
     assert post(client,'/api/desktop/settings',body).status_code==200
     with client.app.state.db.session() as session:
         svc=PolicyService(session); task=svc.create_task(agent_id='codex',goal='long task')
@@ -206,17 +206,27 @@ def test_invalid_codex_deadline_does_not_write_profile(release,value):
     assert (desktop.home()/'profile.json').read_bytes()==before
 
 
-def test_old_desktop_profile_keeps_ten_minute_limit(release):
+def test_old_desktop_profile_without_a_limit_defaults_to_unlimited(release):
     client,tmp=release; pair(client)
     assert post(client,'/api/desktop/settings',settings(tmp)).status_code==200
-    p=desktop.home()/'profile.json'; data=json.loads(p.read_text()); data.pop('codex_timeout_seconds')
+    p=desktop.home()/'profile.json'; data=json.loads(p.read_text()); data.pop('codex_timeout_seconds'); data.pop('execution_timeout_seconds')
     p.write_text(json.dumps(data))
-    assert client.get('/api/desktop/settings').json()['codex_timeout_seconds']==600
+    assert client.get('/api/desktop/settings').json()['execution_timeout_seconds']==0
+
+
+def test_explicit_053_limit_is_preserved_and_shared_by_new_calls(release):
+    client,tmp=release; pair(client)
+    assert post(client,'/api/desktop/settings',settings(tmp,codex_timeout_seconds=600)).status_code==200
+    p=desktop.home()/'profile.json'; data=json.loads(p.read_text()); data.pop('execution_timeout_seconds')
+    p.write_text(json.dumps(data))
+    assert client.get('/api/desktop/settings').json()['execution_timeout_seconds']==600
+    for agent in ['codex','claude-code','deepseek']:
+        assert desktop.workspace_permissions(agent)['execution_timeout_seconds']==600
 
 
 def test_user_can_settle_old_timeout_then_change_future_limit_without_restarting(release):
     client,tmp=release; pair(client)
-    assert post(client,'/api/desktop/settings',settings(tmp)).status_code==200
+    assert post(client,'/api/desktop/settings',settings(tmp,execution_timeout_seconds=600)).status_code==200
     output=tmp/'工作 项目'/'result.md'; output.write_text('existing work',encoding='utf-8')
     with client.app.state.db.session() as session:
         svc=PolicyService(session); task=svc.create_task(agent_id='codex',goal='long task')

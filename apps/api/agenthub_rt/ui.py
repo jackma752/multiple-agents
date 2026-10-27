@@ -300,6 +300,14 @@ def register_ui(app: FastAPI, db: Database) -> None:
     def brand_icon():
         return FileResponse(os.path.join(STATIC_DIR, "brand", "app-icon-256.png"), media_type="image/png")
 
+    @app.get("/assets/display.js", include_in_schema=False)
+    def display_script():
+        return FileResponse(os.path.join(STATIC_DIR, "display.js"), media_type="text/javascript")
+
+    @app.get("/assets/display.css", include_in_schema=False)
+    def display_style():
+        return FileResponse(os.path.join(STATIC_DIR, "display.css"), media_type="text/css")
+
     @app.get("/ui", response_class=HTMLResponse)
     def ui() -> HTMLResponse:
         """Serve the zero-build single-page console.

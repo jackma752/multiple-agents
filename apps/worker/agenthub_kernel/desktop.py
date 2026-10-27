@@ -26,11 +26,12 @@ def load() -> dict:
     path = home() / "profile.json"
     if not path.exists():
         return {"schema": 1, "agents": {}, "workspace": "", "workspace_access": "read-only",
-                "proxy": "", "ca_bundle": "", "codex_timeout_seconds": 600}
+                "proxy": "", "ca_bundle": "", "codex_timeout_seconds": 0, "execution_timeout_seconds": 0}
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != 1:
         raise ValueError("Unsupported profile version; keep a backup before upgrading")
-    data.setdefault("codex_timeout_seconds", 600)
+    data.setdefault("execution_timeout_seconds", data.get("codex_timeout_seconds", 0))
+    data.setdefault("codex_timeout_seconds", data["execution_timeout_seconds"])
     return data
 
 
@@ -101,8 +102,8 @@ def workspace_permissions(agent_id=None) -> dict:
     if not path:
         raise ValueError("请先在设置中选择工作区")
     permissions = {"workspace": path, "workspace_access": profile["workspace_access"]}
-    if agent_id == "codex":
-        permissions["execution_timeout_seconds"] = profile["codex_timeout_seconds"]
+    if agent_id:
+        permissions["execution_timeout_seconds"] = profile["execution_timeout_seconds"]
     return permissions
 
 
@@ -123,7 +124,8 @@ def save_configuration(body: dict) -> dict:
     if access not in ("read-only", "workspace-write"):
         raise ValueError("工作区权限只能为只读或允许写入")
     from agenthub.workspace import validate_execution_timeout
-    timeout = validate_execution_timeout(body.get("codex_timeout_seconds", current["codex_timeout_seconds"]))
+    timeout = validate_execution_timeout(body.get("execution_timeout_seconds",
+        body.get("codex_timeout_seconds", current["execution_timeout_seconds"])))
     proxy = str(body.get("proxy", "")).strip()
     if proxy and (urlsplit(proxy).scheme not in ("http", "https") or not urlsplit(proxy).hostname
                   or urlsplit(proxy).username or urlsplit(proxy).password):
@@ -175,7 +177,8 @@ def save_configuration(body: dict) -> dict:
             raise ValueError(f"{channel} 配置目录不存在，请先在该 Agent 中登录")
         agents[channel] = {**item, "enabled": True, "version": version, "config_dir": login_home}
     saved = {"schema": 1, "agents": agents, "workspace": workspace, "workspace_access": access,
-             "proxy": proxy, "ca_bundle": ca, "codex_timeout_seconds": timeout}
+             "proxy": proxy, "ca_bundle": ca, "codex_timeout_seconds": timeout,
+             "execution_timeout_seconds": timeout}
     # No prompts, credentials or raw CLI output in audit records.
     from datetime import datetime, timezone
     audit = home() / "adoptions.jsonl"
@@ -200,10 +203,9 @@ def build_router():
         if not item.get("enabled"):
             continue
         settings = {"proxy": profile.get("proxy", ""), "ca_bundle": profile.get("ca_bundle", ""),
-                    "timeout_seconds": 600, "adopted": item}
+                    "timeout_seconds": profile["execution_timeout_seconds"], "adopted": item}
         if channel == "codex":
-            settings.update(timeout_seconds=profile["codex_timeout_seconds"],
-                            codex_home=item["config_dir"], workdir_root=str(home() / "runs/codex"),
+            settings.update(codex_home=item["config_dir"], workdir_root=str(home() / "runs/codex"),
                             appserver_store_path=str(home() / "executions/codex.db"))
             adapters[channel] = _build_appserver(settings)
         elif channel == "claude-code":
@@ -211,7 +213,7 @@ def build_router():
                             store_path=str(home() / "executions/claude.db"))
             adapters[channel] = _build_claude_code(settings)
         elif channel == "deepseek":
-            settings.update(base_url=item["base_url"], model=item["model"],
+            settings.update(timeout_seconds=120, base_url=item["base_url"], model=item["model"],
                             credentials_path=str(home() / "credentials/deepseek.json"),
                             store_path=str(home() / "executions/deepseek.db"), stub="")
             adapters[channel] = _build_deepseek(settings)

@@ -21,7 +21,7 @@ THREAD_BUSY_STATUSES = ("starting", "running", "unknown")
 from agenthub_kernel.adapters import adapter_for
 from agenthub_kernel.autopilot import grant_view
 from agenthub_kernel.db import (
-    ApprovalRow, ChatMessageRow, CollabItemRow, ConversationRow, InvocationRow, TaskRow,
+    ApprovalRow, ChatMessageRow, CollabItemRow, ConversationRow, DeletedConversationRow, InvocationRow, TaskRow,
 )
 from agenthub_kernel.service import PolicyService, QuotaError
 from agenthub_kernel.budget import budget_view
@@ -67,7 +67,7 @@ def short_title(text: str, limit: int = 5) -> str:
 
 def owned_conversation(session: Session, cid: str, user_id: str) -> ConversationRow:
     row = session.get(ConversationRow, cid)
-    if row is None or row.user_id != user_id:
+    if row is None or row.user_id != user_id or session.get(DeletedConversationRow, cid):
         raise QuotaError("no_conversation", "conversation not found")
     return row
 

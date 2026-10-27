@@ -170,7 +170,7 @@ def check_dispatch(session: Session, cid: str, item: CollabItemRow, *, attempt_l
                          "ended (recovery or adjudication) before dispatching it again")
     if mine["state"] == "done":
         raise QuotaError("item_done", "this sub-task is already done")
-    if mine["attempts"] >= attempt_limit:
+    if attempt_limit and mine["attempts"] >= attempt_limit:
         raise QuotaError("retry_limit", f"this sub-task was dispatched {mine['attempts']} times (the limit)")
     waiting = [d for d in item.depends_on or [] if states[d]["state"] != "done"]
     if waiting:

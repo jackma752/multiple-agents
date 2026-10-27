@@ -43,8 +43,11 @@ SSE_BATCH = 200
 def sse_frame(event: dict) -> str:
     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     return f"id: {event['seq']}\nevent: {event['type']}\ndata: {data}\n\n"
-from agenthub_kernel.db import ChatMessageRow, ConversationLinkRow, ConversationRow, InvocationRow
-from agenthub_kernel.service import QuotaError, new_id
+from agenthub_kernel.db import (
+    ApprovalRow, ChatMessageRow, ConversationLinkRow, ConversationRow, DeletedConversationRow,
+    InvocationRow, StageRunRow, TaskRow,
+)
+from agenthub_kernel.service import PolicyService, QuotaError, new_id
 from agenthub_rt.auth import Principal, authenticate, require_approver
 
 
@@ -220,6 +223,27 @@ def register_conversations(app, db) -> None:
             link = session.get(ConversationLinkRow, cid)
             return conversation_view(row, link)
 
+    @app.delete("/api/conversations/{cid}")
+    def delete_conversation(cid: str, principal: Principal = Depends(authenticate)):
+        """Remove an inactive owned chat; files, ledger and audit remain."""
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            row = require_conversation(session, cid, principal)
+            root = root_task_of(session, cid)
+            if root:
+                active = session.scalar(select(InvocationRow.id).join(TaskRow, TaskRow.id == InvocationRow.task_id)
+                    .where(TaskRow.root_task_id == root, InvocationRow.status.in_(["starting", "running", "unknown", "queued"])).limit(1))
+                stage = session.scalar(select(StageRunRow.id).where(StageRunRow.root_task_id == root,
+                    StageRunRow.status.in_(["active", "repairing", "waiting_quota", "paused"])).limit(1))
+                if active or stage:
+                    raise HTTPException(409, detail="请先停止自动阶段，并结束正在运行或状态未知的调用，再删除会话")
+            ids = select(ChatMessageRow.invocation_id).where(ChatMessageRow.conversation_id == cid)
+            for approval in session.scalars(select(ApprovalRow).where(ApprovalRow.invocation_id.in_(ids),
+                    ApprovalRow.status.in_(["pending", "approved"]))):
+                PolicyService(session).revoke(approval.id)
+            session.add(DeletedConversationRow(conversation_id=row.id))
+        return {"deleted": True, "conversation_id": cid, "files_preserved": True, "usage_preserved": True}
+
     @app.get("/api/conversations")
     def list_conversations(
         offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
@@ -229,6 +253,8 @@ def register_conversations(app, db) -> None:
         with db.session() as session:
             rows = session.scalars(select(ConversationRow).where(
                 ConversationRow.user_id == principal.identity,
+                ~select(DeletedConversationRow.conversation_id).where(
+                    DeletedConversationRow.conversation_id == ConversationRow.id).exists(),
             ).order_by(ConversationRow.created_at.desc(), ConversationRow.id.desc())
                 .offset(offset).limit(limit + 1)).all()
             links = {link.conversation_id: link for link in session.scalars(select(ConversationLinkRow).where(

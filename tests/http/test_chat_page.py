@@ -42,7 +42,7 @@ def test_chat_page_is_served_without_secrets_or_html_injection(make_client):
     assert 'sessionStorage.setItem("agenthub.token"' in html and "token=" not in html
 
 
-CALL_RE = re.compile(r'api\("(GET|POST)",\s*`?"?(/api/[^`"]+)[`"]')
+CALL_RE = re.compile(r'''api\(["'](GET|POST|PATCH|DELETE)["'],\s*`?["']?(/api/[^`"']+)[`"']''')
 FETCH_RE = re.compile(r'fetch\(`(/api/[^`?]+)')
 
 
@@ -57,7 +57,10 @@ def concrete(path):
     return re.sub(r"\$\{[^}]+\}", "x", path)
 
 
-def test_every_api_call_in_the_page_matches_a_route(make_client):
+def test_every_api_call_in_the_page_matches_a_route(make_client,monkeypatch,tmp_path):
+    # Desktop-only actions are conditional in the page; register those routes too.
+    monkeypatch.setenv('AGENT_HUB_DESKTOP','1')
+    monkeypatch.setenv('AGENT_HUB_DESKTOP_HOME',str(tmp_path/'desktop-routes'))
     client = make_client(InMemoryStubFactory("demo"))
     calls = page_calls()
     # Guard the extraction itself: the loop's essential calls must be found.

@@ -77,10 +77,10 @@ class ApprovalIn(BaseModel):
 
 class PolicyIn(BaseModel):
     model_config = {"protected_namespaces": ()}
-    max_subagents_total: int = 3
+    max_subagents_total: int = 0
     max_subagents_concurrent: int = 2
     max_depth: int = 1
-    max_agent_invocations: int = 10
+    max_agent_invocations: int = 0
     collaboration_enabled: StrictBool = False
     # Token budgets (T-1c). A full replacement like the fields above: leaving
     # them out clears the budget.
