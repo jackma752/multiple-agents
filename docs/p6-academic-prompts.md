@@ -4,6 +4,8 @@
 
 分类参考：[Academic Writing Prompts 固定版本](https://github.com/ahmetbersoz/chatgpt-prompts-for-academic-writing/blob/4029d941c9eebb7723bb62d0838102ec476da72f/README.md)。源码调查和许可观察见 [调研报告](p6-upstream-research.md)。
 
+阅读材料补充遵守 [两种全文缺失策略](p6-fulltext-supplementation.md)：模型不得选择策略、决定超时、代替用户拒绝补充或把上传动作当作已读全文。补充文件完成匹配、解析和实际阅读后更新资料/证据版本；选择不补充仍保留摘要级或题录级标记。等待时不周期调用模型催问用户。
+
 ## 1. 如何选择，而非整库塞入
 
 把提示词拆成可测试的阶段任务，每次只装入本步骤所需模板和资料。通用科研约束固定；用户目标、证据和格式是经类型校验的变量。不要把所有提示词作为一个巨大 system prompt。
