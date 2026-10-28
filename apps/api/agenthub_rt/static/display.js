@@ -25,16 +25,33 @@
   function linkURL(value) {
     try { const url=new URL(value); return ['https:','http:','mailto:'].includes(url.protocol) ? url.href : null; } catch (_) {return null;}
   }
+  const escaped = (source, index) => {let n=0;while(index>0&&source[--index]==='\\')n++;return n%2===1;};
+  function formula(source, displayMode, original) {
+    const node=element(displayMode?'div':'span');node.className=displayMode?'math-display':'math-inline';
+    try {
+      if(!window.katex) throw Error('公式组件未加载');
+      if(source.length>20000) throw Error('公式过长');
+      window.katex.render(source,node,{displayMode,throwOnError:true,trust:false,strict:'ignore',maxExpand:1000,maxSize:20});
+    } catch(_) {
+      node.replaceChildren(document.createTextNode(original));node.classList.add('math-fallback');
+      node.title='公式无法解析，已保留原文';
+    }
+    return node;
+  }
   function inline(parent, source) {
-    const token = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|!?\[[^\]\n]*\]\([^\)\n]*\))/g;
+    // Match math before Markdown emphasis; code spans remain literal.
+    const token = /(`[^`\n]+`|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$(?!\s|\$)(?:\\.|[^$\n])*?[^\s\\$]\$(?!\d)|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|!?\[[^\]\n]*\]\([^\)\n]*\))/g;
     let last=0, match;
     while ((match=token.exec(source))) {
+      if(escaped(source,match.index)) continue;
       parent.append(document.createTextNode(source.slice(last,match.index)));
       const s=match[0]; let node;
       if(s[0]==='`') node=element('code',s.slice(1,-1));
-      else if(s.startsWith('**')||s.startsWith('__')) node=element('strong',s.slice(2,-2));
-      else if(s.startsWith('~~')) node=element('del',s.slice(2,-2));
-      else if(s[0]==='*') node=element('em',s.slice(1,-1));
+      else if(s.startsWith('\\[')||s.startsWith('\\(')||s.startsWith('$$')) node=formula(s.slice(2,-2),!s.startsWith('\\('),s);
+      else if(s[0]==='$') node=formula(s.slice(1,-1),false,s);
+      else if(s.startsWith('**')||s.startsWith('__')) {node=element('strong');inline(node,s.slice(2,-2));}
+      else if(s.startsWith('~~')) {node=element('del');inline(node,s.slice(2,-2));}
+      else if(s[0]==='*') {node=element('em');inline(node,s.slice(1,-1));}
       else {
         const parts=/^!?\[([^\]]*)\]\(([^)]*)\)$/.exec(s), url=linkURL(parts[2].trim());
         if(url) {node=element('a',(s[0]==='!'?'查看图片：':'')+parts[1]);node.href=url;node.target='_blank';node.rel='noopener noreferrer';}
@@ -43,6 +60,16 @@
       parent.append(node); last=token.lastIndex;
     }
     parent.append(document.createTextNode(source.slice(last)));
+  }
+
+  function unclosedDisplay(source) {
+    const tokens=/`[^`\n]*`|\\\[|\\\]|\$\$/g;let match,open=null;
+    while((match=tokens.exec(source))) {
+      if(match[0][0]==='`'||escaped(source,match.index))continue;
+      if(open===null&&(match[0]==='\\['||match[0]==='$$'))open=match[0];
+      else if(open==='\\['&&match[0]==='\\]'||open==='$$'&&match[0]==='$$')open=null;
+    }
+    return open!==null;
   }
 
   let serial=0;
@@ -96,6 +123,11 @@
       const line=lines[i];if(!line.trim()){i++;continue;}
       const fence=/^\s*(`{3,}|~{3,})\s*([\w+-]*)/.exec(line);
       if(fence) {const body=[];i++;while(i<lines.length&&!lines[i].trim().startsWith(fence[1]))body.push(lines[i++]);i++;root.append(codeBlock(body.join('\n'),fence[2].toLowerCase()));continue;}
+      if(unclosedDisplay(line)) {
+        let text=line;i++;
+        while(i<lines.length&&unclosedDisplay(text)&&!/^\s*(`{3,}|~{3,})/.test(lines[i]))text+='\n'+lines[i++];
+        const block=element('div');block.className='math-paragraph';inline(block,text);root.append(block);continue;
+      }
       const heading=/^(#{1,6})\s+(.+)$/.exec(line);
       if(heading){const h=element('h'+heading[1].length);inline(h,heading[2]);root.append(h);i++;continue;}
       if(i+1<lines.length&&line.includes('|')&&separator(lines[i+1])) {

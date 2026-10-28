@@ -14,7 +14,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = '0.5.4'
+VERSION = '0.5.5'
 EXCLUDED = ['pytest', '_pytest', 'httpx', 'IPython', 'tkinter', 'unittest', 'doctest',
             'agenthub_adapters.appserver_stub', 'agenthub_adapters.mock', 'agenthub_rt.dev_auth', 'tests', 'tools']
 
@@ -67,6 +67,7 @@ def build(args):
                 source=Path(dist.locate_file(item))
                 if source.is_file():
                     shutil.copyfile(source,licenses/(dist.metadata['Name']+'-'+item.name))
+    shutil.copyfile(ROOT/'apps/api/agenthub_rt/static/vendor/katex/LICENSE',licenses/'KaTeX-LICENSE.txt')
     pylicense=Path(sys.base_prefix)/'LICENSE.txt'
     if pylicense.is_file(): shutil.copyfile(pylicense,licenses/'Python-LICENSE.txt')
     shutil.copyfile(Path(args.nsis).parent/'COPYING',licenses/'NSIS-COPYING.txt')

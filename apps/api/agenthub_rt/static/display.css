@@ -38,3 +38,9 @@ a {color:var(--accent)}
 .code-block>details>summary {padding:7px 10px;cursor:pointer;background:var(--panel2)}
 .permission-guide {padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin:10px 0;background:var(--panel2);color:var(--fg)}
 .permission-guide ul {padding-left:20px;margin:7px 0}
+.math-paragraph {white-space:pre-wrap;margin:.45em 0}
+.math-display {overflow-x:auto;overflow-y:hidden;max-width:100%;padding:.2em 0;white-space:normal}
+.math-display .katex-display {margin:.6em 0}
+.math-inline {white-space:normal}
+.math-fallback {white-space:pre-wrap;color:var(--dim)}
+.markdown .katex {font-size:1.15em;text-indent:0}
