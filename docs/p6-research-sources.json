@@ -1,0 +1,119 @@
+{
+  "date": "2026-10-29",
+  "scope": "Planning research only; no upstream execution or model evaluation",
+  "repositories": [
+    {
+      "repository": "Tswoen/Paper-Agent",
+      "commit": "af2fc63382c91b3e48d6fa42fb171a471c952df3",
+      "license_metadata": null,
+      "tree_truncated": false,
+      "license_files_found": [],
+      "files": [
+        {
+          "path": "src/graph/graph.py",
+          "blob_sha": "9787fd87003499cfc70c0ca6ee98b382312cf58c",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/graph/graph.py"
+        },
+        {
+          "path": "src/graph/search_node.py",
+          "blob_sha": "fb1c7effd155ca5ac9aa0ca4b1029452c9aab0db",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/graph/search_node.py"
+        },
+        {
+          "path": "src/graph/read_node.py",
+          "blob_sha": "6f9af780139904656dd3ab6f4f021eedda5401e0",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/graph/read_node.py"
+        },
+        {
+          "path": "src/graph/analyse_node.py",
+          "blob_sha": "131c527f0804bea5c1af447513b81e1eebe97433",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/graph/analyse_node.py"
+        },
+        {
+          "path": "src/graph/writing_outline_node.py",
+          "blob_sha": "1190317233923f680c43ddde1a117276622cda1f",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/graph/writing_outline_node.py"
+        },
+        {
+          "path": "src/graph/writing_node.py",
+          "blob_sha": "92c2f6baec62ea1a0741ce4b70ba43e97aeb54c1",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/graph/writing_node.py"
+        },
+        {
+          "path": "src/agents/writingAgent.py",
+          "blob_sha": "9898c21b0ed7cc43f6bbeb2c51dbaf37d4ac5779",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/agents/writingAgent.py"
+        },
+        {
+          "path": "src/paper_retrieval/service.py",
+          "blob_sha": "25c543dd22756ebd0607ad800b223352e20e8d78",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/paper_retrieval/service.py"
+        },
+        {
+          "path": "src/utils/read_utils/read_fulltext.py",
+          "blob_sha": "8f44307499b9e0613527c1f89925e0bc7c89a700",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/utils/read_utils/read_fulltext.py"
+        },
+        {
+          "path": "src/utils/read_utils/extraction.py",
+          "blob_sha": "9810f6e6a01284dff340f3424958552f1b406601",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/utils/read_utils/extraction.py"
+        },
+        {
+          "path": "src/utils/read_utils/verify_extraction.py",
+          "blob_sha": "6b567694c21fc4a8dc0d51901272e4aa4d51d018",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/utils/read_utils/verify_extraction.py"
+        },
+        {
+          "path": "src/utils/read_utils/pdf_parsers.py",
+          "blob_sha": "5349002ccf2a98a73e2c7e7e3f1d16df56730486",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/utils/read_utils/pdf_parsers.py"
+        },
+        {
+          "path": "src/services/paper_workflow_runtime.py",
+          "blob_sha": "0debec892bfd8b98611fd6097522f1323768c825",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/services/paper_workflow_runtime.py"
+        },
+        {
+          "path": "src/services/session_runs.py",
+          "blob_sha": "0e90fa70556a8953f749b1ab45a8b04f0c60deb4",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/services/session_runs.py"
+        },
+        {
+          "path": "src/agents/searchAgent.py",
+          "blob_sha": "366672e62cf9890eb815860ce768f44a6637da98",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/agents/searchAgent.py"
+        },
+        {
+          "path": "src/agents/readAgent.py",
+          "blob_sha": "41667bbdc089445f97741e665a13754fa7ef76d8",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/agents/readAgent.py"
+        },
+        {
+          "path": "src/agents/analyseAgent.py",
+          "blob_sha": "af0d12afe2ff94fb0690d58c47f48b67aa20f927",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/agents/analyseAgent.py"
+        },
+        {
+          "path": "src/agents/Prompts.py",
+          "blob_sha": "6bdc1cebe67893d4e8535e4a0d5aca0274e6ff11",
+          "url": "https://github.com/Tswoen/Paper-Agent/blob/af2fc63382c91b3e48d6fa42fb171a471c952df3/src/agents/Prompts.py"
+        }
+      ]
+    },
+    {
+      "repository": "ahmetbersoz/chatgpt-prompts-for-academic-writing",
+      "commit": "4029d941c9eebb7723bb62d0838102ec476da72f",
+      "license_metadata": null,
+      "tree_truncated": false,
+      "license_files_found": [],
+      "files": [
+        {
+          "path": "README.md",
+          "blob_sha": "568260575e10e838c0de248a60b2e038b91d43c0",
+          "url": "https://github.com/ahmetbersoz/chatgpt-prompts-for-academic-writing/blob/4029d941c9eebb7723bb62d0838102ec476da72f/README.md"
+        }
+      ]
+    }
+  ]
+}

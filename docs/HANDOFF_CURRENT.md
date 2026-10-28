@@ -1,4 +1,15 @@
-# P6 论文自动化设计（2026-10-29）
+# P6 上游源码与提示词调研（2026-10-29，当前）
+
+- 用户明确本阶段仅调研、功能规划和约束，做好后再讨论开发；不开始 P6.1 或真实模型任务。
+- 公开 GitHub 主分支固定提交：Paper-Agent `af2fc63382c91b3e48d6fa42fb171a471c952df3`，学术提示词库 `4029d941c9eebb7723bb62d0838102ec476da72f`。来源文件和 blob SHA 见 `p6-research-sources.json`。
+- 新增 [上游调查与整合方案](p6-upstream-research.md)、[阶段模板设计](p6-academic-prompts.md)，同步现有 P6 方案和外层总规划的 P6.0 开发前边界。
+- 确认当前上游有效阅读分支关闭全文嵌入、写作向量工具为占位；审阅缺失/失败可出现 passed=True，不能照搬质量状态。前文关于 embedding 为完整默认流程必需的说法须按此修正。
+- 两仓库元数据 license=null、完整目录树未发现许可文件；本轮未复制代码/提示词全文。没有执行上游项目或真实模型评测，所有效果仍未验证。
+- 本轮提交可按 `docs(p6): research upstream workflow and academic prompt design` 定位；沿用 `docs/p6-paper-pipeline`，仅文档变动，未合并主分支。
+
+---
+
+# P6 论文自动化设计（2026-10-29，上一轮）
 
 - 用户明确论文自动化是最初目标，要求借鉴本地 Paper-Agent 并作为 Hub 功能纳入 P6。本轮在独立分支 `docs/p6-paper-pipeline` 登记 [设计与验收](p6-paper-pipeline.md)，没有新增运行实现。
 - 论文任务优先，其他 Agent 扩展保留。先完成约 5 篇论文的检索、阅读、证据、综述和导出；向量模型不作为首版前置。
