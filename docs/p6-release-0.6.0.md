@@ -1,0 +1,34 @@
+# 0.6.0：论文研究（P6 首版）
+
+发行源码 `4db9cc01f28eab407d700dedcc54264f35683455`，分支 `feat/p6-paper-pipeline`。在 0.5.5（`feat/desktop-timeout`，主题、Markdown/SVG、公式、0 为不限、删除会话、执行时限、工作区写入修复）基础上加入论文研究，见 [P6 实现记录](p6-implementation.md)。未合并 main，未推送。
+
+## 用户可见变化
+
+- 新入口 `/papers`（会话页顶栏“论文研究”）：输入主题、年份、篇数、语言、全文缺失策略、模型与预算 → 预检 → 批准开始；查看进度、全文补充（上传/路径/地址，按批次核对）、论文清单、证据与原文片段、正文、成果下载。
+- 主题与其他页面一致（跟随系统/浅色/深色）。
+- 首版来源仅 arXiv；成品是可追溯的综述/研究简报，执行完成与质量通过分别标示。
+
+## 产物与校验值
+
+位置：`E:\plug\agent-hub\dist\p6-release-0.6.0`。
+
+| 文件 | 字节 | SHA-256 |
+|---|---:|---|
+| AgentHub-0.6.0-windows-x64-setup.exe | 22520160 | `87eded9cc3bb5d65e2003bad05370b283842a8c80c7ee60dff8b00be51536af5` |
+| AgentHub-0.6.0-windows-x64-portable.zip | 22219278 | `0f1767ff87102b35c63ff673e69cbe6ce8fbaf67ebaf9ba67effb3a528de4a66` |
+
+构建：独立构建环境 `E:\plug\.p5-build`（Python 3.12.0、PyInstaller 6.17.0 等按 `packaging-requirements.txt` 固定），新增 pypdf 5.1.0（本地已下载的官方 wheel，离线安装到构建环境）；NSIS 3.11 同 0.5.x。205 项打包文件；原有包审计通过。嵌入模块表包含 `agenthub_kernel.papers.*` 全部 11 个模块与 `pypdf`；不含 pytest、模拟适配器、开发认证、`tools.demo` 的论文模拟器与合成语料；第三方许可证目录含 `pypdf-LICENSE`、`KaTeX-LICENSE.txt`；MANIFEST 记录 version 0.6.0、源码提交与 pypdf 5.1.0。
+
+## 冻结程序检查（全新临时数据目录、headless、端口 18299）
+
+未认证 `/api/papers` 401；`/papers` 200，带主题选择与共用样式，不含开发令牌；单次票据配对 200、重复使用 401；配对后 `/api/papers` 200（空列表），预检在没有已接入 Agent 时返回明确阻塞；`/assets/display.css` 200；会话页含“论文研究”入口；无 Origin 的写请求 403；`/api/desktop/shutdown` 后进程退出码 0。未接触用户现有安装、配置、8080 服务或项目文件；0 次真实模型调用、0 次真实检索。
+
+## 未验证
+
+- 未运行安装向导（避免改动现有安装注册信息）；沿用 0.5.x 已验证的安装器模板。
+- 冻结程序内的 PDF 解析只通过模块表核对，没有在冻结程序里实际解析 PDF（需要已接入 Agent 并开始一项研究才会触发）；源码环境的解析测试已通过。
+- 真实 arXiv 检索、真实 PDF 下载、真实模型输出质量；另一台物理机；代码签名。
+
+## 升级
+
+先在当前 Hub 点“退出 Hub”，再运行 0.6.0 setup，选择原安装目录覆盖，不需先卸载或删除数据。新表在启动时自动补建，旧数据不变。论文研究需先在会话页对要用的 Agent 各手动成功调用一次（阶段授权规则）。
