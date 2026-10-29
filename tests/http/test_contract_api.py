@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from agenthub.contracts import ApprovalStatus, InvocationStatus
-from agenthub_kernel.db import ApprovalRow, Database, InvocationRow
+from agenthub_kernel.db import ApprovalRow, Database, InvocationRow, TaskRow
 from agenthub_kernel.service import PolicyService
 from agenthub_rt.api import create_app
 
@@ -131,6 +131,19 @@ def _running(client, goal="run me"):
     client.post(f"/api/approvals/{appr}/approve", headers=USER)
     client.post("/api/worker/drain", headers=USER)
     return task_id, inv_id
+
+
+def _overdue(client, task_id, inv_id, *, limit=600, ran_for=5000):
+    """An explicit run-time limit on the tree (0.5.4: the default 0 is unlimited) and a start past it."""
+    import datetime as dt
+
+    with client.app.state.db.session() as s:
+        task = s.get(TaskRow, task_id)
+        root = s.get(TaskRow, task.root_task_id)
+        root.policy = {**(root.policy or {}), "run_time_limit_seconds": limit}
+        row = s.get(InvocationRow, inv_id)
+        row.started_at = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(seconds=ran_for)
+        s.commit()
 
 
 def test_pause_blocks_new_start_and_resume_unblocks(client):
@@ -265,8 +278,6 @@ def test_reconcile_retry_refused_while_execution_unconfirmed(client):
     task_id, inv_id = _running(client, "unconfirmed")
 
     # Time it out with an external record that still says running.
-    import datetime as dt
-
     class StuckAdapter:
         def cancel_invocation(self, invocation_id):
             return {"ok": False, "reason": "still running"}
@@ -275,12 +286,7 @@ def test_reconcile_retry_refused_while_execution_unconfirmed(client):
             return {"status": "running", "adapter_invocation_id": "a1"}
 
     client.app.state.worker.adapter = StuckAdapter()
-    with client.app.state.db.session() as s:
-        row = s.get(InvocationRow, inv_id)
-        row.started_at = dt.datetime.now(dt.timezone.utc).replace(
-            tzinfo=None
-        ) - dt.timedelta(seconds=5000)
-        s.commit()
+    _overdue(client, task_id, inv_id)
 
     reap = client.post("/api/worker/reap", headers=USER)
     assert reap.status_code == 200
@@ -312,14 +318,7 @@ def test_settle_via_api_frees_slot(client):
             return {"status": "running", "adapter_invocation_id": "a1"}
 
     client.app.state.worker.adapter = StuckAdapter()
-    import datetime as dt
-
-    with client.app.state.db.session() as s:
-        row = s.get(InvocationRow, inv_id)
-        row.started_at = dt.datetime.now(dt.timezone.utc).replace(
-            tzinfo=None
-        ) - dt.timedelta(seconds=5000)
-        s.commit()
+    _overdue(client, task_id, inv_id)
     client.post("/api/worker/reap", headers=USER)
 
     r = client.post(
@@ -337,18 +336,20 @@ def test_settle_via_api_frees_slot(client):
 # --------------------------------------------------------------------------- #
 
 
-def test_reap_endpoint_times_out_overdue(client):
-    _task, inv_id = _running(client, "long runner")
+def test_reap_leaves_calls_alone_under_the_unlimited_default(client):
+    task_id, inv_id = _running(client, "long runner, no limit")
+    _overdue(client, task_id, inv_id, limit=0, ran_for=50_000)
 
-    # Backdate the start so it exceeds the default 600s limit.
-    import datetime as dt
-
+    r = client.post("/api/worker/reap", headers=USER)
+    assert r.status_code == 200, r.text
+    assert r.json()["examined"] == 0
     with client.app.state.db.session() as s:
-        row = s.get(InvocationRow, inv_id)
-        row.started_at = dt.datetime.now(dt.timezone.utc).replace(
-            tzinfo=None
-        ) - dt.timedelta(seconds=5000)
-        s.commit()
+        assert s.get(InvocationRow, inv_id).status == InvocationStatus.RUNNING.value
+
+
+def test_reap_endpoint_times_out_overdue(client):
+    task_id, inv_id = _running(client, "long runner")
+    _overdue(client, task_id, inv_id)  # explicit 600 s limit, started 5000 s ago
 
     r = client.post("/api/worker/reap", headers=USER)
     assert r.status_code == 200, r.text
