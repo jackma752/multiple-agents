@@ -209,6 +209,18 @@ def register_papers(app, db) -> None:
         app.state.autopilot.kick()
         return view
 
+    @app.post("/api/papers/{task_id}/reexport")
+    def reexport(task_id: str, principal: Principal = Depends(authenticate)):
+        """Rebuild the export files of a finished task from stored material; no model call."""
+        require_approver(principal)
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                task = service.reexport(session, app.state.autopilot, principal.identity, task_id)
+            except QuotaError as exc:
+                raise refused(exc)
+            return service.task_view(session, task, clock())
+
     @app.post("/api/papers/{task_id}/continue")
     def continue_research(task_id: str, body: ContinueIn, principal: Principal = Depends(authenticate)):
         """After a tree stop: a new task and stage that reuse everything already finished."""

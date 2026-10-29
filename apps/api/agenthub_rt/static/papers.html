@@ -594,8 +594,16 @@ function renderResult(v) {
     ${(o.synthesis && o.synthesis.gaps || []).length ? `<h3>当前样本中的空白</h3><ul>${o.synthesis.gaps.map((g) => `<li>${esc(g.text)}</li>`).join("")}</ul>` : ""}
     ${o.export_copy ? `<div class="${o.export_copy.ok ? "okbox" : "badbox"} small">${o.export_copy.ok ? "已复制到" : "复制到所选目录失败（" + esc(o.export_copy.error) + "），以下载为准："} <span class="mono">${esc(o.export_copy.directory)}</span></div>` : ""}
     <div class="row">${v.artifacts.filter((a, i, all) => all.findIndex((b) => b.name === a.name) === i)
-      .map((a) => `<button data-art="${esc(a.name)}">下载 ${esc(a.name)}</button>`).join("")}</div></div>`;
+      .map((a) => `<button data-art="${esc(a.name)}">下载 ${esc(a.name)}</button>`).join("")}
+      ${v.phase === "done" ? `<button id="reexportBtn" title="用已保存的证据和正文重新生成文件并重新计算质量状态；不调用模型、不计费">重新导出（不调用模型）</button>` : ""}</div>
+    ${o.reexported_at ? `<div class="small dim">最近一次重新导出：${esc(new Date(o.reexported_at).toLocaleString())}</div>` : ""}</div>`;
   for (const b of box.querySelectorAll("button[data-art]")) b.onclick = () => download(`/api/papers/${v.task_id}/artifacts/${b.dataset.art}`, b.dataset.art);
+  const re = $("reexportBtn");
+  if (re) re.onclick = async () => {
+    re.disabled = true;
+    try { await api("POST", `/api/papers/${v.task_id}/reexport`); box.dataset.sig = ""; await refresh(true); toast("已重新导出；质量状态已按现有正文与审阅重新计算"); }
+    catch (e) { toast(e.message); re.disabled = false; }
+  };
 }
 
 function renderPapers(v) {
@@ -653,7 +661,9 @@ function renderSections(v) {
   const REVIEW = { passed: ["审阅通过", "ok"], pending: ["待审阅", ""], revising: ["修订中", "info"], needs_review: ["需人工复核", "warn"],
                    unavailable: ["审阅不可用", "warn"], not_applicable: ["无需审阅", ""] };
   box.innerHTML = `<div class="pane"><h2>正文（${v.sections.length} 节）</h2>` + v.sections.map((s) => {
-    const body = esc(s.text || "（尚未生成）").replace(/\[ev:([A-Za-z0-9_-]+)\]/g, (_, id) => `<span class="cite" data-cite="${id}">[证据]</span>`);
+    // "[ev:04c3...]" is the same evidence as "ev-04c3..." (the server checks it exactly).
+    const body = esc(s.text || "（尚未生成）").replace(/\[ev:([A-Za-z0-9_-]+)\]/g, (_, id) =>
+      `<span class="cite" data-cite="${id.startsWith("ev-") ? id : "ev-" + id}">[证据]</span>`);
     const issues = (s.issues || []).map((i) => `<div class="small warnbox">${esc(i.kind === "unknown_evidence_id" ? "引用了不存在的证据：" + i.ids.join(", ") : "待补充：" + (i.items || []).join("；"))}</div>`).join("");
     const review = s.review && s.review.issues && s.review.issues.length ? `<details><summary class="small dim">审阅意见（${s.review.issues.length}）</summary>${s.review.issues.map((i) => `<div class="small">[${esc(i.severity)}] ${esc(i.problem)} — ${esc(i.suggestion)}</div>`).join("")}</details>` : "";
     return `<h3>${s.idx + 1}. ${esc(s.title)} ${chip(REVIEW[s.review_status] || [s.review_status, ""])}${s.revisions ? ` <span class="chip">修订 ${s.revisions}</span>` : ""}</h3>

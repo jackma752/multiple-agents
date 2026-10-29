@@ -134,6 +134,44 @@ def test_unknown_citation_stays_visible_and_fails_quality(hub):
     assert report["citation_check"]["unknown_ids"] == ["ev-0000000000"]
 
 
+def test_markers_without_the_ev_prefix_resolve_to_the_same_evidence(hub):
+    hub.prove()
+    task = hub.create(topic="SIM_SHORT_EV retrieval augmented generation evaluation", target=2)
+    view = hub.run(task)
+    assert view["status"] == "completed" and view["quality_status"] == "passed"
+    md = hub.api("GET", f"/api/papers/{task}/artifacts/review.md").text
+    assert "引用缺失" not in md and "[1]" in md
+    assert all(not s["issues"] for s in view["sections"] if s["status"] == "written")
+
+
+def test_reexport_recomputes_a_finished_task_without_calling_a_model(hub):
+    from sqlalchemy import select
+
+    from agenthub_kernel.papers.db import ResearchTaskRow, SectionRow
+
+    hub.prove()
+    task = hub.create(target=2)
+    assert hub.api("POST", f"/api/papers/{task}/reexport").status_code == 409  # not finished yet
+    hub.run(task)
+    # what an older build left: short markers flagged as missing, quality failed
+    with hub.client.app.state.db.session() as s:
+        for sec in s.scalars(select(SectionRow).where(SectionRow.task_id == task)):
+            sec.text = (sec.text or "").replace("[ev:ev-", "[ev:")
+            sec.issues = [{"kind": "unknown_evidence_id", "ids": ["x"]}]
+        s.get(ResearchTaskRow, task).quality_status = "failed"
+    calls, fetches = hub.model_calls(), len(hub.fetcher.calls)
+    assert hub.client.post(f"/api/papers/{task}/reexport",
+                           headers={"Authorization": "Bearer dev-agent-token"}).status_code == 403
+    r = hub.api("POST", f"/api/papers/{task}/reexport")
+    assert r.status_code == 200, r.text
+    view = r.json()
+    assert view["quality_status"] == "passed" and view["outcome"]["reexported_at"]
+    assert all(not s["issues"] for s in view["sections"] if s["status"] == "written")
+    md = hub.api("GET", f"/api/papers/{task}/artifacts/review.md").text
+    assert "引用缺失" not in md and "[1]" in md
+    assert (hub.model_calls(), len(hub.fetcher.calls)) == (calls, fetches)
+
+
 def test_format_error_gets_one_counted_repair_call(hub):
     hub.prove()
     task = hub.create(topic="SIM_BAD_JSON retrieval augmented generation evaluation", target=2)

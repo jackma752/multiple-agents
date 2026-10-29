@@ -165,19 +165,37 @@ def outline(out: dict[str, Any], known: set, sections: int) -> dict[str, Any]:
 
 
 MARKER = re.compile(r"\[ev:([A-Za-z0-9_-]+)\]")
+EVIDENCE_PREFIX = "ev-"
+
+
+def resolve_marker(marker: str, known: set) -> str | None:
+    """The evidence id a ``[ev:...]`` marker names, or None.
+
+    Models sometimes write ``[ev:04c3832d91]`` for ``ev-04c3832d91``. That is
+    accepted only when adding the prefix gives exactly an id of this task -
+    no fuzzy matching, so a made-up marker stays unknown.
+    """
+    if marker in known:
+        return marker
+    if not marker.startswith(EVIDENCE_PREFIX) and EVIDENCE_PREFIX + marker in known:
+        return EVIDENCE_PREFIX + marker
+    return None
 
 
 def section(out: dict[str, Any], known: set) -> dict[str, Any]:
     text = out.get("text")
     if not isinstance(text, str) or len(text.strip()) < 20:
         raise FormatError("text must be the section body")
-    unknown: list[str] = [m for m in MARKER.findall(text) if m not in known]
+    markers = MARKER.findall(text)
+    unknown: list[str] = [m for m in markers if resolve_marker(m, known) is None]
     claims = []
     for c in out.get("claims") or []:
         if isinstance(c, dict) and isinstance(c.get("text"), str):
-            claims.append({"text": c["text"][:600], "evidence_ids": _ids(c.get("evidence_ids"), known, unknown)})
+            ids = [resolve_marker(i, known) or i for i in c.get("evidence_ids") or [] if isinstance(i, str)]
+            claims.append({"text": c["text"][:600], "evidence_ids": _ids(ids, known, unknown)})
     return {"text": text.strip(), "claims": claims[:40], "todo": _strs(out.get("todo"), "todo"),
-            "unknown_ids": sorted(set(unknown)), "cited": sorted({m for m in MARKER.findall(text) if m in known})}
+            "unknown_ids": sorted(set(unknown)),
+            "cited": sorted({r for r in (resolve_marker(m, known) for m in markers) if r})}
 
 
 def review(out: dict[str, Any]) -> dict[str, Any]:

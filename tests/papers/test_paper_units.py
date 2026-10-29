@@ -174,6 +174,16 @@ def test_validators_drop_forged_quotes_and_flag_unknown_ids():
                          chunks=source, abstract="", level="fulltext")
     section = validate.section({"text": "结论一[ev:ev-1]。结论二[ev:ev-x]。", "claims": []}, {"ev-1"})
     assert section["unknown_ids"] == ["ev-x"] and section["cited"] == ["ev-1"]
+    # the prefix may be left out, but only an exact id of this task is accepted
+    known = {"ev-04c3832d91"}
+    assert validate.resolve_marker("04c3832d91", known) == "ev-04c3832d91"
+    assert validate.resolve_marker("ev-04c3832d91", known) == "ev-04c3832d91"
+    for bad in ("04c3832d9", "04c3832d911", "ev-04c3", "x04c3832d91"):
+        assert validate.resolve_marker(bad, known) is None
+    short = validate.section({"text": "结论[ev:04c3832d91]，另一处[ev:abc123]。", "claims": [
+        {"text": "结论", "evidence_ids": ["04c3832d91"]}]}, known)
+    assert short["cited"] == ["ev-04c3832d91"] and short["unknown_ids"] == ["abc123"]
+    assert short["claims"][0]["evidence_ids"] == ["ev-04c3832d91"]
     assert validate.review({"verdict": "pass", "issues": [{"severity": "critical"}]})["verdict"] == "revise"
     with pytest.raises(validate.FormatError):
         validate.parse_json("no json here")

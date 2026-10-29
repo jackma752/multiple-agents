@@ -276,6 +276,36 @@ def reauthorize(session: Session, adapter: Any, user_id: str, task_id: str, body
     return task
 
 
+def reexport(session: Session, autopilot: Any, user_id: str, task_id: str) -> ResearchTaskRow:
+    """Rebuild the four export files of a finished task from what is stored. No model call.
+
+    Same export code and checks as the pipeline's last step; quality is
+    recomputed from the stored sections and reviews, never raised by hand.
+    """
+    from types import SimpleNamespace
+
+    from agenthub.papers import ACTION_EXPORT, resource_decision, resource_rules_of
+    from agenthub.stage import rules_of
+    from agenthub_kernel.papers.export import export
+
+    task = owned_task(session, task_id, user_id)
+    if task.phase != "done":
+        raise QuotaError("not_finished", "只有已完成的研究可以重新导出")
+    stage = session.get(StageRunRow, task.stage_id) if task.stage_id else None
+    resource = resource_rules_of(task.resource_rules)
+    if resource.rules_hash() != task.resource_rules_hash or stage is None:
+        raise QuotaError("plan_outside_rules", "资源规则与批准时不一致，不能导出")
+    ok, why = resource_decision(resource, ACTION_EXPORT)
+    if not ok:
+        raise QuotaError("plan_outside_rules", why)
+    ctx = SimpleNamespace(session=session, task=task, request=ResearchRequest(**task.request), ap=autopilot,
+                          rules=rules_of(stage.rules), resource=resource, now=autopilot.clock())
+    export(ctx)
+    task.outcome = {**(task.outcome or {}), "reexported_at": _iso(autopilot.clock())}
+    session.flush()
+    return task
+
+
 # --------------------------------------------------------------------------- #
 # views
 # --------------------------------------------------------------------------- #
@@ -341,7 +371,7 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         task_status(session, task, stage), "quality_status": task.quality_status,
         "outcome": {k: v for k, v in (task.outcome or {}).items() if k in (
             "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
-            "sample", "missing_citations", "export_copy")},
+            "sample", "missing_citations", "export_copy", "reexported_at")},
         "stage": stage_info, "server_time": _iso(now), "usage": usage,
         "papers": [{"paper_id": p.id, "title": p.title, "authors": p.authors, "year": p.year, "url": p.url,
                     "doi": p.doi, "source_id": p.source_id, "abstract_available": bool(p.abstract),

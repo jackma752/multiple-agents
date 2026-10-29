@@ -25,7 +25,7 @@ from agenthub_kernel.papers.db import (
     ArtifactRow, EvidenceRow, PaperRow, PaperStepRow, SectionRow, SupplementRequestRow,
 )
 from agenthub_kernel.papers.supplement import request_view
-from agenthub_kernel.papers.validate import MARKER
+from agenthub_kernel.papers.validate import MARKER, resolve_marker
 from agenthub_kernel.service import new_id
 
 DECISIONS = {"user_continue": "用户选择不补充，按现有资料继续", "timeout_continue": "方案一首次询问 30 分钟未选择，默认按现有资料继续",
@@ -87,8 +87,11 @@ def export(ctx: Any) -> dict:
     unknown: set = set()
     used_in: dict[str, list] = {}
 
+    known = set(evidence)
+
     def cite(match: re.Match, section_id: str) -> str:
-        ev = evidence.get(match.group(1))
+        resolved = resolve_marker(match.group(1), known)
+        ev = evidence.get(resolved) if resolved else None
         if ev is None:
             unknown.add(match.group(1))
             return f"[引用缺失:{match.group(1)}]"
@@ -99,6 +102,10 @@ def export(ctx: Any) -> dict:
 
     rendered = []
     for s in sections:
+        # The writing-time check is redone with the same resolver, so a warning never goes stale.
+        still_unknown = sorted({m for m in MARKER.findall(s.text or "") if resolve_marker(m, known) is None})
+        s.issues = [i for i in (s.issues or []) if i.get("kind") != "unknown_evidence_id"] + (
+            [{"kind": "unknown_evidence_id", "ids": still_unknown}] if still_unknown else [])
         body = MARKER.sub(lambda m, sid=s.id: cite(m, sid), s.text or "") if s.text else ""
         body = re.sub(r"(\[\d+\]ᵃ?)(?:\s*\1)+", r"\1", body)  # same citation repeated back to back
         rendered.append((s, body))

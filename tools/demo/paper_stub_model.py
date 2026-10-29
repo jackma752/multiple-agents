@@ -9,7 +9,8 @@ is placeholder text and says nothing about real research quality.
 Markers in the topic switch on failure paths for tests:
 ``SIM_BAD_JSON`` (first plan reply is not JSON), ``SIM_FORGE`` (extraction
 quotes that are not in the source), ``SIM_REVISE`` (first review asks for a
-revision), ``SIM_UNKNOWN_EV`` (a section cites an evidence id that does not exist).
+revision), ``SIM_UNKNOWN_EV`` (a section cites an evidence id that does not exist),
+``SIM_SHORT_EV`` (sections cite evidence without the ``ev-`` prefix).
 """
 
 from __future__ import annotations
@@ -101,7 +102,9 @@ def respond(prompt: str) -> str:
             for i in range(k)]}, ensure_ascii=False)
     if template == "research.section.v1":
         pack = data.get("evidence_pack", [])
-        body = "".join(f"有研究指出：{e['statement'][:60]}[ev:{e['evidence_id']}]。" for e in pack[:4])
+        short = "SIM_SHORT_EV" in topic  # writes [ev:04c3...] for ev-04c3..., as a real model once did
+        body = "".join(f"有研究指出：{e['statement'][:60]}[ev:{e['evidence_id'][3:] if short else e['evidence_id']}]。"
+                       for e in pack[:4])
         if "SIM_UNKNOWN_EV" in topic:
             body += "另一项结论缺少对应证据[ev:ev-0000000000]。"
         if "SIM_REVISE" in topic:
