@@ -129,11 +129,20 @@
     <h3>模型</h3>
     <div class="grid">
       <div class="field"><label for="f_main">阅读、分析与写作 Agent</label><select id="f_main"></select></div>
-      <div class="field"><label for="f_model">模型（可空，使用默认）</label><input id="f_model" placeholder="例如 deepseek-flash" /></div>
+      <div class="field"><label for="f_main_model">模型</label>
+        <input id="f_main_model" list="f_main_models" placeholder="接入方默认 / 输入模型 ID" /><datalist id="f_main_models"></datalist></div>
+      <div class="field"><label for="f_main_effort">推理强度</label><select id="f_main_effort"><option value="">默认强度</option></select></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="mini" id="f_main_refresh" title="启动本地元数据进程读取模型目录，不发送模型回合">刷新模型</button></div>
+    </div>
+    <div class="grid">
       <div class="field"><label for="f_review">审阅 Agent（可选）</label><select id="f_review"></select></div>
+      <div class="field"><label for="f_review_model">审阅模型</label>
+        <input id="f_review_model" list="f_review_models" placeholder="接入方默认 / 输入模型 ID" /><datalist id="f_review_models"></datalist></div>
+      <div class="field"><label for="f_review_effort">推理强度</label><select id="f_review_effort"><option value="">默认强度</option></select></div>
       <div class="field"><label for="f_mode">执行模式</label>
         <select id="f_mode"><option value="strict">严格</option><option value="supervised">用户监督</option></select></div>
     </div>
+    <div id="f_modelHint" class="small dim"></div>
     <label id="f_consentWrap" hidden><input id="f_consent" type="checkbox" /> 我了解用户监督边界：原生派生与远端停止不保证受控。</label>
     <details style="margin-top:10px"><summary class="dim">高级设置：调用上限、预算与资料范围</summary>
       <div class="grid" style="margin-top:8px">
@@ -242,16 +251,70 @@ async function showForm() {
   $("f_review").innerHTML = `<option value="">不审阅（质量将标为“审阅不可用”）</option>` + options;
   $("f_mode").onchange = () => { $("f_consentWrap").hidden = $("f_mode").value !== "supervised"; };
   for (const el of $("main").querySelectorAll("input,select,textarea")) el.addEventListener("input", () => { $("startBtn").disabled = true; });
+  for (const role of ["main", "review"]) {
+    $(`f_${role}`).addEventListener("change", () => setupRole(role));
+    $(`f_${role}_model`).addEventListener("input", () => renderEfforts(role));
+  }
+  $("f_main_refresh").onclick = () => loadCatalog($("f_main").value, true).then(() => { setupRole("main"); setupRole("review"); });
+  setupRole("main"); setupRole("review");
   $("preflightBtn").onclick = runPreflight;
   $("startBtn").onclick = startTask;
   loadTasks().catch(() => {});
 }
 
+// Model choice per role, from the same catalog and remembered selections as the chat page.
+const CATALOGS = {};
+function rememberedModel(agent) {
+  try { return (JSON.parse(localStorage.getItem("agenthub.models") || "{}") || {})[agent] || {}; } catch (_) { return {}; }
+}
+async function loadCatalog(agent, refresh) {
+  if (!agent || (!refresh && CATALOGS[agent])) return CATALOGS[agent];
+  try { CATALOGS[agent] = await api(refresh ? "POST" : "GET", `/api/agents/${encodeURIComponent(agent)}/models${refresh ? "/refresh" : ""}`); }
+  catch (e) { if (refresh) toast("读取模型目录失败：" + e.message); CATALOGS[agent] = CATALOGS[agent] || {}; }
+  return CATALOGS[agent];
+}
+async function setupRole(role) {
+  const agent = $(`f_${role}`).value, input = $(`f_${role}_model`);
+  const sameAsMain = role === "review" && agent && agent === $("f_main").value;
+  if (!agent || sameAsMain) {
+    // One agent has one model per stage: a reviewer on the main agent uses the main agent's model.
+    input.value = ""; input.disabled = true; $(`f_${role}_effort`).disabled = true;
+    input.placeholder = sameAsMain ? "与主 Agent 相同" : "不审阅";
+    if (role === "main") $("f_modelHint").textContent = "";
+    return;
+  }
+  input.disabled = false; input.placeholder = "接入方默认 / 输入模型 ID";
+  const catalog = await loadCatalog(agent, false) || {};
+  if ($(`f_${role}`).value !== agent) return;
+  $(`f_${role}_models`).innerHTML = (catalog.models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.display_name || m.id)}</option>`).join("");
+  const saved = rememberedModel(agent);
+  if (!input.value) input.value = saved.model || "";
+  input.disabled = catalog.selection === false;
+  renderEfforts(role, saved.model === input.value ? saved.reasoning_effort : null);
+  if (role === "main") {
+    $("f_modelHint").textContent = (catalog.default_model ? `接入方默认：${catalog.default_model}。` : "") + (catalog.catalog_note || "");
+    $("f_main_refresh").hidden = catalog.refresh_available === false;
+  }
+}
+function renderEfforts(role, preferred) {
+  const agent = $(`f_${role}`).value, catalog = CATALOGS[agent] || {}, select = $(`f_${role}_effort`);
+  const current = preferred !== undefined && preferred !== null ? preferred : select.value;
+  const model = (catalog.models || []).find((m) => m.id === $(`f_${role}_model`).value.trim());
+  const efforts = [...(model && model.reasoning_efforts || [])];
+  if (current && !efforts.includes(current)) efforts.push(current);
+  select.innerHTML = `<option value="">默认强度</option>` + efforts.map((e) => `<option value="${esc(e)}" ${e === current ? "selected" : ""}>${esc(e)}</option>`).join("");
+  select.disabled = catalog.effort_selection === false || !efforts.length || $(`f_${role}_model`).disabled;
+}
+
 function formBody() {
   const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
-  const main = $("f_main").value, review = $("f_review").value || null, model = $("f_model").value.trim();
+  const main = $("f_main").value, review = $("f_review").value || null;
   const models = {};
-  if (model) models[main] = { model };
+  for (const [role, agent] of [["main", main], ["review", review]]) {
+    if (!agent || models[agent]) continue;
+    const model = $(`f_${role}_model`).value.trim(), effort = $(`f_${role}_effort`).value;
+    if (model || effort) models[agent] = { model: model || null, reasoning_effort: effort || null };
+  }
   return {
     client_request_id: S.requestKey,
     request: { topic: $("f_topic").value.trim(), year_from: num("f_from"), year_to: num("f_to"), target_papers: num("f_n") || 5,

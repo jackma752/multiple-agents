@@ -166,6 +166,25 @@ def test_call_cap_defaults_to_the_estimate_and_unlimited_only_when_chosen(hub):
     assert hub.view(task)["stage"]["max_calls"] == default["max_calls"]  # never silently unlimited
 
 
+def test_each_role_runs_on_the_model_the_user_chose(hub):
+    hub.prove()
+    models = {"claude-code": {"model": "claude-sim-large", "reasoning_effort": "high"},
+              "deepseek": {"model": "deepseek-flash", "reasoning_effort": None}}
+    task = hub.create(target=2, roles={"main_agent": "claude-code", "review_agent": "deepseek", "models": models})
+    view = hub.run(task)
+    assert view["status"] == "completed" and view["roles"]["models"]["claude-code"]["model"] == "claude-sim-large"
+    with hub.client.app.state.db.session() as s:
+        snaps = [row.snapshot for row in s.scalars(select(InvocationRow)) if row.snapshot.get("task_input", "")
+                 .startswith("AGENTHUB-TEMPLATE")]
+    main = [x for x in snaps if x["agent_id"] == "claude-code"]
+    review = [x for x in snaps if x["agent_id"] == "deepseek"]
+    assert main and all(x["model"] == "claude-sim-large" and x["reasoning_effort"] == "high" for x in main)
+    assert review and all(x["model"] == "deepseek-flash" and "reasoning_effort" not in x for x in review)
+    bad = hub.api("POST", "/api/papers/preflight", json=hub.body(roles={
+        "main_agent": "claude-code", "models": {"codex": {"model": "x"}}})).json()
+    assert not bad["ok"]  # a model for an agent outside the roles is refused
+
+
 def test_waiting_holds_no_running_slot(hub):
     hub.prove()
     task = hub.create()
