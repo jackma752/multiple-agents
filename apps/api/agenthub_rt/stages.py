@@ -30,7 +30,7 @@ class StageIn(BaseModel):
     main_agent: str
     review_agent: Optional[str] = None
     collect_agent: Optional[str] = None
-    max_calls: StrictInt = 8
+    max_calls: StrictInt = 0
     command_prefixes: list[str] = Field(default_factory=list, max_length=20)
     allow_file_changes: StrictBool = False
     retry_limit: StrictInt = 3

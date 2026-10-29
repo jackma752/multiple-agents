@@ -73,11 +73,14 @@
            padding: 10px 12px; display: none; z-index: 20; font-size: 13px; }
   .hidden { display: none !important; }
 </style>
+<link rel="stylesheet" href="/assets/display.css?v=0.5.5" />
+<script src="/assets/display.js?v=0.5.5"></script>
 </head>
 <body>
 <header>
   <img src="/assets/app-icon.png" alt="" width="28" height="28" style="border-radius:6px" />
   <h1>Agent Hub 控制台</h1>
+  <select data-theme-picker aria-label="界面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
   <span id="adapter-badge" class="mock-badge">正在识别适配器…</span>
   <div class="row" style="margin:0; flex: 1; min-width: 260px;">
     <input id="token" type="password" placeholder="用户 token（默认 dev-user-token）" />
@@ -159,8 +162,9 @@
     </div>
     <div class="row">
       <input id="p-depth" type="number" min="0" placeholder="最大深度" />
-      <input id="p-inv" type="number" min="1" placeholder="总调用数" />
+      <input id="p-inv" type="number" min="0" placeholder="总调用数（0 不限）" />
     </div>
+    <div class="muted">子 Agent 总量和总调用数填 0 表示不限；并发和最大深度仍是实际限制。旧任务不会自动放宽，修改需由你应用。</div>
     <div class="row"><button id="apply-policy" disabled>应用（版本 +1）</button></div>
 
     <h2 style="margin-top:16px;">事件</h2>
@@ -483,10 +487,10 @@ function renderQuota() {
   };
   $("quota").innerHTML = `
     <div class="kv">
-      <div>总量</div><div>${q.launched_total} / ${cap(p.max_subagents_total)}</div>
+      <div>总量</div><div>${q.launched_total} / ${p.max_subagents_total === 0 ? '不限' : cap(p.max_subagents_total)}</div>
       <div>并发</div><div>${q.concurrent} / ${cap(p.max_subagents_concurrent)}</div>
       <div>深度</div><div>最大 ${cap(p.max_depth)}</div>
-      <div>调用数</div><div>${q.total_invocations} / ${cap(p.max_agent_invocations)}</div>
+      <div>调用数</div><div>${q.total_invocations} / ${p.max_agent_invocations === 0 ? '不限' : cap(p.max_agent_invocations)}</div>
       <div>名额占用</div><div>${q.open_reservations}</div>
       <div>Hub 协作扩展</div><div>${p.collaboration_enabled ? '已开启（逐项审批）' : '已关闭'}</div>
       <div>策略版本</div><div>v${S.view.root.policy_version}（历史 ${S.view.policy_versions.join(", ") || "—"}）</div>
@@ -611,10 +615,10 @@ $("apply-policy").onclick = async () => {
     if (v !== "") body[key] = parseInt(v, 10);
   }
   const merged = {
-    max_subagents_total: body.max_subagents_total ?? cur.max_subagents_total ?? 3,
+    max_subagents_total: body.max_subagents_total ?? cur.max_subagents_total ?? 0,
     max_subagents_concurrent: body.max_subagents_concurrent ?? cur.max_subagents_concurrent ?? 2,
     max_depth: body.max_depth ?? cur.max_depth ?? 1,
-    max_agent_invocations: body.max_agent_invocations ?? cur.max_agent_invocations ?? 10,
+    max_agent_invocations: body.max_agent_invocations ?? cur.max_agent_invocations ?? 0,
     collaboration_enabled: $("collaboration-enabled").checked,
   };
   try {

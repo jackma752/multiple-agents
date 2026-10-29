@@ -6,11 +6,8 @@
 <title>Agent Hub 论文研究</title>
 <link rel="icon" href="/favicon.ico?v=0.5.1" sizes="any" />
 <style>
-  :root {
-    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
-    --fg: #e6e9ef; --dim: #9aa3b2; --accent: #4c8dff; --ok: #35c48a;
-    --warn: #e8b339; --bad: #e2565b; --radius: 10px;
-  }
+  /* Colors come from the shared /assets/display.css (system / light / dark). */
+  :root { --radius: 10px; }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
@@ -21,7 +18,7 @@
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.danger { border-color: var(--bad); color: #ffd6d7; }
+  button.danger { border-color: var(--bad); color: var(--bad); }
   button.mini { padding: 2px 8px; font-size: 12px; }
   input, select, textarea { font: inherit; color: var(--fg); background: var(--panel2);
            border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-width: 100%; }
@@ -46,17 +43,18 @@
   aside li .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   aside li .d { color: var(--dim); font-size: 12px; }
   main { padding: 16px; overflow: auto; min-width: 0; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
-  .card h2 { font-size: 15px; margin: 0 0 10px; }
-  .card h3 { font-size: 14px; margin: 12px 0 6px; }
+  .pane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
+  .pane h2 { font-size: 15px; margin: 0 0 10px; }
+  .pane h3 { font-size: 14px; margin: 12px 0 6px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .dim { color: var(--dim); }
   .small { font-size: 12px; }
-  .warnbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; color: #f5dc9a; margin: 6px 0; }
-  .badbox { border: 1px solid var(--bad); border-radius: 8px; padding: 8px 10px; color: #ffd0d1; margin: 6px 0; }
-  .okbox { border: 1px solid var(--ok); border-radius: 8px; padding: 8px 10px; color: #c4f2dd; margin: 6px 0; }
+  .warnbox, .badbox, .okbox { border: 1px solid; border-radius: 8px; padding: 8px 10px; margin: 6px 0; color: var(--fg); }
+  .warnbox { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .badbox { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
+  .okbox { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--dim); font-weight: 500; }
@@ -67,14 +65,14 @@
   .ref { padding: 6px 0; border-bottom: 1px dashed var(--line); }
   .ref:last-child { border-bottom: 0; }
   .ev { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; background: var(--panel2); }
-  .ev blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--accent); color: #cdd6e6; }
+  .ev blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--accent); color: var(--fg); }
   .section-text { white-space: pre-wrap; line-height: 1.7; }
   .cite { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
   .countdown { font-weight: 600; color: var(--warn); }
   details > summary { cursor: pointer; }
-  mark { background: #5a4a10; color: #fff; }
-  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #2b1416; border: 1px solid var(--bad);
-           color: #ffd6d7; padding: 8px 14px; border-radius: 8px; max-width: 90vw; }
+  mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: var(--fg); }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1px solid var(--bad);
+           color: var(--bad); padding: 8px 14px; border-radius: 8px; max-width: 90vw; }
   @media (max-width: 860px) {
     .layout { grid-template-columns: 1fr; }
     aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
@@ -83,6 +81,8 @@
     .hide-narrow { display: none; }
   }
 </style>
+<link rel="stylesheet" href="/assets/display.css?v=0.5.5" />
+<script src="/assets/display.js?v=0.5.5"></script>
 </head>
 <body>
 <header class="top">
@@ -90,6 +90,7 @@
   <strong>Agent Hub · 论文研究</strong>
   <span id="connChip" class="chip">未连接</span>
   <span class="grow"></span>
+  <select data-theme-picker aria-label="界面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
   <a href="/chat">会话</a>
   <a id="settingsLink" href="/settings" hidden>本机设置</a>
   <input id="token" type="password" autocomplete="off" placeholder="用户 token" />
@@ -106,7 +107,7 @@
 <div id="toast" hidden></div>
 
 <template id="formTpl">
-  <div class="card">
+  <div class="pane">
     <h2>新建论文研究</h2>
     <div class="field"><label for="f_topic">研究主题</label>
       <textarea id="f_topic" placeholder="例如：检索增强生成（RAG）的评测方法" maxlength="500"></textarea></div>
@@ -136,7 +137,7 @@
     <label id="f_consentWrap" hidden><input id="f_consent" type="checkbox" /> 我了解用户监督边界：原生派生与远端停止不保证受控。</label>
     <details style="margin-top:10px"><summary class="dim">高级设置：调用上限、预算与资料范围</summary>
       <div class="grid" style="margin-top:8px">
-        <div class="field"><label for="f_calls">本研究最多模型调用次数</label><input id="f_calls" type="number" min="1" max="50" placeholder="按预检建议" /></div>
+        <div class="field"><label for="f_calls">本研究最多模型调用次数</label><input id="f_calls" type="number" min="0" max="50" placeholder="空 = 按预检建议；0 = 不限" /></div>
         <div class="field"><label for="f_budget">Token 总预算（可空）</label><input id="f_budget" type="number" min="1" placeholder="不设" /></div>
         <div class="field"><label for="f_mb">单个文件上限（MB）</label><input id="f_mb" type="number" min="1" max="40" value="20" /></div>
       </div>
@@ -216,7 +217,7 @@ async function loadTasks() {
 
 async function openTask(id) {
   S.current = id; S.supSig = ""; S.evidenceFor = null;
-  $("main").innerHTML = `<div class="card dim">加载中…</div>`;
+  $("main").innerHTML = `<div class="pane dim">加载中…</div>`;
   await refresh(true);
   loadTasks().catch(() => {});
 }
@@ -314,9 +315,9 @@ function render(force) {
   if (!v) return;
   const main = $("main");
   if (force || !main.querySelector("#taskHead")) {
-    main.innerHTML = `<div id="taskHead" class="card"></div><div id="supBox"></div><div id="resultBox"></div>
-      <div id="papersBox" class="card"></div><div id="evidenceBox" class="card" hidden></div><div id="sectionsBox"></div>
-      <div id="stepsBox" class="card"></div>`;
+    main.innerHTML = `<div id="taskHead" class="pane"></div><div id="supBox"></div><div id="resultBox"></div>
+      <div id="papersBox" class="pane"></div><div id="evidenceBox" class="pane" hidden></div><div id="sectionsBox"></div>
+      <div id="stepsBox" class="pane"></div>`;
   }
   renderHead(v);
   renderSupplement(v);
@@ -377,7 +378,7 @@ function renderSupplement(v) {
   const STATE = { awaiting_choice: "以下论文无法取得或读取全文。要补充全文吗？", awaiting_files: "正在等待你补充资料（不会自动跳过）。",
                   validating_batch: "正在核对本批资料…", awaiting_more_choice: "本批补充后仍有论文缺少全文，是否继续补充？",
                   resolved: { user_continue: "你已选择按现有资料继续。", timeout_continue: "首次询问 30 分钟内未选择，已按现有资料继续。", all_supplied: "缺失全文已全部补齐。" }[sup.decision] || "补充请求已关闭。" };
-  let html = `<div class="card"><h2>全文补充 ${sup.policy === "continue_allowed" ? '<span class="chip">方案一</span>' : '<span class="chip">方案二</span>'}</h2>
+  let html = `<div class="pane"><h2>全文补充 ${sup.policy === "continue_allowed" ? '<span class="chip">方案一</span>' : '<span class="chip">方案二</span>'}</h2>
     <div class="${sup.status === "resolved" ? "okbox" : "warnbox"}">${esc(STATE[sup.status])}
       ${sup.status === "awaiting_choice" && sup.deadline_at ? `<div>剩余 <span id="countdown" class="countdown">${fmt(remainingSeconds(sup) ?? 0)}</span>，未选择将按现有全文与摘要继续。</div>` : ""}</div>
     <details ${sup.status === "resolved" ? "" : "open"}><summary>缺失全文清单（${sup.items.length} 篇：已补齐 ${sup.items.filter((i) => i.state === "resolved").length}，${sup.status === "resolved" ? `未补充 ${sup.items.filter((i) => i.state === "not_supplied").length}` : `仍缺 ${sup.remaining}`}）</summary>${items}
@@ -455,7 +456,7 @@ function renderResult(v) {
   const sig = JSON.stringify([v.artifacts.map((a) => a.sha256), v.quality_status]);
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
-  box.innerHTML = `<div class="card"><h2>成果</h2>
+  box.innerHTML = `<div class="pane"><h2>成果</h2>
     ${o.insufficient ? `<div class="badbox">资料不足：${esc(o.insufficient.detail || o.insufficient.reason)}。已交付资料不足说明，没有补造结论。</div>` : ""}
     <div class="${v.quality_status === "passed" ? "okbox" : "warnbox"}">执行已完成；${esc((QUALITY[v.quality_status] || [v.quality_status])[0])}
       ${v.quality_status !== "passed" ? "（成品标为草稿）" : ""}${reasons ? `<ul>${reasons}</ul>` : ""}</div>
@@ -521,7 +522,7 @@ function renderSections(v) {
   box.dataset.sig = sig;
   const REVIEW = { passed: ["审阅通过", "ok"], pending: ["待审阅", ""], revising: ["修订中", "info"], needs_review: ["需人工复核", "warn"],
                    unavailable: ["审阅不可用", "warn"], not_applicable: ["无需审阅", ""] };
-  box.innerHTML = `<div class="card"><h2>正文（${v.sections.length} 节）</h2>` + v.sections.map((s) => {
+  box.innerHTML = `<div class="pane"><h2>正文（${v.sections.length} 节）</h2>` + v.sections.map((s) => {
     const body = esc(s.text || "（尚未生成）").replace(/\[ev:([A-Za-z0-9_-]+)\]/g, (_, id) => `<span class="cite" data-cite="${id}">[证据]</span>`);
     const issues = (s.issues || []).map((i) => `<div class="small warnbox">${esc(i.kind === "unknown_evidence_id" ? "引用了不存在的证据：" + i.ids.join(", ") : "待补充：" + (i.items || []).join("；"))}</div>`).join("");
     const review = s.review && s.review.issues && s.review.issues.length ? `<details><summary class="small dim">审阅意见（${s.review.issues.length}）</summary>${s.review.issues.map((i) => `<div class="small">[${esc(i.severity)}] ${esc(i.problem)} — ${esc(i.suggestion)}</div>`).join("")}</details>` : "";

@@ -162,7 +162,7 @@ def test_file_changes_need_their_rule_and_root_widening_never_passes():
     {"agents": [], "main_agent": "codex"},
     {"agents": ["codex"], "main_agent": "claude-code"},
     {"agents": ["codex"], "main_agent": "codex", "review_agent": "claude-code"},
-    {"agents": ["codex"], "main_agent": "codex", "max_calls": 0},
+    {"agents": ["codex"], "main_agent": "codex", "max_calls": -1},
     {"agents": ["codex"], "main_agent": "codex", "command_prefixes": ["dir; del x"]},
     {"agents": ["codex"], "main_agent": "codex", "plan": "whatever"},
     {"agents": ["ghost"], "main_agent": "ghost"},

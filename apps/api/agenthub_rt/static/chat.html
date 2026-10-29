@@ -124,6 +124,10 @@
     #panelToggle, .side .drawer-close { display: inline-block; }
   }
 </style>
+<link rel="stylesheet" href="/assets/display.css?v=0.5.5" />
+<link rel="stylesheet" href="/assets/katex/katex.min.css?v=0.16.22" />
+<script src="/assets/katex/katex.min.js?v=0.16.22"></script>
+<script src="/assets/display.js?v=0.5.5"></script>
 </head>
 <body>
 <header class="top">
@@ -135,6 +139,7 @@
   <span id="autoChip" class="chip" hidden></span>
   <span id="autoCtl" hidden></span>
   <span class="grow"></span>
+  <select data-theme-picker aria-label="界面主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
   <button id="panelToggle" class="drawer-btn" type="button">面板</button>
   <input id="token" type="password" autocomplete="off" placeholder="用户 token（默认 dev-user-token）" />
   <button id="connectBtn">连接</button>
@@ -232,6 +237,7 @@ const S = {
   token: "", adapter: null, cid: null, convs: [],
   lastSeq: 0, lastMsgId: 0, messages: [],
   calls: new Map(),   // invocation_id -> call model
+  rawReplies: new Set(),
   cards: new Map(),   // tool_approval_id -> card view
   consent: new Map(), // invocation_id -> boundary consent ticked for THIS call only
   handoff: [],        // reply message_ids chosen to pass on with the NEXT call only
@@ -355,6 +361,7 @@ function absorbMessage(m) {
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
       context_preview: inv.context_preview, plan_item: inv.plan_item, authorized_by: inv.authorized_by,
+      workspace: inv.workspace, workspace_access: inv.workspace_access, execution_timeout_seconds: inv.execution_timeout_seconds,
     });
   }
 }
@@ -429,7 +436,7 @@ async function stageAction(action) {
 function editStage() {
   const agents = (S.stage && S.stage.agents) || [];
   S.stageEdit = { goal: "", criteria: "", mode: "", consent: false, plan: "none", agents: agents.slice(),
-                  main: $("agent").value, review: "", collect: "", maxCalls: "12", prefixes: "", files: false,
+                  main: $("agent").value, review: "", collect: "", maxCalls: "0", prefixes: "", files: false,
                   retries: "3", autoResume: true, quotaMinutes: "5" };
   render();
 }
@@ -440,6 +447,9 @@ async function startStage() {
   if (!e.mode) { toast("请选择执行边界（严格或用户监督）"); return; }
   if (e.mode === "supervised" && !e.consent) { toast("用户监督模式需要先勾选边界同意"); return; }
   if (!e.agents.includes(e.main)) { toast("请从已勾选的 Agent 中重新选择主 Agent"); return; }
+  if (!Number.isFinite(Number(e.quotaMinutes)) || Number(e.quotaMinutes) < 1 || Number(e.quotaMinutes) > 60) {
+    toast("额度恢复复查间隔须为 1～60 分钟；Codex 执行时限请到本机设置调整，填 0 可不限时。"); return;
+  }
   if ((e.review && !e.agents.includes(e.review)) || (e.collect && !e.agents.includes(e.collect))) {
     toast("请从已勾选的 Agent 中重新选择审阅和汇总 Agent"); return;
   }
@@ -456,7 +466,7 @@ async function startStage() {
     `执行边界：${body.execution_mode === "supervised" ? "用户监督模式" : "严格模式"}`,
     `Agent：${body.agents.join("、")}；主：${body.main_agent}；审阅：${body.review_agent || "不审阅"}` +
       (body.plan !== "none" ? `；汇总：${body.collect_agent || body.main_agent}` : ""),
-    `计划：${PLAN_MODE_LABEL[body.plan]}`, `本阶段调用上限：${body.max_calls}`,
+    `计划：${PLAN_MODE_LABEL[body.plan]}`, `本阶段调用上限：${body.max_calls || '不限'}`,
     `自动允许的命令前缀：${body.command_prefixes.join("、") || "（无：所有工具请求都会被自动拒绝）"}`,
     `文件修改请求：${body.allow_file_changes ? "自动允许" : "自动拒绝"}`,
     `失败后最多修复重试 ${body.retry_limit} 次；额度恢复后${body.auto_resume ? "自动" : "手动"}继续。等待不消耗修复次数，所有调用仍计入总上限和预算。`,
@@ -518,8 +528,8 @@ function stageFormView(e) {
     el("div", { class: "row" }, "主 Agent ", pick("main", e.agents, "请选择主 Agent")),
     el("div", { class: "row" }, "审阅 ", pick("review", e.agents, "不审阅")),
     e.plan !== "none" ? el("div", { class: "row" }, "汇总 ", pick("collect", e.agents, "同主 Agent")) : null,
-    el("div", { class: "row" }, "本阶段调用上限 ",
-      el("input", { type: "number", min: "1", max: "50", style: "width:70px", value: e.maxCalls,
+    el("div", { class: "row" }, "本阶段调用上限（0 不限） ",
+      el("input", { type: "number", min: "0", max: "50", style: "width:70px", value: e.maxCalls,
                     oninput: (ev) => { e.maxCalls = ev.target.value; } })),
     el("div", { class: "row" }, "失败后修复重试次数（首次之外） ",
       el("input", { type: "number", min: "0", max: "3", value: e.retries, style: "width:65px",
@@ -547,7 +557,7 @@ function stageCardView(s) {
   const lines = [el("div", { class: "usage-line" }, chip(label, kind), " ", s.goal.slice(0, 80)),
     el("div", { class: "usage-line dim" },
        `${s.execution_mode === "supervised" ? "用户监督" : "严格"} · ${PLAN_MODE_LABEL[rules.plan] || rules.plan}` +
-       ` · 当前：${PHASE_LABEL[cp.phase] || cp.phase || "—"} · 调用 ${s.calls_used}/${rules.max_calls}`)];
+       ` · 当前：${PHASE_LABEL[cp.phase] || cp.phase || "—"} · 调用 ${s.calls_used}/${rules.max_calls || '不限'}`)];
   if (STAGE_OPEN.includes(s.status)) {
     lines.push(el("div", { class: "row" },
       s.status === "paused"
@@ -1020,6 +1030,16 @@ function stopLocal(c) {
   });
 }
 
+function settleEnded(c) {
+  if (!confirm("确认这次调用及相关执行已结束？将人工登记为超时并释放名额，保留现有文件；不会重跑任务，也不表示产物已验收。若仍在运行，请先停止并核实。")) return;
+  return guarded("settle:" + c.id, async () => {
+    const r = await api("POST", `/api/invocations/${enc(c.id)}/reconcile`, { action: "settle", outcome: "timed_out" });
+    patch(c, { status: r.outcome });
+    await loadStage(); needUsage(); needMessages();
+    toast("已登记结束，现有文件保留。可到本机设置调整后续调用的执行时限。");
+  });
+}
+
 function interruptCall(c) {
   return guarded("interrupt:" + c.id, async () => {
     c.interrupt = { interrupt_requested: true, pending: true };
@@ -1190,6 +1210,7 @@ async function loadConvs() {
 
 function resetConversationState() {
   S.lastSeq = 0; S.lastMsgId = 0; S.messages = []; S.calls = new Map(); S.cards = new Map();
+  S.rawReplies = new Set();
   S.consent = new Map(); S.banner = ""; S.handoff = []; S.usageConv = null;
   S.summaries = []; S.summaryLink = {}; S.attachSummary = null; S.includeHistory = false; S.summaryEdit = null;
   S.plans = null; S.planEdit = null; S.scrollAfter = null; S.stage = null; S.stageEdit = null;
@@ -1443,9 +1464,17 @@ function renderCall(c) {
                                 onclick: () => interruptCall(c) }, "中断本轮"),
                  el("button", { class: "danger", disabled: S.busy.has("stop:" + c.id),
                                 onclick: () => stopLocal(c) }, "停止本地进程"));
+  } else if (c.status === "unknown" && /deadline|timeout|timed.out/i.test(c.error || "")) {
+    actions.push(el("button", { disabled: S.busy.has("settle:" + c.id), onclick: () => settleEnded(c) }, "登记超时调用已结束"));
   }
   const notes = [];
-  if(c.workspace) notes.push(`工作区：${c.workspace} · ${c.workspace_access === 'workspace-write' ? '允许写入（工具仍需授权）' : '只读'}`);
+  if(c.workspace) {
+    notes.push(`工作区：${c.workspace} · ${c.workspace_access === 'workspace-write' ? '允许写入' : '只读（不能修改文件）'}`);
+    notes.push(c.agent_id === 'codex' ? 'Codex 可在此工作区读取；允许写入时可修改。需要审批的工具仍由本次工具卡或阶段规则决定，原生直接操作不保证逐项拦截。'
+      : c.agent_id === 'claude-code' ? '当前 Claude 通道未开放原生文件工具；需要阅读的内容请添加文件引用。' : '此 API 通道没有本机文件工具；只能读取明确附带的文件片段和交接内容。');
+  }
+  if (c.execution_timeout_seconds !== undefined && c.execution_timeout_seconds !== null)
+    notes.push(`单次执行时限：${c.execution_timeout_seconds === 0 ? '不限时（可手动停止）' : (c.execution_timeout_seconds / 60) + ' 分钟'}`);
   const handoff = c.handoff || [];
   const parts = (c.context_preview || {}).parts || [];
   const fileCount = parts.filter((x) => x.kind === "file_snippet").length;
@@ -1457,17 +1486,20 @@ function renderCall(c) {
                (extras.length ? `下面的完整内容（你的消息 + ${extras.join(" + ")}）` : "本条消息原文") +
                (c.context_mode === "native_resume" ? `，并续接 thread ${short(c.resume_thread_id)} 的上下文。` : "。"));
   if (c.turn) notes.push(c.turn.resumed ? `模型回合已开始（续接 thread ${short(c.turn.thread_id)}）` : "模型回合已开始");
+  const endedLocally = ["succeeded", "failed", "canceled", "timed_out"].includes(c.status);
   if (c.ended && c.ended.native_unfinished && c.ended.native_unfinished.length) {
     notes.push(`父回合实际终态：${c.ended.turn_status || "无状态"}；原生子 Agent（thread ` +
-               `${c.ended.native_unfinished.map(short).join(", ")}）没有可信的结束证据：调用保持未知，` +
-               "名额保留；这些子 Agent 不计入 Hub 配额，Hub 也不能确认它们已停止。");
+               `${c.ended.native_unfinished.map(short).join(", ")}）没有可信的结束证据：` +
+               (endedLocally ? "调用已登记结束；" : "调用保持未知，名额保留；") +
+               "这些子 Agent 不计入 Hub 配额，Hub 也不能确认它们已停止。");
   } else if (c.ended) {
     notes.push(`provider 报告回合结束：${c.ended.turn_status || "无状态"}` +
-               (c.ended.terminal ? "" : "（未确认终态，名额保留）"));
+               (c.ended.terminal ? "" : endedLocally
+                 ? "（接入方终态未确认；调用已登记结束，产物仍需验收）" : "（未确认终态，名额保留）"));
   }
   notes.push(...budgetNotes(c, awaiting || c.status === "queued"));
   if (c.declined.length) notes.push(`已自动拒绝 ${c.declined.length} 个非本回合或无法登记的请求`);
-  if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，名额保留`);
+  if (c.stop) notes.push(`已请求停止本地进程：本地进程${c.stop.local_process_exited ? "已退出" : "退出未确认"}；远端停止未确认，${endedLocally ? "调用已登记结束" : "名额保留"}`);
   if (c.interrupt) {
     const i = c.interrupt;
     const settled = ["canceled", "succeeded", "failed", "timed_out"].includes(c.status);
@@ -1961,7 +1993,7 @@ function renderNow() {
   // selected text. Stream data still accumulates while selection defers this
   // pane; selectionchange applies it as soon as the user clears the selection.
   const signature = JSON.stringify([S.cid, S.messages, [...S.calls], [...S.cards],
-                                    S.handoff, [...S.busy], [...S.consent], S.foldOpen]);
+                                    S.handoff, [...S.busy], [...S.consent], S.foldOpen, [...S.rawReplies]]);
   const changed = signature !== S.timelineSignature;
   if (changed && (switched || !timelineSelected())) {
   tl.replaceChildren();
@@ -1994,6 +2026,7 @@ function renderNow() {
            meta.native_session ? chip("thread " + short(meta.native_session.thread_id), "") : null,
            used ? chip("用量 " + used, "") : null,
            el("button", { class: "mini", onclick: () => copyText(m.text), title: "复制这条回复的完整文本" }, "复制回复"),
+           el("button", { class: "mini", onclick: () => { S.rawReplies.has(m.message_id) ? S.rawReplies.delete(m.message_id) : S.rawReplies.add(m.message_id); S.timelineSignature = null; render(); } }, S.rawReplies.has(m.message_id) ? "格式化显示" : "查看原文"),
            el("button", { class: "mini" + (chosen ? " on" : ""), "data-handoff": m.message_id,
                           title: "把这条回复附在下一次调用里交给所选 Agent；发送前会在审批卡里完整显示",
                           onclick: () => toggleHandoff(m) }, chosen ? "已选为交接（点此取消）" : "交给其他 Agent"),
@@ -2001,7 +2034,7 @@ function renderNow() {
                           onclick: () => draftFromReply(m).catch((e) => toast(e.message)) }, "用作摘要草稿"),
            el("button", { class: "mini", title: "把这条回复中“1. agent: 目标 (after 1)”格式的行读成协作计划，编辑后保存",
                           onclick: () => draftPlanFromReply(m).catch((e) => toast(e.message)) }, "读成协作计划")),
-        el("div", { class: "bubble" }, m.text)));
+        el("div", { class: "bubble" }, S.rawReplies.has(m.message_id) ? m.text : AppDisplay.markdown(m.text))));
     }
   }
   // Two things scroll the view, both user-facing: the call the user just created
@@ -2045,9 +2078,19 @@ function renderConvs() {
     return el("li", { class: here ? "active" : "", onclick: () => { closeDrawers(); select(c.conversation_id); } },
       el("div", { class: "t" }, el("span", { class: "name", title: c.title || "" }, c.title || "未命名"),
          c.parent_conversation_id ? chip("续", "info") : null,
-         here ? el("button", { class: "mini", title: "改名", onclick: (ev) => { ev.stopPropagation(); renameConversation(c); } }, "改名") : null),
+         here ? el("button", { class: "mini", title: "改名", onclick: (ev) => { ev.stopPropagation(); renameConversation(c); } }, "改名") : null,
+         here ? el("button", { class: "mini", title: "删除会话", onclick: (ev) => { ev.stopPropagation(); deleteConversation(c); } }, "删除") : null),
       el("div", { class: "d" }, new Date(c.created_at).toLocaleString()));
   }));
+}
+
+async function deleteConversation(c) {
+  if (!confirm(`删除会话“${c.title || '未命名'}”？将从列表移除，项目文件不删除，用量和审计记录保留。正在运行或状态未知的调用需先处理。`)) return;
+  await guarded('delete-conversation', async () => {
+    await api('DELETE', `/api/conversations/${enc(c.conversation_id)}`);
+    if(S.cid === c.conversation_id) { ++S.viewGen; stopStream(); S.cid = null; resetConversationState(); history.replaceState(null, '', location.pathname); }
+    await loadConvs(); render(); toast('会话已删除，项目文件和用量记录保留');
+  });
 }
 
 async function renameConversation(c) {

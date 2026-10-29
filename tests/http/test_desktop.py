@@ -1,5 +1,6 @@
 """Release onboarding/auth/workspace tests, no native Agent or network inference."""
 import dataclasses
+import datetime as dt
 import hashlib
 import json
 from pathlib import Path
@@ -11,7 +12,7 @@ from agenthub.contracts import InvocationSnapshot
 from agenthub.workspace import approved_workspace
 from agenthub_kernel import desktop
 from agenthub_kernel.db import Database, InvocationRow, ApprovalRow
-from agenthub_kernel.service import PolicyService
+from agenthub_kernel.service import PolicyService, now
 from agenthub_rt.api import create_app
 
 ORIGIN = {"Origin": "http://testserver"}
@@ -154,6 +155,104 @@ def test_runtime_changes_refused_while_call_running(release):
         inv=svc.create_invocation(task_id=task.id,snapshot=InvocationSnapshot(agent_id='codex',task_input='read',parent_task_id=None,depth=0))
         inv.status='running'
     assert post(client, '/api/desktop/settings', settings(tmp)).status_code == 409
+
+
+def test_codex_unlimited_is_approved_and_not_reaped_by_old_tree_limit(release):
+    client,tmp=release; pair(client)
+    body=settings(tmp,codex_timeout_seconds=600)
+    assert post(client,'/api/desktop/settings',body).status_code==200
+    with client.app.state.db.session() as session:
+        svc=PolicyService(session); task=svc.create_task(agent_id='codex',goal='long task')
+        snap=InvocationSnapshot(agent_id='codex',task_input='work',parent_task_id=None,depth=0)
+        old=svc.create_invocation(task_id=task.id,snapshot=snap)
+        approval=svc.create_approval(invocation_id=old.id)
+        old_id,approval_id,task_id=old.id,approval.id,task.id
+        assert old.snapshot['permissions']['execution_timeout_seconds']==600
+    body['codex_timeout_seconds']=0
+    assert post(client,'/api/desktop/settings',body).status_code==200
+    assert client.get('/api/desktop/settings').json()['codex_timeout_seconds']==0
+    with client.app.state.db.session() as session:
+        svc=PolicyService(session)
+        assert session.get(ApprovalRow,approval_id).status=='revoked'
+        old=session.get(InvocationRow,old_id)
+        fresh=svc.create_invocation(task_id=task_id,snapshot=snap)
+        assert fresh.snapshot['permissions']['execution_timeout_seconds']==0
+        assert fresh.payload_hash!=old.payload_hash
+        fresh.status='running'; fresh.started_at=now()-dt.timedelta(hours=2)
+        assert svc.list_overdue()==[]
+    assert client.app.state.worker.reap_timeouts()['examined']==0
+
+
+def test_custom_codex_limit_is_used_by_background_watchdog(release):
+    client,tmp=release; pair(client)
+    assert post(client,'/api/desktop/settings',settings(tmp,codex_timeout_seconds=3600)).status_code==200
+    with client.app.state.db.session() as session:
+        svc=PolicyService(session); task=svc.create_task(agent_id='codex',goal='long task')
+        inv=svc.create_invocation(task_id=task.id,snapshot=InvocationSnapshot(
+            agent_id='codex',task_input='work',parent_task_id=None,depth=0))
+        inv.status='running'; inv.started_at=now()-dt.timedelta(minutes=30)
+        assert svc.list_overdue()==[]
+        inv.started_at=now()-dt.timedelta(hours=2)
+        overdue=svc.list_overdue()
+        assert len(overdue)==1 and overdue[0]['limit_seconds']==3600
+
+
+@pytest.mark.parametrize('value',[-1,86401,True,1.5,'600',None])
+def test_invalid_codex_deadline_does_not_write_profile(release,value):
+    client,tmp=release; pair(client)
+    assert post(client,'/api/desktop/settings',settings(tmp)).status_code==200
+    before=(desktop.home()/'profile.json').read_bytes()
+    assert post(client,'/api/desktop/settings',settings(tmp,codex_timeout_seconds=value)).status_code==422
+    assert (desktop.home()/'profile.json').read_bytes()==before
+
+
+def test_old_desktop_profile_without_a_limit_defaults_to_unlimited(release):
+    client,tmp=release; pair(client)
+    assert post(client,'/api/desktop/settings',settings(tmp)).status_code==200
+    p=desktop.home()/'profile.json'; data=json.loads(p.read_text()); data.pop('codex_timeout_seconds'); data.pop('execution_timeout_seconds')
+    p.write_text(json.dumps(data))
+    assert client.get('/api/desktop/settings').json()['execution_timeout_seconds']==0
+
+
+def test_explicit_053_limit_is_preserved_and_shared_by_new_calls(release):
+    client,tmp=release; pair(client)
+    assert post(client,'/api/desktop/settings',settings(tmp,codex_timeout_seconds=600)).status_code==200
+    p=desktop.home()/'profile.json'; data=json.loads(p.read_text()); data.pop('execution_timeout_seconds')
+    p.write_text(json.dumps(data))
+    assert client.get('/api/desktop/settings').json()['execution_timeout_seconds']==600
+    for agent in ['codex','claude-code','deepseek']:
+        assert desktop.workspace_permissions(agent)['execution_timeout_seconds']==600
+
+
+def test_user_can_settle_old_timeout_then_change_future_limit_without_restarting(release):
+    client,tmp=release; pair(client)
+    assert post(client,'/api/desktop/settings',settings(tmp,execution_timeout_seconds=600)).status_code==200
+    output=tmp/'工作 项目'/'result.md'; output.write_text('existing work',encoding='utf-8')
+    with client.app.state.db.session() as session:
+        svc=PolicyService(session); task=svc.create_task(agent_id='codex',goal='long task')
+        inv=svc.create_invocation(task_id=task.id,snapshot=InvocationSnapshot(
+            agent_id='codex',task_input='work',parent_task_id=None,depth=0,
+            policy_version=task.policy_version))
+        approval=svc.create_approval(invocation_id=inv.id)
+        svc.approve(approval.id); svc.consume(inv.id)
+        svc.mark_unknown(inv.id,reason='no terminal turn event before the deadline')
+        iid=inv.id
+    body=settings(tmp,codex_timeout_seconds=0)
+    assert post(client,'/api/desktop/settings',body).status_code==409
+    route=f'/api/invocations/{iid}/reconcile'
+    resolution={'action':'settle','outcome':'timed_out'}
+    # The same user session and origin checks as the existing manual controls.
+    assert client.post(route,json=resolution,headers={'Origin':'http://untrusted.invalid'}).status_code==403
+    result=post(client,route,resolution)
+    assert result.status_code==200 and result.json()['outcome']=='timed_out'
+    assert post(client,route,resolution).status_code==409  # no double release
+    assert post(client,'/api/desktop/settings',body).status_code==200
+    with client.app.state.db.session() as session:
+        rows=list(session.query(InvocationRow).all())
+        assert len(rows)==1 and rows[0].status=='timed_out'
+        assert rows[0].snapshot['permissions']['execution_timeout_seconds']==600
+    assert output.read_text(encoding='utf-8')=='existing work'
+    assert client.app.state.worker.inflight()==set()
 
 
 @pytest.mark.parametrize('extra', [{'confirm':False},{'workspace_access':'danger-full-access'},

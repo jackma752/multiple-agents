@@ -126,7 +126,7 @@ def test_drain_examines_each_invocation_at_most_once(tmp_path):
 
     assert len(outcomes) == 1, f"same invocation examined {len(outcomes)} times: {outcomes}"
     assert outcomes[0]["ok"] is False
-    assert outcomes[0]["code"] == "max_subagents_total"
+    assert outcomes[0]["code"] == "max_subagents_concurrent"
     assert h.adapter.start_count == 0
 
 

@@ -151,6 +151,19 @@ def test_workbench_page_is_served_and_linked_from_chat(hub):
     assert page.status_code == 200 and "论文研究" in page.text and "/api/papers/preflight" in page.text
     assert 'href="/papers"' in hub.client.get("/chat").text
     assert hub.client.get("/api/papers").status_code == 401  # the page is static; data needs the user
+    # same light/dark/system theme as the other pages, from the shared assets
+    assert "/assets/display.css" in page.text and "data-theme-picker" in page.text
+    assert hub.client.get("/assets/display.css").status_code == 200
+
+
+def test_call_cap_defaults_to_the_estimate_and_unlimited_only_when_chosen(hub):
+    hub.prove()
+    default = hub.api("POST", "/api/papers/preflight", json=hub.body(max_calls=None)).json()
+    assert default["ok"] and 0 < default["max_calls"] <= 50
+    unlimited = hub.api("POST", "/api/papers/preflight", json=hub.body(max_calls=0)).json()
+    assert unlimited["ok"] and unlimited["max_calls"] == 0 and any("不限" in w for w in unlimited["warnings"])
+    task = hub.create(max_calls=None)
+    assert hub.view(task)["stage"]["max_calls"] == default["max_calls"]  # never silently unlimited
 
 
 def test_waiting_holds_no_running_slot(hub):

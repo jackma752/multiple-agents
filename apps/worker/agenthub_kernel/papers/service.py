@@ -102,8 +102,12 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
             blockers.append({"code": "stage_not_proven", "agent": agent,
                              "message": f"{agent} 需先在聊天页以{'用户监督' if mode == 'supervised' else '严格'}模式"
                                         "手动成功调用一次，才能授权自动研究阶段"})
-    max_calls = body.get("max_calls") or min(MAX_STAGE_CALLS, estimate["worst_case"])
-    if estimate["expected"] > MAX_STAGE_CALLS:
+    max_calls = body.get("max_calls")
+    if max_calls is None:  # not entered: a cap from the estimate, never "unlimited" by default
+        max_calls = min(MAX_STAGE_CALLS, estimate["worst_case"])
+    if max_calls == 0:
+        warnings.append("你选择了不限调用次数（0）：仍受 Token 预算、审批规则和修复上限约束，但不会因次数停下")
+    elif estimate["expected"] > MAX_STAGE_CALLS:
         blockers.append({"code": "too_many_calls", "message": f"预计 {estimate['expected']} 次调用超过单阶段上限 "
                          f"{MAX_STAGE_CALLS}：请减少篇数或章节"})
     elif max_calls < estimate["expected"]:
@@ -159,8 +163,8 @@ def create_task(session: Session, adapter: Any, user_id: str, body: dict, *, sto
     roles = check["roles"]
     resources = _resources(body.get("resources") or {}, req, roles["agents"])
     max_calls = check["max_calls"]
-    if type(max_calls) is not int or not 1 <= max_calls <= MAX_STAGE_CALLS:
-        raise ValueError(f"max_calls must be 1..{MAX_STAGE_CALLS}")
+    if type(max_calls) is not int or not 0 <= max_calls <= MAX_STAGE_CALLS:
+        raise ValueError(f"max_calls must be 0..{MAX_STAGE_CALLS} (0 = unlimited, chosen by you)")
     budget = body.get("token_budget_total")
     policy = Policy(max_agent_invocations=max_calls, token_budget_total=budget if budget else None)
 
@@ -235,15 +239,19 @@ def reauthorize(session: Session, adapter: Any, user_id: str, task_id: str, body
     missing = [a for a in task.roles["agents"] if mode not in proven.get(a, [])]
     if missing:
         raise QuotaError("stage_not_proven", f"先手动跑通这些 Agent 各一次：{missing}")
-    max_calls = body.get("max_calls") or (old.rules.get("max_calls") if old else 20)
-    if type(max_calls) is not int or not 1 <= max_calls <= MAX_STAGE_CALLS:
-        raise ValueError(f"max_calls must be 1..{MAX_STAGE_CALLS}")
+    max_calls = body.get("max_calls")
+    if max_calls is None:
+        max_calls = old.rules.get("max_calls", 20) if old else 20
+    if type(max_calls) is not int or not 0 <= max_calls <= MAX_STAGE_CALLS:
+        raise ValueError(f"max_calls must be 0..{MAX_STAGE_CALLS} (0 = unlimited)")
     root = session.get(TaskRow, task.root_task_id)
     current = Policy(**{k: v for k, v in (root.policy or {}).items() if k != "version"})
     wanted = body.get("max_agent_invocations")
     if wanted is not None:
         # The user's explicit new tree limit (the whole tree keeps counting; nothing resets).
-        if type(wanted) is not int or wanted < current.max_agent_invocations:
+        # 0 is unlimited, so it is the highest value; a finite value may not go below the current one.
+        have = current.max_agent_invocations
+        if type(wanted) is not int or wanted < 0 or (wanted != 0 and (have == 0 or wanted < have)):
             raise ValueError("新的总调用上限只能由你提高，且不能低于当前值")
         PolicyService(session).update_policy(root.id, Policy(**{**{k: v for k, v in current.as_dict().items()
                                                                     if k != "version"},

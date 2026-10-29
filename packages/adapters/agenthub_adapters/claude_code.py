@@ -419,7 +419,7 @@ class ProcessRunner:
             feeder = threading.Thread(target=_feed, name="claude-code-stdin", daemon=True)
             feeder.start()
             try:
-                exit_code = proc.wait(timeout=timeout)
+                exit_code = proc.wait(timeout=timeout or None)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 try:
@@ -699,8 +699,9 @@ class ClaudeCodeAdapter(AdapterContract):
             problems = self.launcher.supervised_problems()
         except Exception:  # noqa: BLE001
             problems = ["launcher_check_failed"]
-        if not (isinstance(self.timeout_seconds, (int, float)) and math.isfinite(self.timeout_seconds)
-                and 0 < self.timeout_seconds <= 600):
+        adopted = bool(getattr(self.launcher, "_adopted_identity", None))
+        if not (type(self.timeout_seconds) in (int, float) and math.isfinite(self.timeout_seconds)
+                and (0 <= self.timeout_seconds <= 86400 if adopted else 0 < self.timeout_seconds <= 600)):
             problems.append("timeout")
         if _inside(self.workdir_root, REPO_ROOT):
             problems.append("workdir_inside_repository")
@@ -708,7 +709,7 @@ class ClaudeCodeAdapter(AdapterContract):
             return ExecutionAdmission(
                 False, "blocked", "claude_code_supervised_conditions",
                 "用户监督模式要求代码常量中的固定身份并已记录零模型身份核验、固定启动参数、"
-                "仓库外的配置目录与工作目录、代理和可读的 CA、最多 600 秒的本地时限。未满足："
+                "仓库外的配置目录与工作目录、代理和可读的 CA、有效执行时限（安装版可不限时）。未满足："
                 + ", ".join(problems))
         return ExecutionAdmission(True, "supervised", "user_supervised_boundary", SUPERVISED_REASON)
 
@@ -751,8 +752,10 @@ class ClaudeCodeAdapter(AdapterContract):
                 return AdapterStartResult("", ok=False, terminal=True,
                                           detail="refused before launch: " + ", ".join(problems))
         try:
-            from agenthub.workspace import approved_workspace
+            from agenthub.workspace import approved_workspace, execution_timeout
             workspace = approved_workspace(snapshot)
+            if execution_timeout(snapshot, self.timeout_seconds) != self.timeout_seconds:
+                raise ValueError("approved execution time limit differs from the current adapter")
             workdir = workspace or os.path.join(self.workdir_root, invocation_id)
             os.makedirs(workdir, exist_ok=True)
             if not workspace and os.listdir(workdir):

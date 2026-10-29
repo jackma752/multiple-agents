@@ -42,7 +42,20 @@ def test_chat_page_is_served_without_secrets_or_html_injection(make_client):
     assert 'sessionStorage.setItem("agenthub.token"' in html and "token=" not in html
 
 
-CALL_RE = re.compile(r'api\("(GET|POST)",\s*`?"?(/api/[^`"]+)[`"]')
+def test_formula_assets_are_local_and_complete(make_client):
+    client = make_client(InMemoryStubFactory("demo"))
+    html = client.get('/chat').text
+    assert html.index('/assets/katex/katex.min.js') < html.index('/assets/display.js')
+    assert '/assets/katex/katex.min.css' in html
+    for resource, mime in [('katex.min.js', 'javascript'), ('katex.min.css', 'text/css'),
+                           ('fonts/KaTeX_Main-Regular.woff2', 'font/woff2'), ('LICENSE', '')]:
+        response = client.get('/assets/katex/' + resource)
+        assert response.status_code == 200 and response.content
+        assert mime in response.headers['content-type']
+    assert client.get('/assets/katex/../../../ui.py').status_code == 404
+
+
+CALL_RE = re.compile(r'''api\(["'](GET|POST|PATCH|DELETE)["'],\s*`?["']?(/api/[^`"']+)[`"']''')
 FETCH_RE = re.compile(r'fetch\(`(/api/[^`?]+)')
 
 
@@ -57,7 +70,10 @@ def concrete(path):
     return re.sub(r"\$\{[^}]+\}", "x", path)
 
 
-def test_every_api_call_in_the_page_matches_a_route(make_client):
+def test_every_api_call_in_the_page_matches_a_route(make_client,monkeypatch,tmp_path):
+    # Desktop-only actions are conditional in the page; register those routes too.
+    monkeypatch.setenv('AGENT_HUB_DESKTOP','1')
+    monkeypatch.setenv('AGENT_HUB_DESKTOP_HOME',str(tmp_path/'desktop-routes'))
     client = make_client(InMemoryStubFactory("demo"))
     calls = page_calls()
     # Guard the extraction itself: the loop's essential calls must be found.

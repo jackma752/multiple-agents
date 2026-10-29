@@ -77,7 +77,7 @@ class StageRules:
     plan: str = PLAN_NONE
     review_agent: Optional[str] = None
     collect_agent: Optional[str] = None
-    max_calls: int = 8
+    max_calls: int = 0
     tool: ToolRules = field(default_factory=ToolRules)
     retry_limit: int = 3
     auto_resume: bool = True
@@ -145,9 +145,9 @@ def make_rules(data: dict[str, Any], *, served: tuple = ()) -> StageRules:
             raise ValueError(f"the {role.replace('_', ' ')} must be one of the stage's agents")
     if plan != PLAN_NONE and roles["collect_agent"] is None:
         roles["collect_agent"] = roles["main_agent"]
-    max_calls = data.get("max_calls", 8)
-    if type(max_calls) is not int or not 1 <= max_calls <= MAX_STAGE_CALLS:
-        raise ValueError(f"max_calls must be 1..{MAX_STAGE_CALLS}")
+    max_calls = data.get("max_calls", 0)
+    if type(max_calls) is not int or not 0 <= max_calls <= MAX_STAGE_CALLS:
+        raise ValueError(f"max_calls must be 0..{MAX_STAGE_CALLS} (0 means unlimited)")
     retry = data.get("retry_limit", 3)
     if type(retry) is not int or not 0 <= retry <= 3:
         raise ValueError("retry_limit must be 0..3")

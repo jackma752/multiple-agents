@@ -20,11 +20,13 @@ to the existing action endpoints.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from agenthub.contracts import ApprovalStatus, InvocationStatus
@@ -299,6 +301,19 @@ def register_ui(app: FastAPI, db: Database) -> None:
     @app.get("/assets/app-icon.png", include_in_schema=False)
     def brand_icon():
         return FileResponse(os.path.join(STATIC_DIR, "brand", "app-icon-256.png"), media_type="image/png")
+
+    @app.get("/assets/display.js", include_in_schema=False)
+    def display_script():
+        return FileResponse(os.path.join(STATIC_DIR, "display.js"), media_type="text/javascript")
+
+    @app.get("/assets/display.css", include_in_schema=False)
+    def display_style():
+        return FileResponse(os.path.join(STATIC_DIR, "display.css"), media_type="text/css")
+
+    # Windows MIME registries do not consistently recognize bundled web fonts.
+    for extension, media_type in [(".woff2", "font/woff2"), (".woff", "font/woff"), (".ttf", "font/ttf")]:
+        mimetypes.add_type(media_type, extension)
+    app.mount("/assets/katex", StaticFiles(directory=os.path.join(STATIC_DIR, "vendor", "katex")), name="katex")
 
     @app.get("/ui", response_class=HTMLResponse)
     def ui() -> HTMLResponse:

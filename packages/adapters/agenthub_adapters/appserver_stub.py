@@ -378,6 +378,13 @@ class ScriptedAppServer:
             sandbox: Any = "read-only"
             if params.get("sandbox") == "read-only":
                 sandbox = {"type": "readOnly", "networkAccess": False}
+            elif params.get("sandbox") == "workspace-write":
+                config = params.get("config") or {}
+                sandbox = {"type": "workspaceWrite",
+                    "writableRoots": config.get("sandbox_workspace_write.writable_roots", []),
+                    "networkAccess": config.get("sandbox_workspace_write.network_access", False),
+                    "excludeTmpdirEnvVar": config.get("sandbox_workspace_write.exclude_tmpdir_env_var", False),
+                    "excludeSlashTmp": config.get("sandbox_workspace_write.exclude_slash_tmp", False)}
             if self.scenario == "settings-mismatch":
                 sandbox = {"type": "workspaceWrite", "networkAccess": False}
             self.reply(request_id, {

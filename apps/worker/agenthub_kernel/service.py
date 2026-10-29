@@ -175,7 +175,7 @@ class PolicyService:
         from agenthub_kernel.desktop import workspace_permissions
         from dataclasses import replace
         try:
-            workspace = workspace_permissions()
+            workspace = workspace_permissions(snapshot.agent_id)
         except ValueError as exc:
             raise QuotaError("workspace_required", str(exc)) from exc
         if workspace:
@@ -597,13 +597,13 @@ class PolicyService:
         ):
             # Re-read for a precise refusal reason (diagnostics only).
             quota = self.evaluate_quota(inv)
-            if quota["total_invocations"] >= policy.max_agent_invocations:
+            if policy.max_agent_invocations and quota["total_invocations"] >= policy.max_agent_invocations:
                 raise QuotaError(
                     "max_agent_invocations",
                     f"total invocations {quota['total_invocations']} at limit "
                     f"{policy.max_agent_invocations}",
                 )
-            if is_subagent and quota["launched_subagents"] >= policy.max_subagents_total:
+            if is_subagent and policy.max_subagents_total and quota["launched_subagents"] >= policy.max_subagents_total:
                 raise QuotaError(
                     "max_subagents_total",
                     f"sub-agent total {quota['launched_subagents']} already at "
@@ -755,7 +755,7 @@ class PolicyService:
         if inv is None:
             raise QuotaError("no_invocation", f"invocation {invocation_id} not found")
         self._set_invocation_status(inv, InvocationStatus.UNKNOWN)
-        inv.error = reason or (
+        inv.error = reason or inv.error or (
             "state could not be confirmed after recovery; not restarted"
         )
         self.session.flush()
@@ -795,16 +795,14 @@ class PolicyService:
             self.session.flush()
 
         conditions = [TreeQuotaRow.root_task_id == root_task_id]
-        conditions.append(
-            TreeQuotaRow.total_invocations < policy.max_agent_invocations
-        )
+        if policy.max_agent_invocations:
+            conditions.append(TreeQuotaRow.total_invocations < policy.max_agent_invocations)
         values: dict[str, Any] = {
             "total_invocations": TreeQuotaRow.total_invocations + 1
         }
         if is_subagent:
-            conditions.append(
-                TreeQuotaRow.launched_total < policy.max_subagents_total
-            )
+            if policy.max_subagents_total:
+                conditions.append(TreeQuotaRow.launched_total < policy.max_subagents_total)
             conditions.append(
                 TreeQuotaRow.concurrent < policy.max_subagents_concurrent
             )
@@ -1015,7 +1013,11 @@ class PolicyService:
             if task is None:
                 continue
             policy = self._quotas(r)
-            deadline = r.started_at + dt.timedelta(seconds=policy.run_time_limit_seconds)
+            from agenthub.workspace import execution_timeout
+            limit = execution_timeout(InvocationSnapshot(**r.snapshot), policy.run_time_limit_seconds)
+            if limit == 0:
+                continue
+            deadline = r.started_at + dt.timedelta(seconds=limit)
             if current >= deadline:
                 overdue.append(
                     {
@@ -1023,7 +1025,7 @@ class PolicyService:
                         "root_task_id": task.root_task_id,
                         "started_at": r.started_at,
                         "deadline": deadline,
-                        "limit_seconds": policy.run_time_limit_seconds,
+                        "limit_seconds": limit,
                     }
                 )
         return overdue

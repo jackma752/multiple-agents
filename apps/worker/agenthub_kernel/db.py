@@ -116,6 +116,14 @@ class ConversationRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class DeletedConversationRow(Base):
+    """User removal from chat, without discarding usage or execution audit."""
+
+    __tablename__ = "deleted_conversations"
+    conversation_id = Column(ForeignKey("conversations.id"), primary_key=True)
+    deleted_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class ChatMessageRow(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (

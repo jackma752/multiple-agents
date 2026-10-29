@@ -239,7 +239,7 @@ def test_lowering_limit_keeps_cumulative_and_running(tmp_path):
         dict(max_subagents_total=1, max_subagents_concurrent=2),   # concurrent > total
         dict(max_subagents_total=-1, max_subagents_concurrent=0),  # negative
         dict(max_subagents_total=3, max_subagents_concurrent=3, max_depth=-2),
-        dict(max_subagents_total=3, max_subagents_concurrent=1, max_agent_invocations=0),
+        dict(max_subagents_total=3, max_subagents_concurrent=1, max_agent_invocations=-1),
     ],
 )
 def test_illegal_policy_writes_nothing(tmp_path, bad):

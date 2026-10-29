@@ -269,10 +269,11 @@ def test_build_env_sets_proxy_and_extra_ca_but_never_disables_verification():
     assert "CLAUDE_CONFIG_DIR" in added
 
 
-def test_local_stop_ends_only_our_process(tmp_path):
+@pytest.mark.parametrize('timeout',[30,0])
+def test_local_stop_ends_only_our_process(tmp_path,timeout):
     import threading
 
-    adapter, _ = stub_adapter(tmp_path, "hang", timeout_seconds=30)
+    adapter, _ = stub_adapter(tmp_path, "hang", timeout_seconds=timeout)
     box = {}
     worker = threading.Thread(target=lambda: box.update(r=adapter.start("inv-1", snap(adapter), gate_token="t")))
     worker.start()
@@ -341,6 +342,14 @@ def test_strict_never_admits_the_real_launcher(tmp_path, pinned_file, confirmed)
     strict = execution_admission(adapter, "strict")
     assert not strict.allowed and strict.code == "claude_code_controls_unverified"
     assert execution_admission(adapter, "supervised").mode == "supervised"
+
+
+@pytest.mark.parametrize('timeout',[0,3600])
+def test_adopted_runtime_uses_the_explicit_desktop_time_limit(tmp_path,pinned_file,confirmed,timeout):
+    adapter=real_adapter(tmp_path,pinned_file[1],timeout_seconds=timeout)
+    adapter.launcher._adopted_identity=dict(PINNED_CLAUDE_CODE)
+    assert execution_admission(adapter,'supervised').allowed
+    assert not execution_admission(adapter,'strict').allowed
 
 
 def test_supervised_stays_refused_until_the_zero_model_check_is_recorded(tmp_path, pinned_file, monkeypatch):

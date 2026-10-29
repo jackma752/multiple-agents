@@ -176,6 +176,8 @@ class InvocationSnapshot:
     model_provider: Optional[str] = None
 
     def __post_init__(self) -> None:
+        from agenthub.workspace import execution_timeout
+        execution_timeout(self, None)
         from agenthub.models import validate_selection
         validate_selection(self.model, self.reasoning_effort)
         if self.execution_mode not in {"strict", "supervised"}:
@@ -240,11 +242,13 @@ class Policy:
     main agent is depth 0, a sub-agent is depth 1, a grandchild is depth 2.
     """
 
-    max_subagents_total: int = 3
+    #: Cumulative totals and execution seconds: 0 means unlimited. Concurrency
+    #: and depth remain actual limits, including zero as no children allowed.
+    max_subagents_total: int = 0
     max_subagents_concurrent: int = 2
     max_depth: int = 1
-    max_agent_invocations: int = 10
-    run_time_limit_seconds: int = 600
+    max_agent_invocations: int = 0
+    run_time_limit_seconds: int = 0
     root_task_ttl_seconds: int = 3600
     collaboration_enabled: bool = False
     #: Token budgets (T-1c, ``agenthub.budget``), counted in ledger tokens:
@@ -295,11 +299,7 @@ class Policy:
                 raise ValueError(f"{name} must be an integer, got {value!r}")
             if value < 0:
                 raise ValueError(f"{name} must not be negative, got {value}")
-        if self.max_agent_invocations < 1:
-            raise ValueError("max_agent_invocations must be at least 1")
-        if self.run_time_limit_seconds < 1:
-            raise ValueError("run_time_limit_seconds must be at least 1")
-        if self.max_subagents_concurrent > self.max_subagents_total:
+        if self.max_subagents_total and self.max_subagents_concurrent > self.max_subagents_total:
             raise ValueError(
                 "max_subagents_concurrent cannot exceed max_subagents_total"
             )

@@ -157,6 +157,34 @@ def test_supervised_needs_a_bounded_local_deadline(tmp_path, pinned_file, timeou
     assert not admission.allowed and "timeout" in admission.reason
 
 
+@pytest.mark.parametrize('timeout',[0,3600,86400])
+def test_adopted_desktop_codex_accepts_user_execution_limit(tmp_path,pinned_file,timeout):
+    _exe,ca=pinned_file
+    factory=real_factory(tmp_path,ca)
+    factory._adopted_identity=dict(PINNED_APPSERVER)
+    adapter=real_adapter(tmp_path,factory,timeout_seconds=timeout)
+    assert execution_admission(adapter,'supervised').allowed
+    assert not execution_admission(adapter,'strict').allowed
+
+
+def test_unlimited_pump_can_finish_after_the_old_ten_minute_deadline(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    ticks=iter(range(0,100000,1000))
+    monkeypatch.setattr(aa,'time',SimpleNamespace(monotonic=lambda:next(ticks)))
+    adapter=make_adapter(tmp_path,InMemoryStubFactory('stream'),timeout_seconds=0)
+    result=adapter.start('inv-unlimited',snap(adapter,permissions={'execution_timeout_seconds':0}),gate_token='t')
+    assert result.ok, result.detail
+    assert payload_of(adapter,'inv-unlimited')['turn_status']=='completed'
+
+
+def test_changed_execution_limit_refuses_before_launch(tmp_path):
+    factory=InMemoryStubFactory('stream')
+    adapter=make_adapter(tmp_path,factory,timeout_seconds=0)
+    result=adapter.start('inv-stale',snap(adapter,permissions={'execution_timeout_seconds':600}),gate_token='t')
+    assert not result.ok and 'execution time limit' in result.detail
+    assert factory.servers==[]
+
+
 def test_supervised_admits_request_scoped_accept_without_enabling_strict(tmp_path, pinned_file):
     _exe, ca = pinned_file
     adapter = real_adapter(tmp_path, real_factory(tmp_path, ca))
@@ -612,10 +640,11 @@ def test_events_after_the_terminal_in_one_batch_are_counted_late(tmp_path, path)
     assert turn.tools == {}  # a late event is not attributed as this turn's activity
 
 
-def test_slow_interrupt_ack_is_not_yet_acknowledged_and_the_terminal_decides(tmp_path, monkeypatch):
+@pytest.mark.parametrize('timeout',[10,0])
+def test_slow_interrupt_ack_is_not_yet_acknowledged_and_the_terminal_decides(tmp_path, monkeypatch, timeout):
     monkeypatch.setattr(aa, "INTERRUPT_REQUEST_TIMEOUT", 0.0)
     factory = InMemoryStubFactory("interrupt-terminal")
-    adapter = make_adapter(tmp_path, factory, timeout_seconds=10)
+    adapter = make_adapter(tmp_path, factory, timeout_seconds=timeout)
     box = {}
     runner = threading.Thread(target=lambda: box.update(
         r=adapter.start_streaming("inv-1", snap(adapter), gate_token="t")))
