@@ -4,7 +4,7 @@
 - 2026-10-30 经用户同意，把 `feat/desktop-timeout`（0.5.2–0.5.5：工作区写入修复、执行时限、主题/Markdown/SVG/删除会话/0 为不限、KaTeX）合并进本分支（合并提交见 git log），因为 P6 原本基于 main，缺这些更新，论文页只有深色。`/papers` 改用共用 `display.css/js` 与主题选择；论文调用上限默认按预检估算，只有用户填 0 才不限。未合并 main、未推送；主目录 README 未提交改动未触碰。
 - 实现与验证细节：[docs/p6-implementation.md](p6-implementation.md)。研究任务 = 一个 `plan="paper"` 的 P4.6 阶段；模型步骤全部经 `_ensure` → consume 门禁；检索/下载/解析/批次核对按版本化资源规则在执行时复检；全文补充两种策略、30 分钟可注入时钟、多批补充、竞争/重启/暂停/停止均有测试。
 - 入口：`/papers`；离线演示 `tools/demo/serve.py --paper-demo`（模拟回复 + 合成 arXiv 语料，不联网、无模型）。
-- 安装包 0.6.0（源码 `4db9cc0`）在 `E:\plug\agent-hub\dist\p6-release-0.6.0`，校验值与冻结程序检查见 [0.6.0 发行记录](p6-release-0.6.0.md)。用户需退出当前 Hub 后覆盖安装；未运行安装向导。
+- 安装包 0.6.0（源码 `4db9cc0`）在 `dist\p6-release-0.6.0`；用户试用后指出论文表单不能像会话页那样选模型，0.6.1（源码 `1a05e66`）在 `dist\p6-release-0.6.1` 补上按角色选择模型与推理强度。校验值与冻结程序检查见 [发行记录](p6-release-0.6.0.md)。用户需退出当前 Hub 后覆盖安装；未运行安装向导。
 - `tests/http/test_contract_api.py` 中按旧 600 秒默认写的 3 项已在本分支修复（`b047ade`），全量此前仅这 3 项失败。
 - 测试环境：pypdf 5.1.0 装在被忽略的 `var/p6-deps`（`PYTHONPATH` 指向它），共享 `.venv` 未改；早先在工作树建 `.venv` 的 pip 安装卡住，留下被忽略/未跟踪的 `.venv`、`pip-build-*` 临时目录及几个 python 进程（均为本工作树自建，可直接删除/结束）。
 - **未验证**：真实 arXiv 检索与 PDF 下载、真实模型在模板上的输出质量、新安装包中的论文入口。真实验收需按仓库规则另行授权一次小规模任务。

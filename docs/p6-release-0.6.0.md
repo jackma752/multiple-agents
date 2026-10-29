@@ -1,3 +1,16 @@
+# 0.6.1：论文研究页按角色选择模型
+
+源码 `1a05e66c697a0cd9f94370a4e5144c1284431ff8`。用户在 0.6.0 中发现论文研究表单只能手填主 Agent 的模型。0.6.1 起与会话页一致：主 Agent 和审阅 Agent 各自从模型目录选择（也可输入模型 ID），推理强度随模型列出，默认带入会话页记住的选择，可“刷新模型”；审阅与主 Agent 相同时沿用主 Agent 的模型（一个阶段内每个 Agent 一个模型）。选择进入阶段规则和每次调用快照。
+
+| 文件 | 字节 | SHA-256 |
+|---|---:|---|
+| AgentHub-0.6.1-windows-x64-setup.exe | 22521600 | `282b267dd70ed38adf338f31123a2497840b1656b52a73cbb008c19072cbba5a` |
+| AgentHub-0.6.1-windows-x64-portable.zip | 22221426 | `195b644124912dbd268405b2f20631f2475f6728bb8c8d554c8bb7957b5863c2` |
+
+位置 `E:\plug\agent-hub\dist\p6-release-0.6.1`，205 项文件，审计通过。验证：`tests/papers` 61 passed；离线演示浏览器检查两个模型目录、强度随模型变化、同 Agent 审阅禁用；冻结程序在临时数据目录 headless 检查与 0.6.0 相同各项通过，打包页面含新控件，退出后进程结束。未运行安装向导。升级：退出 Hub 后用 0.6.1 setup 覆盖原目录。
+
+---
+
 # 0.6.0：论文研究（P6 首版）
 
 发行源码 `4db9cc01f28eab407d700dedcc54264f35683455`，分支 `feat/p6-paper-pipeline`。在 0.5.5（`feat/desktop-timeout`，主题、Markdown/SVG、公式、0 为不限、删除会话、执行时限、工作区写入修复）基础上加入论文研究，见 [P6 实现记录](p6-implementation.md)。未合并 main，未推送。
