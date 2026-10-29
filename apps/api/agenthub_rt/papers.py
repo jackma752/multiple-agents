@@ -48,6 +48,13 @@ class ReauthorizeIn(BaseModel):
     max_agent_invocations: Optional[StrictInt] = None
 
 
+class ContinueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    client_request_id: Optional[str] = Field(default=None, max_length=100)
+    execution_mode: Optional[Literal["strict", "supervised"]] = None
+    supervised_consent: StrictBool = False
+
+
 class ChoiceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str
@@ -123,10 +130,39 @@ def register_papers(app, db) -> None:
         return view
 
     @app.get("/api/papers")
-    def list_tasks(principal: Principal = Depends(authenticate)):
+    def list_tasks(archived: bool = False, principal: Principal = Depends(authenticate)):
+        """Active research by default; ``archived=true`` lists only the archived ones."""
         require_approver(principal)
         with db.session() as session:
-            return {"tasks": service.task_list(session, principal.identity)}
+            return {"tasks": service.task_list(session, principal.identity, archived=archived)}
+
+    def set_archived(task_id: str, principal: Principal, action: str):
+        from agenthub_kernel import archive
+
+        require_approver(principal)
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                task = service.owned_task(session, task_id, principal.identity)
+                if action == "archive":
+                    archive.require_idle(session, task.root_task_id)
+                    changed = archive.archive(session, principal.identity, "research", task.id)
+                    # Its conversation holds the same calls; it goes with it.
+                    archive.archive(session, principal.identity, "conversation", task.conversation_id)
+                else:
+                    changed = archive.unarchive(session, "research", task.id)
+                    archive.unarchive(session, "conversation", task.conversation_id)
+            except QuotaError as exc:
+                raise refused(exc)
+            return {"task_id": task_id, "archived": action == "archive", "changed": changed}
+
+    @app.post("/api/papers/{task_id}/archive")
+    def archive_task(task_id: str, principal: Principal = Depends(authenticate)):
+        return set_archived(task_id, principal, "archive")
+
+    @app.post("/api/papers/{task_id}/unarchive")
+    def unarchive_task(task_id: str, principal: Principal = Depends(authenticate)):
+        return set_archived(task_id, principal, "unarchive")
 
     @app.get("/api/papers/{task_id}")
     def get_task(task_id: str, principal: Principal = Depends(authenticate)):
@@ -167,6 +203,23 @@ def register_papers(app, db) -> None:
                                            body.model_dump(exclude_none=True))
             except ValueError as exc:
                 raise HTTPException(422, detail={"code": "invalid_research", "message": str(exc)})
+            except QuotaError as exc:
+                raise refused(exc)
+            view = service.task_view(session, task, clock())
+        app.state.autopilot.kick()
+        return view
+
+    @app.post("/api/papers/{task_id}/continue")
+    def continue_research(task_id: str, body: ContinueIn, principal: Principal = Depends(authenticate)):
+        """After a tree stop: a new task and stage that reuse everything already finished."""
+        from agenthub_kernel.papers.continuation import continue_task
+
+        require_approver(principal)
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                task = continue_task(session, app.state.worker.adapter, principal.identity, task_id,
+                                     body.model_dump(exclude_none=True))
             except QuotaError as exc:
                 raise refused(exc)
             view = service.task_view(session, task, clock())

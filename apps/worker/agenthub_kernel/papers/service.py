@@ -29,6 +29,7 @@ from agenthub.stage import (
     STAGE_STOPPED, StageRules, ToolRules,
 )
 from agenthub_kernel.adapters import adapter_binding
+from agenthub_kernel.archive import archived_ids
 from agenthub_kernel.autopilot import _event, open_stage, proven_modes, served_agents, stage_view
 from agenthub_kernel.db import ConversationRow, InvocationRow, StageRunRow, TaskRow
 from agenthub_kernel.papers import supplement
@@ -237,6 +238,8 @@ def reauthorize(session: Session, adapter: Any, user_id: str, task_id: str, body
         raise QuotaError("task_completed", "研究任务已完成")
     if old is not None and old.status not in STAGE_ENDED:
         raise QuotaError("stage_in_progress", "当前阶段仍在进行；先暂停/停止或等待它结束")
+    if PolicyService(session)._tree_stopped(task.root_task_id):
+        raise QuotaError("tree_stopped", "这项研究的任务树已停止（停止本地进程），不能在原任务继续；可用“接续这项研究”复用已完成资料")
     unknown = session.scalar(select(InvocationRow.id).join(TaskRow, TaskRow.id == InvocationRow.task_id).where(
         TaskRow.root_task_id == task.root_task_id, InvocationRow.status == "unknown"))
     if unknown:
@@ -301,10 +304,13 @@ def _iso(value: Optional[dt.datetime]) -> Optional[str]:
     return value.isoformat() + "Z" if value else None
 
 
-def task_list(session: Session, user_id: str) -> list[dict]:
+def task_list(session: Session, user_id: str, *, archived: bool = False) -> list[dict]:
+    hidden = archived_ids(session, user_id, "research")
     out = []
     for task in session.scalars(select(ResearchTaskRow).where(ResearchTaskRow.user_id == user_id)
                                 .order_by(ResearchTaskRow.created_at.desc())):
+        if (task.id in hidden) != archived:
+            continue
         stage = session.get(StageRunRow, task.stage_id) if task.stage_id else None
         out.append({"task_id": task.id, "topic": task.request["topic"], "status": task_status(session, task, stage),
                     "phase": task.phase, "quality_status": task.quality_status, "created_at": _iso(task.created_at)})
@@ -357,6 +363,14 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         "artifacts": [{"name": a.name, "version": a.version, "sha256": a.sha256, "size": a.size, "final": a.final}
                       for a in artifacts],
         "created_at": _iso(task.created_at),
+        # What the page needs to offer the right way forward after a stop or a crash.
+        "unknown_calls": list(session.scalars(select(InvocationRow.id).join(TaskRow, TaskRow.id == InvocationRow.task_id)
+                                              .where(TaskRow.root_task_id == task.root_task_id,
+                                                     InvocationRow.status == "unknown"))),
+        "tree_stopped": PolicyService(session)._tree_stopped(task.root_task_id),
+        "continued_from": ((task.outcome or {}).get("continued_from") or {}).get("task_id"),
+        "continued_to": (task.outcome or {}).get("continued_to"),
+        "archived": task.id in archived_ids(session, task.user_id, "research"),
     }
 
 

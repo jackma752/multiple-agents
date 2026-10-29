@@ -60,6 +60,10 @@ class MockAdapter(AdapterContract):
 
     name = "mock"
     version = "0.2.0"
+    #: The inert Mock stands for an external service that outlives this process,
+    #: so its "running" record is a real confirmation in restart recovery. Real
+    #: adapters run a child process or HTTP stream that ends with the Hub.
+    execution_survives_restart = True
 
     def __init__(
         self,

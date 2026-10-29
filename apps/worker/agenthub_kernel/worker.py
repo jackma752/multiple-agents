@@ -674,6 +674,20 @@ class Worker:
             external_status = str(record.get("status") or "")
             adapter_id = record.get("adapter_invocation_id")
 
+            if external_status == MOCK_RUNNING_STATE and not getattr(
+                    self._adapter_of(invocation_id), "execution_survives_restart", False):
+                # A child process or HTTP stream ends with the Hub process that drove it;
+                # its last record still says "running" but nobody is running it. That is
+                # not a confirmation: unknown, slot kept, never relaunched; the user
+                # registers it as ended.
+                with self.db.session() as session:
+                    PolicyService(session).mark_unknown(
+                        invocation_id, reason="restart: the Hub process driving this call ended; "
+                                              "its last record still said running")
+                    record_usage(session, self.adapter, invocation_id)
+                summary["unknown"].append(invocation_id)
+                continue
+
             if external_status == MOCK_RUNNING_STATE:
                 with self.db.session() as session:
                     svc = PolicyService(session)

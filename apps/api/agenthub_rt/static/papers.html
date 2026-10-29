@@ -42,6 +42,8 @@
   aside li.active { background: var(--panel2); outline: 1px solid var(--accent); }
   aside li .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   aside li .d { color: var(--dim); font-size: 12px; }
+  aside details.archived { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  aside details.archived > summary { cursor: pointer; color: var(--dim); font-size: 13px; }
   main { padding: 16px; overflow: auto; min-width: 0; }
   .pane { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
   .pane h2 { font-size: 15px; margin: 0 0 10px; }
@@ -100,6 +102,7 @@
   <aside>
     <button id="newBtn" class="primary" style="width:100%">+ 新建研究</button>
     <ul id="taskList"></ul>
+    <details id="archivedTasks" class="archived" hidden><summary id="archivedSummary">已归档</summary><ul id="archivedList"></ul></details>
     <p class="dim small">首版来源：arXiv。成品是可追溯的综述/研究简报，不是系统综述、荟萃分析或原创实验。</p>
   </aside>
   <main id="main"></main>
@@ -222,12 +225,24 @@ const chip = (pair) => `<span class="chip ${pair[1]}">${esc(pair[0])}</span>`;
 // ---------------------------------------------------------------- tasks
 
 async function loadTasks() {
-  const data = await api("GET", "/api/papers");
+  const [data, archived] = await Promise.all([api("GET", "/api/papers"),
+    api("GET", "/api/papers?archived=true").catch(() => ({ tasks: [] }))]);
   S.tasks = data.tasks;
-  $("taskList").innerHTML = S.tasks.map((t) => `<li data-id="${esc(t.task_id)}" class="${t.task_id === S.current ? "active" : ""}">
-      <div class="t">${esc(t.topic)}</div><div class="d">${esc((STATUS[t.status] || [t.status])[0])} · ${esc(PHASE[t.phase] || t.phase)}</div></li>`).join("")
-    || `<li class="dim small">还没有研究任务</li>`;
-  for (const li of $("taskList").querySelectorAll("li[data-id]")) li.onclick = () => openTask(li.dataset.id);
+  const item = (t) => `<li data-id="${esc(t.task_id)}" class="${t.task_id === S.current ? "active" : ""}">
+      <div class="t">${esc(t.topic)}</div><div class="d">${esc((STATUS[t.status] || [t.status])[0])} · ${esc(PHASE[t.phase] || t.phase)}</div></li>`;
+  $("taskList").innerHTML = S.tasks.map(item).join("") || `<li class="dim small">还没有研究任务</li>`;
+  $("archivedTasks").hidden = !archived.tasks.length;
+  $("archivedSummary").textContent = `已归档（${archived.tasks.length}）`;
+  $("archivedList").innerHTML = archived.tasks.map(item).join("");
+  for (const li of document.querySelectorAll("aside li[data-id]")) li.onclick = () => openTask(li.dataset.id);
+}
+
+async function setArchived(id, archive) {
+  try {
+    await api("POST", `/api/papers/${encodeURIComponent(id)}/${archive ? "archive" : "unarchive"}`);
+    toast(archive ? "已归档（对应会话一并归档）；在左侧“已归档”里可以打开或取消归档" : "已移回研究列表");
+    await loadTasks(); await refresh(true);
+  } catch (e) { toast(e.message); }
 }
 
 async function openTask(id) {
@@ -406,6 +421,11 @@ function render(force) {
 }
 
 function renderHead(v) {
+  // Rebuild only on change: replacing the buttons every poll can swallow a click.
+  const sig = JSON.stringify([v.status, v.phase, v.quality_status, v.usage, v.stage, v.unknown_calls, v.tree_stopped,
+                              v.continued_to, v.continued_from, v.archived]);
+  if ($("taskHead").dataset.sig === sig) return;
+  $("taskHead").dataset.sig = sig;
   const phaseIndex = v.phases.indexOf(v.phase);
   const phases = v.phases.map((p, i) => `<span class="phase ${i < phaseIndex || v.phase === "done" ? "done" : i === phaseIndex ? "now" : ""}">${esc(PHASE[p] || p)}</span>`).join("");
   const st = v.stage || {};
@@ -413,27 +433,58 @@ function renderHead(v) {
   let ctl = "";
   if (["running", "waiting_input"].includes(v.status)) ctl = `<button id="pauseBtn">暂停</button> <button id="stopBtn" class="danger">停止</button>`;
   if (v.status === "paused") ctl = `<button id="resumeBtn" class="primary">继续</button> <button id="stopBtn" class="danger">停止</button>`;
-  if (["blocked", "stopped"].includes(v.status)) ctl = `<input id="reCalls" type="number" min="1" max="50" value="${esc(st.max_calls || 20)}" style="width:80px" title="新阶段调用上限" />
+  const ended = ["blocked", "stopped"].includes(v.status);
+  if (ended && !v.tree_stopped && !v.unknown_calls.length) ctl = `<input id="reCalls" type="number" min="0" max="50" value="${esc(st.max_calls ?? 20)}" style="width:80px" title="新阶段调用上限（0 = 不限）" />
       <button id="reauthBtn" class="primary">确认后重新授权继续</button> <span class="dim small">已完成的检索、阅读与写作会复用，不重复计费</span>`;
+  if (ended && v.tree_stopped && !v.continued_to) ctl = `<button id="continueBtn" class="primary">接续这项研究</button>
+      <span class="dim small">新建一个接续任务：已完成的检索、筛选、全文、证据与写作原样带过去，只从未完成的步骤往后跑；额度为原研究剩余的部分</span>`;
   let block = "";
-  if (v.status === "blocked" || v.status === "stopped") {
+  if (ended) {
     block = `<div class="badbox">${esc(summary.needs || "阶段已结束")}${summary.message ? `<div class="small mono">${esc(summary.message)}</div>` : ""}</div>`;
   }
+  if (ended && v.tree_stopped) {
+    block += `<div class="warnbox">这项研究的任务树已停止（“停止本地进程”会停止整个任务），原任务不能再继续。</div>`;
+  } else if (v.unknown_calls.length) {
+    block += `<div class="warnbox">以下调用状态未知（例如 Hub 重启时中断）。确认它已经结束后，才能重新授权继续；不会自动重发。
+      ${v.unknown_calls.map((id) => `<div class="row"><span class="mono small">${esc(id)}</span>
+        <button class="mini" data-settle="${esc(id)}">确认该调用已结束</button></div>`).join("")}</div>`;
+  }
+  if (v.continued_to) block += `<div class="okbox">已接续为新任务：<a href="#" data-open="${esc(v.continued_to)}">打开接续任务</a></div>`;
+  if (v.continued_from) block += `<div class="small dim">接续自 <a href="#" data-open="${esc(v.continued_from)}">原研究</a>；“调用”合计含原研究已用部分。</div>`;
   $("taskHead").innerHTML = `<div class="row"><h2 style="margin:0;flex:1;min-width:200px">${esc(v.request.topic)}</h2>
       ${chip(STATUS[v.status] || [v.status, ""])} ${chip(QUALITY[v.quality_status] || [v.quality_status, ""])}</div>
     <div class="phases">${phases}</div>
     <div class="row small dim">调用 ${esc(v.usage.calls)} 次（本阶段 ${esc(st.calls_used ?? "-")}/${esc(st.max_calls ?? "-")}）· 输入 ${esc(v.usage.input)} / 输出 ${esc(v.usage.output)} tokens${v.usage.unknown ? ` · 用量未知 ${esc(v.usage.unknown)} 次` : ""}
       · 模型：${esc(v.roles.main_agent)}${v.roles.review_agent ? " / 审阅 " + esc(v.roles.review_agent) : "（无审阅）"} · <a href="/chat" title="每一步调用都在对应会话里可查">查看调用记录</a></div>
-    ${block}<div class="row">${ctl}</div>`;
+    ${block}<div class="row">${ctl}<span class="grow" style="flex:1"></span>
+      <button id="archiveBtn" class="mini" title="${v.archived ? "移回研究列表" : "从列表移到“已归档”，记录与文件都保留，可随时取消"}">${v.archived ? "取消归档" : "归档"}</button></div>`;
   const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  on("archiveBtn", () => setArchived(v.task_id, !v.archived));
   const act = (action) => async () => { try { await api("POST", `/api/papers/${v.task_id}/stage/${action}`); await refresh(true); } catch (e) { toast(e.message); } };
   on("pauseBtn", act("pause")); on("resumeBtn", act("resume"));
   on("stopBtn", async () => { if (confirm("停止后不会再启动新的调用或下载；已发出的请求按实际状态显示。确认停止？")) await act("stop")(); });
+  const supervised = st.execution_mode === "supervised";
+  const boundary = supervised ? "\n\n用户监督模式：原生派生与远端停止不保证受控。确认即表示同意此边界。" : "";
   on("reauthBtn", async () => {
-    if (!confirm("将以原研究请求与资源规则开启一个新阶段。确认？")) return;
-    try { await api("POST", `/api/papers/${v.task_id}/reauthorize`, { max_calls: Number($("reCalls").value) || undefined }); await refresh(true); }
+    if (!confirm("将以原研究请求与资源规则开启一个新阶段。确认？" + boundary)) return;
+    const raw = $("reCalls").value.trim();
+    try { await api("POST", `/api/papers/${v.task_id}/reauthorize`, { max_calls: raw === "" ? undefined : Number(raw),
+                                                                     supervised_consent: supervised }); await refresh(true); }
     catch (e) { toast(e.message); }
   });
+  on("continueBtn", async () => {
+    if (!confirm("新建接续任务，复用这项研究已完成的资料与步骤，只运行未完成的部分。调用次数与 Token 预算为原研究剩余的部分；原研究保留不变。确认？" + boundary)) return;
+    try {
+      const nv = await api("POST", `/api/papers/${v.task_id}/continue`, { supervised_consent: supervised });
+      await loadTasks(); openTask(nv.task_id);
+    } catch (e) { toast(e.message); }
+  });
+  for (const b of $("taskHead").querySelectorAll("button[data-settle]")) b.onclick = async () => {
+    if (!confirm("确认这次调用已经结束（例如 Hub 重启后它的进程已不存在）？将登记为失败并释放名额；不会重跑，也不表示已有结果。")) return;
+    try { await api("POST", `/api/invocations/${encodeURIComponent(b.dataset.settle)}/reconcile`, { action: "settle", outcome: "failed" }); await refresh(true); }
+    catch (e) { toast(e.message); }
+  };
+  for (const a of $("taskHead").querySelectorAll("a[data-open]")) a.onclick = (ev) => { ev.preventDefault(); openTask(a.dataset.open); };
 }
 
 function missingOptions(sup) {

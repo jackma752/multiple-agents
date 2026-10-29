@@ -44,7 +44,7 @@ def sse_frame(event: dict) -> str:
     data = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     return f"id: {event['seq']}\nevent: {event['type']}\ndata: {data}\n\n"
 from agenthub_kernel.db import (
-    ApprovalRow, ChatMessageRow, ConversationLinkRow, ConversationRow, DeletedConversationRow,
+    ApprovalRow, ArchivedItemRow, ChatMessageRow, ConversationLinkRow, ConversationRow, DeletedConversationRow,
     InvocationRow, StageRunRow, TaskRow,
 )
 from agenthub_kernel.service import PolicyService, QuotaError, new_id
@@ -244,17 +244,47 @@ def register_conversations(app, db) -> None:
             session.add(DeletedConversationRow(conversation_id=row.id))
         return {"deleted": True, "conversation_id": cid, "files_preserved": True, "usage_preserved": True}
 
+    @app.post("/api/conversations/{cid}/archive")
+    def archive_conversation(cid: str, principal: Principal = Depends(authenticate)):
+        """Put a conversation away (hidden from the list, nothing deleted)."""
+        return set_archived(cid, principal, "archive")
+
+    @app.post("/api/conversations/{cid}/unarchive")
+    def unarchive_conversation(cid: str, principal: Principal = Depends(authenticate)):
+        return set_archived(cid, principal, "unarchive")
+
+    def set_archived(cid: str, principal: Principal, action: str):
+        from agenthub_kernel import archive
+
+        require_approver(principal)
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            row = require_conversation(session, cid, principal)
+            if action == "archive":
+                try:
+                    archive.require_idle(session, root_task_of(session, cid))
+                except QuotaError as exc:
+                    raise HTTPException(409, detail={"code": exc.code, "message": exc.message})
+                changed = archive.archive(session, principal.identity, "conversation", row.id)
+            else:
+                changed = archive.unarchive(session, "conversation", row.id)
+            return {"conversation_id": cid, "archived": action == "archive", "changed": changed}
+
     @app.get("/api/conversations")
     def list_conversations(
-        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100),
+        offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), archived: bool = Query(False),
         principal: Principal = Depends(authenticate),
     ):
+        """Active conversations by default; ``archived=true`` lists only the archived ones."""
         require_approver(principal)
+        is_archived = select(ArchivedItemRow.item_id).where(
+            ArchivedItemRow.kind == "conversation", ArchivedItemRow.item_id == ConversationRow.id).exists()
         with db.session() as session:
             rows = session.scalars(select(ConversationRow).where(
                 ConversationRow.user_id == principal.identity,
                 ~select(DeletedConversationRow.conversation_id).where(
                     DeletedConversationRow.conversation_id == ConversationRow.id).exists(),
+                is_archived if archived else ~is_archived,
             ).order_by(ConversationRow.created_at.desc(), ConversationRow.id.desc())
                 .offset(offset).limit(limit + 1)).all()
             links = {link.conversation_id: link for link in session.scalars(select(ConversationLinkRow).where(

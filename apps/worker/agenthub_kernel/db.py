@@ -124,6 +124,20 @@ class DeletedConversationRow(Base):
     deleted_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class ArchivedItemRow(Base):
+    """A conversation or research task the user put away; hidden from lists, nothing else changes.
+
+    Additive table. Archiving keeps every record, file, usage and audit row and
+    can be undone; it is display state, never an execution decision.
+    """
+
+    __tablename__ = "archived_items"
+    kind = Column(String, primary_key=True)  # conversation | research
+    item_id = Column(String, primary_key=True)
+    user_id = Column(String, index=True, nullable=False)
+    archived_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class ChatMessageRow(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (
