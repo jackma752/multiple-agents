@@ -610,13 +610,19 @@ class ClaudeCodeAdapter(AdapterContract):
     supports_model_selection = True
     supports_effort_selection = True
 
+    #: What the pinned CLI (2.1.308) validates ``--effort`` against, read statically from
+    #: its binary on 2026-10-30. Per-model subsets exist inside the CLI, which silently
+    #: lowers a level the chosen model does not support; there is no RPC to ask which.
+    CLI_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
     def model_catalog(self, *, refresh=False):
         # This CLI exposes a selection flag, not an account model-list RPC.
         # Aliases are labelled as such; users may enter a provider-specific ID.
         return {"models": [{"id": x, "display_name": x, "source": "cli_alias",
-                            "reasoning_efforts": ["low", "medium", "high"]} for x in ('opus', 'sonnet', 'haiku')],
+                            "reasoning_efforts": list(self.CLI_EFFORTS)} for x in ('opus', 'sonnet', 'haiku')],
                 "default_model": None, "source": "cli_alias", "refresh_available": False,
-                "message": "CLI 别名候选，不保证账号可用；默认模型待执行结果确认，也可输入完整模型 ID"}
+                "message": "CLI 别名候选，不保证账号可用；默认模型待执行结果确认，也可输入完整模型 ID。"
+                           "推理强度 xhigh（超高）、max（最高）由 CLI 接受，所选模型不支持时 CLI 会自动降到可用档位"}
 
 
     name = "claude-code"

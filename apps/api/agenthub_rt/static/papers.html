@@ -139,10 +139,14 @@
       <div class="field"><label for="f_review_model">审阅模型</label>
         <input id="f_review_model" list="f_review_models" placeholder="接入方默认 / 输入模型 ID" /><datalist id="f_review_models"></datalist></div>
       <div class="field"><label for="f_review_effort">推理强度</label><select id="f_review_effort"><option value="">默认强度</option></select></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="mini" id="f_review_refresh" title="启动本地元数据进程读取模型目录，不发送模型回合">刷新模型</button></div>
+    </div>
+    <div id="f_main_hint" class="small dim"></div>
+    <div id="f_review_hint" class="small dim"></div>
+    <div class="grid" style="margin-top:8px">
       <div class="field"><label for="f_mode">执行模式</label>
         <select id="f_mode"><option value="strict">严格</option><option value="supervised">用户监督</option></select></div>
     </div>
-    <div id="f_modelHint" class="small dim"></div>
     <label id="f_consentWrap" hidden><input id="f_consent" type="checkbox" /> 我了解用户监督边界：原生派生与远端停止不保证受控。</label>
     <details style="margin-top:10px"><summary class="dim">高级设置：调用上限、预算与资料范围</summary>
       <div class="grid" style="margin-top:8px">
@@ -255,7 +259,13 @@ async function showForm() {
     $(`f_${role}`).addEventListener("change", () => setupRole(role));
     $(`f_${role}_model`).addEventListener("input", () => renderEfforts(role));
   }
-  $("f_main_refresh").onclick = () => loadCatalog($("f_main").value, true).then(() => { setupRole("main"); setupRole("review"); });
+  for (const role of ["main", "review"]) {
+    $(`f_${role}_refresh`).onclick = async (ev) => {
+      ev.target.disabled = true;
+      try { await loadCatalog($(`f_${role}`).value, true); } finally { ev.target.disabled = false; }
+      setupRole("main"); setupRole("review");
+    };
+  }
   setupRole("main"); setupRole("review");
   $("preflightBtn").onclick = runPreflight;
   $("startBtn").onclick = startTask;
@@ -280,7 +290,7 @@ async function setupRole(role) {
     // One agent has one model per stage: a reviewer on the main agent uses the main agent's model.
     input.value = ""; input.disabled = true; $(`f_${role}_effort`).disabled = true;
     input.placeholder = sameAsMain ? "与主 Agent 相同" : "不审阅";
-    if (role === "main") $("f_modelHint").textContent = "";
+    $(`f_${role}_refresh`).hidden = true; $(`f_${role}_hint`).textContent = "";
     return;
   }
   input.disabled = false; input.placeholder = "接入方默认 / 输入模型 ID";
@@ -291,10 +301,12 @@ async function setupRole(role) {
   if (!input.value) input.value = saved.model || "";
   input.disabled = catalog.selection === false;
   renderEfforts(role, saved.model === input.value ? saved.reasoning_effort : null);
-  if (role === "main") {
-    $("f_modelHint").textContent = (catalog.default_model ? `接入方默认：${catalog.default_model}。` : "") + (catalog.catalog_note || "");
-    $("f_main_refresh").hidden = catalog.refresh_available === false;
-  }
+  $(`f_${role}_refresh`).hidden = catalog.refresh_available === false;
+  const unloaded = !(catalog.models || []).length && catalog.refresh_available !== false;
+  $(`f_${role}_hint`).textContent = `${agent}：` + (unloaded
+    ? "模型目录尚未读取，点“刷新模型”从接入方读取可用模型与推理强度（不产生模型回合）。"
+    : [catalog.default_model ? `接入方默认 ${catalog.default_model}` : "", catalog.message || "", catalog.catalog_note || ""]
+        .filter(Boolean).join("；"));
 }
 function renderEfforts(role, preferred) {
   const agent = $(`f_${role}`).value, catalog = CATALOGS[agent] || {}, select = $(`f_${role}_effort`);

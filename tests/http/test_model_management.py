@@ -164,6 +164,25 @@ def test_claude_multimodel_components_and_selection_argv(make_client, tmp_path):
     assert page['total']['known']['input_total'] == 10 and page['total']['known']['output_total'] == 4
 
 
+def test_claude_catalog_offers_the_cli_effort_levels_and_max_reaches_the_cli(make_client, tmp_path):
+    runner = FakeClaudeRunner(scripted(result_object()))
+    adapter = ClaudeCodeAdapter(launcher=StubClaudeLauncher('success-usage'), runner=runner,
+        workdir_root=str(tmp_path/'cc-runs'), store=ExecutionStore(str(tmp_path/'cc.db')))
+    client = make_client(adapter=adapter)
+    catalog = client.get('/api/agents/claude-code/models', headers=USER).json()
+    assert {m['id'] for m in catalog['models']} >= {'opus', 'sonnet', 'haiku'}
+    assert all(m['reasoning_efforts'] == ['low', 'medium', 'high', 'xhigh', 'max']
+               for m in catalog['models'] if m['source'] == 'cli_alias')
+    cid = conversation(client)
+    turn = client.post(f'/api/conversations/{cid}/invocations', headers=USER, json={
+        'text':'task', 'agent_id':'claude-code', 'client_request_id':'max', 'model':'opus',
+        'reasoning_effort':'max'}).json()
+    approve(client, turn)
+    assert run(client, turn).status_code == 200
+    argv = runner.calls[0]['argv']
+    assert argv[argv.index('--effort')+1] == 'max'
+
+
 @pytest.mark.parametrize('value', [0, -1, True, 1.5, '100'])
 def test_invalid_model_budget_writes_nothing(make_client, value):
     client = make_client()
