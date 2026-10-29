@@ -30,7 +30,7 @@ from agenthub.chat import ConversationTurn
 from agenthub.collab import COLLECT_INSTRUCTION, MAX_PLAN_ITEMS, PLAN_INSTRUCTION, parse_plan_text, validate_items
 from agenthub.contracts import ApprovalStatus, Policy
 from agenthub.stage import (
-    MAX_GOAL_CHARS, PLAN_AGENT, PLAN_CURRENT, PLAN_NONE, REVIEW_INSTRUCTION, STAGE_ACTIVE, STAGE_BLOCKED,
+    MAX_GOAL_CHARS, PLAN_AGENT, PLAN_CURRENT, PLAN_NONE, PLAN_PAPER, REVIEW_INSTRUCTION, STAGE_ACTIVE, STAGE_BLOCKED,
     STAGE_COMPLETED, STAGE_OPEN, STAGE_PAUSED, STAGE_RUNNABLE, STAGE_SCHEDULED, STAGE_STOPPED,
     STAGE_REPAIRING, STAGE_WAITING_QUOTA, make_rules, parse_verdict,
     rules_of, tool_decision,
@@ -297,6 +297,8 @@ class Autopilot:
         self.worker = worker
         self.files_root = files_root
         self.clock = clock
+        #: P6 tool dependencies (``papers.pipeline.PaperRuntime``); None: paper tool steps wait.
+        self.papers: Any = None
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -355,6 +357,19 @@ class Autopilot:
                     outcome = self._start(stage_id, inv_id)
                     if outcome:
                         started.append(inv_id)
+                if self._is_paper(stage_id):
+                    # P6 tool steps run outside the stage transaction; a second
+                    # pass consumes their results in the same tick.
+                    from agenthub_kernel.papers.pipeline import run_tools
+
+                    if run_tools(self, stage_id):
+                        try:
+                            again = self._advance_one(stage_id)
+                        except Exception:  # noqa: BLE001 - the next tick isolates it as above
+                            again = []
+                        for inv_id in again:
+                            if self._start(stage_id, inv_id):
+                                started.append(inv_id)
                 if self._status(stage_id) not in STAGE_RUNNABLE:
                     ended.append(stage_id)
                 if self._status(stage_id) == STAGE_BLOCKED:
@@ -384,6 +399,11 @@ class Autopilot:
         with self.db.session() as session:
             stage = session.get(StageRunRow, stage_id)
             return stage.status if stage is not None else None
+
+    def _is_paper(self, stage_id: str) -> bool:
+        with self.db.session() as session:
+            stage = session.get(StageRunRow, stage_id)
+            return stage is not None and (stage.rules or {}).get("plan") == PLAN_PAPER
 
     def _advance_one(self, stage_id: str) -> list[str]:
         with self.db.session() as session:
@@ -443,6 +463,10 @@ class Autopilot:
         rules = rules_of(stage.rules)
         cp = stage.checkpoint or {}
         to_start = self._unstarted(session, stage)
+        if rules.plan == PLAN_PAPER:
+            from agenthub_kernel.papers.pipeline import advance as paper_advance
+
+            return paper_advance(self, session, stage, to_start)
         phase = cp.get("phase")
         if phase == "plan":
             inv, state, reply = self._ensure(session, stage, "plan", rules.main_agent,

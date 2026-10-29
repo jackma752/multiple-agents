@@ -626,6 +626,8 @@ class Database:
             conn.execute(text("PRAGMA synchronous=NORMAL"))
 
     def create_all(self) -> None:
+        from agenthub_kernel.papers import db as _paper_tables  # noqa: F401  (P6 tables, additive)
+
         Base.metadata.create_all(self.engine)
         self.events_ready = True
 

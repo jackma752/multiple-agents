@@ -105,6 +105,8 @@ def create_app(
     adapter_kind: Optional[str] = None,
     files_root: Optional[str] = None,
     autopilot_interval: Optional[float] = None,
+    paper_fetcher: Optional[Any] = None,
+    paper_root: Optional[str] = None,
 ) -> FastAPI:
     """Build the FastAPI app.
 
@@ -152,6 +154,15 @@ def create_app(
     from agenthub_kernel.autopilot import Autopilot
 
     app.state.autopilot = Autopilot(db, app.state.worker, files_root=lambda: app.state.files_root)
+    # P6: paper tool steps (search/download/parse) and their controlled file store.
+    import os as _os
+
+    from agenthub_kernel.papers.net import HttpFetcher
+    from agenthub_kernel.papers.pipeline import PaperRuntime
+    from agenthub_kernel.papers.store import PaperStore
+
+    app.state.autopilot.papers = PaperRuntime(
+        PaperStore(paper_root or _os.path.join(config.DATA_DIR, "papers")), paper_fetcher or HttpFetcher())
 
     # Read-model endpoints + the zero-build console page (see ui.py).
     from agenthub_rt.ui import register_ui
@@ -165,6 +176,9 @@ def create_app(
     register_conversations(app, db)
     register_tool_approvals(app, db)
     register_stages(app, db)
+    from agenthub_rt.papers import register_papers
+
+    register_papers(app, db)
     from agenthub_rt.models import register_models
     register_models(app, db)
     from agenthub_rt.desktop import register_desktop

@@ -37,6 +37,10 @@ PLAN_NONE = "none"        # the main agent does the goal in one call
 PLAN_CURRENT = "current"  # the conversation's latest saved plan
 PLAN_AGENT = "agent"      # the main agent proposes a plan first
 PLAN_MODES = (PLAN_NONE, PLAN_CURRENT, PLAN_AGENT)
+#: P6 research pipeline (``agenthub.papers``). Started only by the paper
+#: endpoints, never by the generic stage form; ``StageRules.paper`` then holds
+#: the research request hash, roles and resource rules, all inside ``rules_hash``.
+PLAN_PAPER = "paper"
 
 MAX_STAGE_CALLS = 50
 MAX_PREFIXES = 20
@@ -79,11 +83,15 @@ class StageRules:
     auto_resume: bool = True
     quota_retry_seconds: int = 300
     models: dict = field(default_factory=dict)
+    #: Only with ``plan == PLAN_PAPER``; absent otherwise, so older hashes hold.
+    paper: Optional[dict] = None
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
         if not self.models:
             out.pop("models", None)
+        if self.paper is None:
+            out.pop("paper", None)
         out["agents"] = list(self.agents)
         out["tool"] = {"command_prefixes": list(self.tool.command_prefixes),
                        "allow_file_changes": self.tool.allow_file_changes}
@@ -163,7 +171,8 @@ def make_rules(data: dict[str, Any], *, served: tuple = ()) -> StageRules:
 
 def rules_of(stored: dict[str, Any]) -> StageRules:
     tool = stored.get("tool") or {}
-    return StageRules(models=stored.get("models") or {}, agents=tuple(stored["agents"]), main_agent=stored["main_agent"], plan=stored["plan"],
+    return StageRules(models=stored.get("models") or {}, paper=stored.get("paper"),
+                      agents=tuple(stored["agents"]), main_agent=stored["main_agent"], plan=stored["plan"],
                       review_agent=stored.get("review_agent"), collect_agent=stored.get("collect_agent"),
                       max_calls=stored["max_calls"], retry_limit=stored.get("retry_limit", 3),
                       auto_resume=stored.get("auto_resume", True),
