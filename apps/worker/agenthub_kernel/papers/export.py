@@ -10,14 +10,15 @@ review, failed checks or an exhausted revision limit are never ``passed``.
 from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import select
 
 from agenthub.papers import (
-    DEPTH_ABSTRACT, DEPTH_FULLTEXT, LANGUAGES, QUALITY_FAILED, QUALITY_NEEDS_REVIEW, QUALITY_PASSED,
-    QUALITY_UNAVAILABLE, reference_text,
+    ACTION_EXPORT, DEPTH_ABSTRACT, DEPTH_FULLTEXT, LANGUAGES, QUALITY_FAILED, QUALITY_NEEDS_REVIEW, QUALITY_PASSED,
+    QUALITY_UNAVAILABLE, reference_text, resource_decision,
 )
 from agenthub_kernel.db import UsageLedgerRow
 from agenthub_kernel.papers.db import (
@@ -194,9 +195,37 @@ def export(ctx: Any) -> dict:
         row.rel_path, row.sha256, row.size, row.final = rel, sha, size, quality == QUALITY_PASSED
     task.quality_status = quality
     task.outcome = {**outcome, "quality_reasons": quality_reasons, "sample": sample,
-                    "missing_citations": sorted(unknown)}
+                    "missing_citations": sorted(unknown), "export_copy": _copy_out(ctx, files, version)}
     session.flush()
     return report
+
+
+def _copy_out(ctx: Any, files: dict, version: int) -> Optional[dict]:
+    """A copy in the folder the user approved, ``<export_dir>/<task>/v<n>/``; each path re-checked.
+
+    The Hub's own copy (downloadable in the page) is already written; a failure
+    here is reported, never turned into a failed or a silently partial export.
+    """
+    directory = ctx.resource.export_dir
+    if not directory:
+        return None
+    target = os.path.join(directory, ctx.task.id, f"v{version}")
+    written = []
+    try:
+        for name, data in files.items():
+            path = os.path.join(target, name)
+            ok, why = resource_decision(ctx.resource, ACTION_EXPORT, path)
+            if not ok:
+                return {"directory": target, "ok": False, "error": why, "written": written}
+            os.makedirs(target, exist_ok=True)
+            tmp = path + ".part"
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, path)
+            written.append(name)
+    except OSError as exc:
+        return {"directory": target, "ok": False, "error": type(exc).__name__, "written": written}
+    return {"directory": target, "ok": True, "written": written}
 
 
 def _meta(p: PaperRow) -> dict:

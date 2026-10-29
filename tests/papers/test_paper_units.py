@@ -7,7 +7,7 @@ import datetime as dt
 import pytest
 
 from agenthub.papers import (
-    ACTION_DOWNLOAD, ACTION_FETCH_URL, ACTION_READ_LOCAL, ACTION_SEARCH, ACTION_SEND, ResearchRequest,
+    ACTION_DOWNLOAD, ACTION_EXPORT, ACTION_FETCH_URL, ACTION_READ_LOCAL, ACTION_SEARCH, ACTION_SEND, ResearchRequest,
     ResourceRules, check_url, choice_transition, estimate_calls, reference_text, resource_decision, timeout_due,
 )
 from agenthub.stage import StageRules, rules_of
@@ -60,6 +60,21 @@ def test_resource_decisions(tmp_path):
     assert not resource_decision(off, ACTION_DOWNLOAD, "https://arxiv.org/pdf/x")[0]
     assert not resource_decision(off, ACTION_FETCH_URL, "https://example.org/x.pdf")[0]
     assert rules.rules_hash() != off.rules_hash()
+
+
+def test_export_folder_rule_and_old_hashes(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    old = ResourceRules(send_to=("x",))
+    assert "export_dir" not in old.as_dict()  # tasks approved before this field keep their hash
+    assert old.rules_hash() == ResourceRules(**old.as_dict()).rules_hash()
+    assert resource_decision(old, ACTION_EXPORT)[0]  # the Hub's own task directory
+    assert resource_decision(old, ACTION_EXPORT, str(out / "a.md")) == (False, "no_export_dir_approved")
+    chosen = ResourceRules(send_to=("x",), export_dir=str(out))
+    assert chosen.rules_hash() != old.rules_hash()
+    assert resource_decision(chosen, ACTION_EXPORT, str(out / "rt-1" / "v1" / "review.md"))[0]
+    assert not resource_decision(chosen, ACTION_EXPORT, str(out / ".." / "evil.md"))[0]
+    assert not resource_decision(chosen, ACTION_EXPORT, str(tmp_path / "elsewhere.md"))[0]
 
 
 def test_choice_transitions_and_timeout():

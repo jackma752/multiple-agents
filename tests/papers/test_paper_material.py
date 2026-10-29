@@ -163,6 +163,22 @@ def test_without_a_reviewer_quality_is_unavailable_not_passed(hub):
     assert "草稿" in md
 
 
+def test_exports_are_copied_to_the_folder_the_user_chose(hub, tmp_path):
+    hub.prove()
+    out = tmp_path / "my-exports"
+    out.mkdir()
+    pre = hub.api("POST", "/api/papers/preflight", json=hub.body(resources={"export_dir": str(out)})).json()
+    assert pre["ok"] and pre["output"]["copy_to"].startswith(str(out))
+    missing = hub.api("POST", "/api/papers", json=hub.body(key="x", resources={"export_dir": str(tmp_path / "nope")}))
+    assert missing.status_code == 422 and "不存在" in missing.json()["detail"]["message"]
+    task = hub.create(target=2, resources={"export_dir": str(out)})
+    view = hub.run(task)
+    copy = view["outcome"]["export_copy"]
+    assert view["status"] == "completed" and copy["ok"] and copy["directory"] == str(out / task / "v1")
+    for name in ("review.md", "references.json", "evidence.json", "research-report.json"):
+        assert (out / task / "v1" / name).read_bytes() == hub.api("GET", f"/api/papers/{task}/artifacts/{name}").content
+
+
 def test_paper_without_abstract_or_fulltext_is_metadata_only(hub):
     hub.prove()
     task = hub.create(target=6)

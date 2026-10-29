@@ -161,6 +161,8 @@
       </div>
       <div class="field"><label for="f_roots">允许读取的本地目录（每行一个绝对路径，可空）</label><textarea id="f_roots"></textarea></div>
     </details>
+    <div class="field" style="margin-top:10px"><label for="f_export">导出到（可选，已存在的绝对路径；留空则只保存在 Hub 数据目录，可在成果区下载）</label>
+      <input id="f_export" placeholder="例如 D:\论文\综述输出" /></div>
     <div class="row" style="margin-top:12px">
       <button id="preflightBtn">预检</button>
       <button id="startBtn" class="primary" disabled>批准并开始</button>
@@ -334,7 +336,8 @@ function formBody() {
                fulltext_policy: document.querySelector('input[name="f_policy"]:checked').value },
     roles: { main_agent: main, review_agent: review, models },
     resources: { allow_pdf_download: $("f_dl").checked, allow_upload: $("f_up").checked, allow_url_supplement: $("f_url").checked,
-                 max_download_mb: num("f_mb") || 20, local_roots: $("f_roots").value.split("\n").map((s) => s.trim()).filter(Boolean) },
+                 max_download_mb: num("f_mb") || 20, local_roots: $("f_roots").value.split("\n").map((s) => s.trim()).filter(Boolean),
+                 export_dir: $("f_export").value.trim() },
     execution_mode: $("f_mode").value, supervised_consent: $("f_consent").checked,
     max_calls: num("f_calls"), token_budget_total: num("f_budget"),
   };
@@ -358,7 +361,7 @@ async function runPreflight() {
         <tr><th>补充资料</th><td>上传${p.resources.allow_upload ? "允许" : "不允许"}；网络地址${p.resources.url_supplement === "public_http" ? "允许（仅公网 http/https）" : "不允许"}；本地目录：${esc((p.resources.local_roots || []).join("；") || "无")}</td></tr>
         <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（规划 ${esc(e.parts.plan)}、筛选 ${esc(e.parts.screen)}、阅读 ${esc(e.parts.extract)}、综合 ${esc(e.parts.synthesize)}、大纲 ${esc(e.parts.outline)}、写作 ${esc(e.parts.write)}、审阅 ${esc(e.parts.review)}、修订最多 ${esc(e.parts.revise)}、摘要 ${esc(e.parts.abstract)}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
         <tr><th>Token 预算</th><td>${p.token_budget_total ? esc(p.token_budget_total) : "不设（仍记录用量）"}</td></tr>
-        <tr><th>输出</th><td class="mono">${esc(p.output.location)}：${esc(p.output.files.join(", "))}</td></tr>
+        <tr><th>输出</th><td class="mono">${esc(p.output.files.join(", "))}<br>保存在 ${esc(p.output.location)}${p.output.copy_to ? `<br>并复制到你选的目录 ${esc(p.output.copy_to)}\\v&lt;版本&gt;` : ""}</td></tr>
         <tr><th>完成条件</th><td>导出综述与证据；执行完成与质量通过分别记录，审阅不可用或检查失败不会标为通过</td></tr>
       </tbody></table>`;
     }
@@ -538,6 +541,7 @@ function renderResult(v) {
     <div class="small dim">纳入 ${esc(sample.included ?? "-")} 篇：全文 ${esc(sample.fulltext ?? "-")}、仅摘要 ${esc(sample.abstract_only ?? "-")}、仅题录 ${esc(sample.metadata_only ?? "-")}</div>
     ${o.abstract ? `<h3>摘要</h3><p>${esc(o.abstract.abstract)}</p>` : ""}
     ${(o.synthesis && o.synthesis.gaps || []).length ? `<h3>当前样本中的空白</h3><ul>${o.synthesis.gaps.map((g) => `<li>${esc(g.text)}</li>`).join("")}</ul>` : ""}
+    ${o.export_copy ? `<div class="${o.export_copy.ok ? "okbox" : "badbox"} small">${o.export_copy.ok ? "已复制到" : "复制到所选目录失败（" + esc(o.export_copy.error) + "），以下载为准："} <span class="mono">${esc(o.export_copy.directory)}</span></div>` : ""}
     <div class="row">${v.artifacts.filter((a, i, all) => all.findIndex((b) => b.name === a.name) === i)
       .map((a) => `<button data-art="${esc(a.name)}">下载 ${esc(a.name)}</button>`).join("")}</div></div>`;
   for (const b of box.querySelectorAll("button[data-art]")) b.onclick = () => download(`/api/papers/${v.task_id}/artifacts/${b.dataset.art}`, b.dataset.art);

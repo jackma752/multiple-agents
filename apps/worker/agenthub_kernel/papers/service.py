@@ -74,7 +74,16 @@ def _resources(data: dict, req: ResearchRequest, agents: list) -> ResourceRules:
         if not os.path.isdir(real):
             raise ValueError(f"本地目录不存在：{root}")
         roots.append(real)
-    return ResourceRules(sources=req.sources, allow_pdf_download=data.get("allow_pdf_download", True) is not False,
+    export_dir = (data.get("export_dir") or "").strip()
+    if export_dir:
+        if not os.path.isabs(export_dir):
+            raise ValueError("导出目录必须是绝对路径")
+        export_dir = os.path.realpath(export_dir)
+        if not os.path.isdir(export_dir):
+            raise ValueError(f"导出目录不存在：{export_dir}")
+        if not os.access(export_dir, os.W_OK):
+            raise ValueError(f"导出目录不可写：{export_dir}")
+    return ResourceRules(export_dir=export_dir,sources=req.sources, allow_pdf_download=data.get("allow_pdf_download", True) is not False,
                          max_download_bytes=int(data.get("max_download_mb", 20)) * 1024 * 1024,
                          allow_upload=data.get("allow_upload", True) is not False, local_roots=tuple(roots),
                          url_supplement=URL_SUPPLEMENT_PUBLIC if data.get("allow_url_supplement", True) is not False
@@ -128,6 +137,7 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
                       "downloads": "仅 arXiv 开放 PDF（" + ", ".join(h for s in req.sources for h in SOURCE_HOSTS[s]) + "）"
                                    if resources.allow_pdf_download else "不下载全文"},
         "output": {"location": os.path.join(store_root, "<任务ID>", "exports"),
+                   "copy_to": os.path.join(resources.export_dir, "<任务ID>") if resources.export_dir else None,
                    "files": ["review.md", "references.json", "evidence.json", "research-report.json"]},
         "fulltext_policy": req.fulltext_policy, "language": LANGUAGES[req.language],
         "templates": [t.meta() for t in TEMPLATES.values()], "agents": list(served),
@@ -325,7 +335,7 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         task_status(session, task, stage), "quality_status": task.quality_status,
         "outcome": {k: v for k, v in (task.outcome or {}).items() if k in (
             "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
-            "sample", "missing_citations")},
+            "sample", "missing_citations", "export_copy")},
         "stage": stage_info, "server_time": _iso(now), "usage": usage,
         "papers": [{"paper_id": p.id, "title": p.title, "authors": p.authors, "year": p.year, "url": p.url,
                     "doi": p.doi, "source_id": p.source_id, "abstract_available": bool(p.abstract),

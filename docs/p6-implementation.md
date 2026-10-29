@@ -18,7 +18,7 @@
 ## 2. 新增公共契约 `agenthub.papers`
 
 - `ResearchRequest`：主题、年份、目标篇数（1–30，默认 5）、语言（zh/en）、全文策略、来源（首版仅 arxiv）、每次检索候选数、章节数。
-- `ResourceRules`（版本 1）：来源、是否下载 PDF、最大字节、是否允许上传、本地目录白名单（realpath）、URL 补充模式、可接收论文内容的 Agent。`resource_decision` 是纯函数；`check_url` 拒绝非 http(s)、带凭据、非 80/443 端口、loopback/内网/链路本地/保留地址及解析到这些地址的域名。
+- `ResourceRules`（版本 1）：来源、是否下载 PDF、最大字节、是否允许上传、本地目录白名单（realpath）、URL 补充模式、可接收论文内容的 Agent，以及可选的导出目录 `export_dir`（0.6.3 起；为空时不进入哈希，旧任务不变）。导出始终写入 Hub 任务目录供页面下载；设了导出目录时另复制到 `<export_dir>\<任务ID>\v<版本>\`，每个路径按规则复检，复制失败只提示、不影响导出。`resource_decision` 是纯函数；`check_url` 拒绝非 http(s)、带凭据、非 80/443 端口、loopback/内网/链路本地/保留地址及解析到这些地址的域名。
 - 状态：任务 `running/waiting_input/paused/stopped/blocked/completed`；步骤 `pending/running/succeeded/failed/blocked/unknown`；补充请求 `awaiting_choice/awaiting_files/validating_batch/awaiting_more_choice/resolved`；质量 `pending/passed/failed/unavailable/needs_review`。
 - `choice_transition`、`timeout_due`、`estimate_calls`、`reference_text`（只用真实元数据，缺项标记为未知）。
 

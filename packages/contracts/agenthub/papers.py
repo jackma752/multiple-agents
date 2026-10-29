@@ -134,6 +134,10 @@ class ResourceRules:
     url_supplement: str = URL_SUPPLEMENT_PUBLIC
     send_to: tuple = ()
     version: int = RESOURCE_RULES_VERSION
+    #: Absolute, real directory the user chose for a copy of the exports; "" = only
+    #: the Hub's task directory. Left out of ``as_dict`` when empty so earlier tasks'
+    #: hashes hold.
+    export_dir: str = ""
 
     def __post_init__(self) -> None:
         for name in ("sources", "local_roots", "send_to"):
@@ -154,11 +158,15 @@ class ResourceRules:
             raise ValueError("send_to must name the agents that receive paper text")
         if self.version != RESOURCE_RULES_VERSION:
             raise ValueError("unsupported resource rules version")
+        if not isinstance(self.export_dir, str) or len(self.export_dir) > 500:
+            raise ValueError("export_dir must be an absolute directory or empty")
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
         for name in ("sources", "local_roots", "send_to"):
             out[name] = list(getattr(self, name))
+        if not self.export_dir:
+            out.pop("export_dir")
         return out
 
     def rules_hash(self) -> str:
@@ -244,30 +252,38 @@ def resource_decision(rules: ResourceRules, action: str, target: str = "", *,
     if action == ACTION_UPLOAD:
         return (True, "upload approved") if rules.allow_upload else (False, "upload_not_approved")
     if action == ACTION_READ_LOCAL:
-        import os
-
-        real = realpath or os.path.realpath
         if not rules.local_roots:
             return False, "no_local_roots_approved"
-        try:
-            path = real(target)
-        except (OSError, ValueError):
-            return False, "unreadable_path"
-        for root in rules.local_roots:
-            root_real = real(root)
-            if os.path.normcase(path) == os.path.normcase(root_real):
-                continue
-            try:
-                inside = os.path.commonpath([os.path.normcase(path), os.path.normcase(root_real)]) \
-                    == os.path.normcase(root_real)
-            except ValueError:
-                inside = False
-            if inside:
-                return True, "inside approved root"
-        return False, "path_outside_approved_roots"
+        return _inside(target, rules.local_roots, realpath, "path_outside_approved_roots")
     if action == ACTION_SEND:
         return (True, "agent approved") if target in rules.send_to else (False, "agent_not_approved")
-    return True, "export to task directory"  # ACTION_EXPORT; the kernel fixes the directory
+    # ACTION_EXPORT: no target = the Hub's own task directory; a target must be inside export_dir.
+    if not target:
+        return True, "export to task directory"
+    if not rules.export_dir:
+        return False, "no_export_dir_approved"
+    return _inside(target, (rules.export_dir,), realpath, "path_outside_export_dir")
+
+
+def _inside(target: str, roots: Iterable[str], realpath: Optional[Any], refusal: str) -> tuple[bool, str]:
+    """``target`` strictly below one of ``roots`` after resolving links and ``..``."""
+    import os
+
+    real = realpath or os.path.realpath
+    try:
+        path = os.path.normcase(real(target))
+    except (OSError, ValueError):
+        return False, "unreadable_path"
+    for root in roots:
+        root_real = os.path.normcase(real(root))
+        if path == root_real:
+            continue
+        try:
+            if os.path.commonpath([path, root_real]) == root_real:
+                return True, "inside approved root"
+        except ValueError:
+            continue
+    return False, refusal
 
 
 # --------------------------------------------------------------------------- #
