@@ -5,4 +5,5 @@ uvicorn==0.32.1
 SQLAlchemy==2.0.36
 pydantic==2.10.4
 python-multipart==0.0.20
+pypdf==5.1.0
 certifi==2026.10.19

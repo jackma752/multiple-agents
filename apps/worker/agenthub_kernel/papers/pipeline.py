@@ -877,7 +877,7 @@ def _upsert_papers(session: Session, task: ResearchTaskRow, entries: list, index
         if hit is not None:
             if f"q{index}" not in (hit.queries or []):
                 hit.queries = [*(hit.queries or []), f"q{index}"]
-            if why != "same_source_id":
+            if why != "same_source_id" and e["source_id"] not in {m["source_id"] for m in hit.merged or []}:
                 hit.merged = [*(hit.merged or []), {"source_id": e["source_id"], "reason": why}]
                 merged += 1
             continue

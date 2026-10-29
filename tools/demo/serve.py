@@ -59,6 +59,35 @@ def write_pid_file(port: int) -> str:
     return path
 
 
+def build_paper_demo(data_dir: str):
+    """Offline adapters and fetcher for the P6 demo (simulation only, never a real Agent)."""
+    sys.path.insert(0, REPO_ROOT)
+    from agenthub_adapters.claude_code import (
+        ClaudeCodeAdapter, FakeClaudeRunner, StubClaudeLauncher, result_object, scripted,
+    )
+    from agenthub_adapters.deepseek import DeepSeekAdapter
+    from agenthub_adapters.routing import RoutingAdapter
+    from agenthub_adapters.store import ExecutionStore
+    from agenthub_kernel.papers.net import FakeFetcher
+    from tools.demo.paper_fixtures import FixtureWeb
+    from tools.demo.paper_stub_model import DeepSeekPaperTransport, respond
+
+    runs = os.path.join(data_dir, "paper-demo")
+    os.makedirs(runs, exist_ok=True)
+    router = RoutingAdapter({
+        "claude-code": ClaudeCodeAdapter(
+            launcher=StubClaudeLauncher("success-usage"), workdir_root=os.path.join(runs, "cc-runs"),
+            store=ExecutionStore(os.path.join(runs, "cc.db"), table="claude_code_executions"),
+            runner=FakeClaudeRunner(lambda argv, env, prompt: scripted(result_object(reply=respond(prompt)))(
+                argv, env, prompt))),
+        "deepseek": DeepSeekAdapter("https://api.deepseek.com", "deepseek-flash",
+                                    credentials_path=os.path.join(runs, "no-credentials.json"),
+                                    store=ExecutionStore(os.path.join(runs, "ds.db"), table="deepseek_executions"),
+                                    transport=DeepSeekPaperTransport(), stub="paper-sim"),
+    })
+    return router, FakeFetcher(FixtureWeb())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Agent Hub Mock API.")
     parser.add_argument("--host", default="127.0.0.1")
@@ -115,6 +144,13 @@ def main() -> None:
              "in supervised mode only",
     )
     parser.add_argument(
+        "--paper-demo",
+        action="store_true",
+        help="P6 OFFLINE demo: claude-code and deepseek answer research templates from "
+             "tools/demo/paper_stub_model.py and arXiv/PDFs come from the synthetic corpus in "
+             "tools/demo/paper_fixtures.py; no model, no network",
+    )
+    parser.add_argument(
         "--data-dir",
         default=None,
         help="runtime data directory (database, run dirs); default var/",
@@ -159,9 +195,15 @@ def main() -> None:
 
     kind = adapter_kind()
     adapter = None
+    paper_fetcher = None
 
     print("=" * 72)
-    if kind == "multi":
+    if args.paper_demo:
+        adapter, paper_fetcher = build_paper_demo(config.DATA_DIR)
+        kind = "multi"
+        print("Agent Hub - P6 paper research OFFLINE DEMO (simulated replies, synthetic arXiv; no model, no network)")
+        print("  claude-code: in-process simulation   deepseek: offline transport   papers: tools/demo/paper_fixtures.py")
+    elif kind == "multi":
         from agenthub_kernel.adapters import build_adapter, describe
 
         # Built once here and handed to the app, so the banner shows exactly
@@ -186,6 +228,7 @@ def main() -> None:
     print(f"  API page : http://{args.host}:{args.port}/docs")
     print(f"  console  : http://{args.host}:{args.port}/ui")
     print(f"  chat     : http://{args.host}:{args.port}/chat")
+    print(f"  papers   : http://{args.host}:{args.port}/papers")
     print(f"  OpenAPI  : http://{args.host}:{args.port}/openapi.json")
     print(f"  Database : {config.default_db_url()}")
     print(f"  Data dir : {config.DATA_DIR}")
@@ -259,7 +302,7 @@ def main() -> None:
     from agenthub_rt.api import create_app
 
     # P4.6: the stage scheduler runs in this process, a pass every 2 seconds.
-    app = (create_app(adapter=adapter, autopilot_interval=2.0) if adapter is not None
+    app = (create_app(adapter=adapter, autopilot_interval=2.0, paper_fetcher=paper_fetcher) if adapter is not None
            else create_app(adapter_kind=kind, autopilot_interval=2.0))
     config_ = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
     server = uvicorn.Server(config_)

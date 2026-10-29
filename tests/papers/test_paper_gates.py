@@ -146,6 +146,13 @@ def test_reauthorize_cannot_lower_the_tree_limit(hub):
     assert r.status_code == 422
 
 
+def test_workbench_page_is_served_and_linked_from_chat(hub):
+    page = hub.client.get("/papers")
+    assert page.status_code == 200 and "论文研究" in page.text and "/api/papers/preflight" in page.text
+    assert 'href="/papers"' in hub.client.get("/chat").text
+    assert hub.client.get("/api/papers").status_code == 401  # the page is static; data needs the user
+
+
 def test_waiting_holds_no_running_slot(hub):
     hub.prove()
     task = hub.create()

@@ -34,6 +34,8 @@ def build(args):
         '--specpath',str(work), '--add-data',f'{ROOT / "apps/api/agenthub_rt/static"};agenthub_rt/static',
         '--hidden-import','sqlalchemy.dialects.sqlite','--hidden-import','uvicorn.loops.asyncio',
         '--hidden-import','uvicorn.protocols.http.h11_impl','--hidden-import','uvicorn.lifespan.on',
+        # P6: the PDF text extractor is imported lazily inside the paper parser.
+        '--collect-submodules','pypdf','--hidden-import','agenthub_kernel.papers.db',
         '--copy-metadata','pydantic','--copy-metadata','fastapi', '--copy-metadata','uvicorn']
     for path in ['packages/contracts','packages/adapters','apps/worker','apps/api']:
         command += ['--paths',str(ROOT/path)]

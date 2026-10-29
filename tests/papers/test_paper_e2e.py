@@ -27,6 +27,7 @@ def test_full_flow_with_two_batches_then_continue(hub):
     assert by_source["2601.00106"]["screen"] == "exclude" and not by_source["2601.00106"]["included"]
     assert any(m["reason"] == "same_title_and_first_author" for m in by_source["2601.00101"]["merged"])
     assert any(m["reason"] == "same_doi" for m in by_source["2601.00101"]["merged"])
+    assert len(by_source["2601.00101"]["merged"]) == 2  # found again by the second query, recorded once
     # Nothing downstream of the reading gate has started.
     assert not [s for s in view["steps"] if s["name"] in ("extract", "synthesize", "section")]
 

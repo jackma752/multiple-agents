@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Hub 论文研究</title>
+<link rel="icon" href="/favicon.ico?v=0.5.1" sizes="any" />
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --fg: #e6e9ef; --dim: #9aa3b2; --accent: #4c8dff; --ok: #35c48a;
+    --warn: #e8b339; --bad: #e2565b; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.55 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  a { color: var(--accent); }
+  button { font: inherit; color: var(--fg); background: var(--panel2); border: 1px solid var(--line);
+           border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { border-color: var(--bad); color: #ffd6d7; }
+  button.mini { padding: 2px 8px; font-size: 12px; }
+  input, select, textarea { font: inherit; color: var(--fg); background: var(--panel2);
+           border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-width: 100%; }
+  textarea { width: 100%; resize: vertical; min-height: 60px; }
+  label { color: var(--dim); font-size: 13px; }
+  .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12.5px; }
+  .top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 16px;
+         background: var(--panel); border-bottom: 1px solid var(--line); }
+  .top .grow { flex: 1; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+          border: 1px solid var(--line); color: var(--dim); white-space: nowrap; }
+  .chip.ok { color: var(--ok); border-color: var(--ok); }
+  .chip.warn { color: var(--warn); border-color: var(--warn); }
+  .chip.bad { color: var(--bad); border-color: var(--bad); }
+  .chip.info { color: var(--accent); border-color: var(--accent); }
+  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: calc(100% - 53px); }
+  aside { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; overflow: auto; }
+  aside ul { list-style: none; margin: 10px 0 0; padding: 0; }
+  aside li { padding: 8px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
+  aside li:hover { background: var(--panel2); }
+  aside li.active { background: var(--panel2); outline: 1px solid var(--accent); }
+  aside li .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  aside li .d { color: var(--dim); font-size: 12px; }
+  main { padding: 16px; overflow: auto; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 14px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  .card h3 { font-size: 14px; margin: 12px 0 6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .dim { color: var(--dim); }
+  .small { font-size: 12px; }
+  .warnbox { border: 1px solid var(--warn); border-radius: 8px; padding: 8px 10px; color: #f5dc9a; margin: 6px 0; }
+  .badbox { border: 1px solid var(--bad); border-radius: 8px; padding: 8px 10px; color: #ffd0d1; margin: 6px 0; }
+  .okbox { border: 1px solid var(--ok); border-radius: 8px; padding: 8px 10px; color: #c4f2dd; margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; }
+  .phases { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+  .phase { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+  .phase.done { color: var(--ok); border-color: var(--ok); }
+  .phase.now { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .ref { padding: 6px 0; border-bottom: 1px dashed var(--line); }
+  .ref:last-child { border-bottom: 0; }
+  .ev { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; background: var(--panel2); }
+  .ev blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--accent); color: #cdd6e6; }
+  .section-text { white-space: pre-wrap; line-height: 1.7; }
+  .cite { color: var(--accent); cursor: pointer; text-decoration: underline dotted; }
+  .countdown { font-weight: 600; color: var(--warn); }
+  details > summary { cursor: pointer; }
+  mark { background: #5a4a10; color: #fff; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: #2b1416; border: 1px solid var(--bad);
+           color: #ffd6d7; padding: 8px 14px; border-radius: 8px; max-width: 90vw; }
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
+    main { padding: 10px; }
+    table { font-size: 12px; }
+    .hide-narrow { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <img src="/assets/app-icon.png" alt="" width="28" height="28" style="border-radius:6px" />
+  <strong>Agent Hub · 论文研究</strong>
+  <span id="connChip" class="chip">未连接</span>
+  <span class="grow"></span>
+  <a href="/chat">会话</a>
+  <a id="settingsLink" href="/settings" hidden>本机设置</a>
+  <input id="token" type="password" autocomplete="off" placeholder="用户 token" />
+  <button id="connectBtn">连接</button>
+</header>
+<div class="layout">
+  <aside>
+    <button id="newBtn" class="primary" style="width:100%">+ 新建研究</button>
+    <ul id="taskList"></ul>
+    <p class="dim small">首版来源：arXiv。成品是可追溯的综述/研究简报，不是系统综述、荟萃分析或原创实验。</p>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="toast" hidden></div>
+
+<template id="formTpl">
+  <div class="card">
+    <h2>新建论文研究</h2>
+    <div class="field"><label for="f_topic">研究主题</label>
+      <textarea id="f_topic" placeholder="例如：检索增强生成（RAG）的评测方法" maxlength="500"></textarea></div>
+    <div class="grid" style="margin-top:8px">
+      <div class="field"><label for="f_from">起始年份</label><input id="f_from" type="number" min="1990" max="2100" value="2023" /></div>
+      <div class="field"><label for="f_to">截止年份</label><input id="f_to" type="number" min="1990" max="2100" value="2026" /></div>
+      <div class="field"><label for="f_n">目标篇数</label><input id="f_n" type="number" min="1" max="30" value="5" /></div>
+      <div class="field"><label for="f_sections">正文章节数</label><input id="f_sections" type="number" min="2" max="6" value="4" /></div>
+      <div class="field"><label for="f_lang">输出语言</label>
+        <select id="f_lang"><option value="zh">简体中文</option><option value="en">English</option></select></div>
+    </div>
+    <h3>无法读取全文时怎么办</h3>
+    <div class="field">
+      <label><input type="radio" name="f_policy" value="continue_allowed" checked />
+        方案一：可按现有资料继续——一次列出全部缺失论文并询问；首次询问 30 分钟未选择，按现有资料继续；选择补充后一直等待。</label>
+      <label><input type="radio" name="f_policy" value="wait_for_fulltext" />
+        方案二：先等待补全文——列出缺失论文后停在阅读阶段等待，不设超时。</label>
+    </div>
+    <h3>模型</h3>
+    <div class="grid">
+      <div class="field"><label for="f_main">阅读、分析与写作 Agent</label><select id="f_main"></select></div>
+      <div class="field"><label for="f_model">模型（可空，使用默认）</label><input id="f_model" placeholder="例如 deepseek-flash" /></div>
+      <div class="field"><label for="f_review">审阅 Agent（可选）</label><select id="f_review"></select></div>
+      <div class="field"><label for="f_mode">执行模式</label>
+        <select id="f_mode"><option value="strict">严格</option><option value="supervised">用户监督</option></select></div>
+    </div>
+    <label id="f_consentWrap" hidden><input id="f_consent" type="checkbox" /> 我了解用户监督边界：原生派生与远端停止不保证受控。</label>
+    <details style="margin-top:10px"><summary class="dim">高级设置：调用上限、预算与资料范围</summary>
+      <div class="grid" style="margin-top:8px">
+        <div class="field"><label for="f_calls">本研究最多模型调用次数</label><input id="f_calls" type="number" min="1" max="50" placeholder="按预检建议" /></div>
+        <div class="field"><label for="f_budget">Token 总预算（可空）</label><input id="f_budget" type="number" min="1" placeholder="不设" /></div>
+        <div class="field"><label for="f_mb">单个文件上限（MB）</label><input id="f_mb" type="number" min="1" max="40" value="20" /></div>
+      </div>
+      <div class="row">
+        <label><input id="f_dl" type="checkbox" checked /> 下载 arXiv 开放 PDF</label>
+        <label><input id="f_up" type="checkbox" checked /> 允许上传补充资料</label>
+        <label><input id="f_url" type="checkbox" checked /> 允许用网络地址补充</label>
+      </div>
+      <div class="field"><label for="f_roots">允许读取的本地目录（每行一个绝对路径，可空）</label><textarea id="f_roots"></textarea></div>
+    </details>
+    <div class="row" style="margin-top:12px">
+      <button id="preflightBtn">预检</button>
+      <button id="startBtn" class="primary" disabled>批准并开始</button>
+    </div>
+    <div id="preflightOut"></div>
+  </div>
+</template>
+
+<script>
+"use strict";
+const S = { token: "", desktop: false, tasks: [], current: null, view: null, agents: [], timer: null,
+            fetchedAt: 0, preflight: null, supSig: "", evidenceFor: null, requestKey: null };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(t._h); t._h = setTimeout(() => (t.hidden = true), 5000); }
+
+function headers(json) {
+  const h = {};
+  if (S.token) h["Authorization"] = "Bearer " + S.token;
+  if (json) h["Content-Type"] = "application/json";
+  return h;
+}
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: headers(body !== undefined), body: body === undefined ? undefined : JSON.stringify(body) });
+  let data = null;
+  try { data = await r.json(); } catch (_) { /* empty body */ }
+  if (!r.ok) {
+    const d = data && data.detail;
+    throw Error(typeof d === "string" ? d : (d && (d.message || d.code)) || `HTTP ${r.status}`);
+  }
+  return data;
+}
+
+async function download(path, name) {
+  const r = await fetch(path, { headers: headers(false) });
+  if (!r.ok) { toast(`下载失败：HTTP ${r.status}`); return; }
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const STATUS = { running: ["进行中", "info"], waiting_input: ["等待你补充资料", "warn"], paused: ["已暂停", "warn"],
+                 stopped: ["已停止", "bad"], blocked: ["已阻塞", "bad"], completed: ["已完成", "ok"] };
+const QUALITY = { pending: ["质量：待定", ""], passed: ["质量：通过", "ok"], failed: ["质量：未通过", "bad"],
+                  unavailable: ["质量：审阅不可用", "warn"], needs_review: ["质量：需人工复核", "warn"] };
+const PHASE = { plan: "检索规划", search: "检索去重", screen: "摘要筛选", fetch: "全文获取", fulltext_gate: "全文补充",
+                read: "阅读取证", synthesize: "综合分析", outline: "大纲", write: "分节写作", review: "审阅修订",
+                abstract: "摘要", export: "导出", done: "完成" };
+const DEPTH = { fulltext: "全文", abstract: "仅摘要", metadata_only: "仅题录" };
+const FILESTAT = { received: ["已收到，待核对", ""], accepted: ["已补齐", "ok"], mismatch: ["不是目标论文", "bad"],
+                   ambiguous: ["匹配不明确", "warn"], parse_failed: ["无法解析", "bad"], fetch_failed: ["无法获取", "bad"],
+                   duplicate: ["重复资料", "warn"], refused: ["超出授权范围", "bad"] };
+const chip = (pair) => `<span class="chip ${pair[1]}">${esc(pair[0])}</span>`;
+
+// ---------------------------------------------------------------- tasks
+
+async function loadTasks() {
+  const data = await api("GET", "/api/papers");
+  S.tasks = data.tasks;
+  $("taskList").innerHTML = S.tasks.map((t) => `<li data-id="${esc(t.task_id)}" class="${t.task_id === S.current ? "active" : ""}">
+      <div class="t">${esc(t.topic)}</div><div class="d">${esc((STATUS[t.status] || [t.status])[0])} · ${esc(PHASE[t.phase] || t.phase)}</div></li>`).join("")
+    || `<li class="dim small">还没有研究任务</li>`;
+  for (const li of $("taskList").querySelectorAll("li[data-id]")) li.onclick = () => openTask(li.dataset.id);
+}
+
+async function openTask(id) {
+  S.current = id; S.supSig = ""; S.evidenceFor = null;
+  $("main").innerHTML = `<div class="card dim">加载中…</div>`;
+  await refresh(true);
+  loadTasks().catch(() => {});
+}
+
+async function refresh(force) {
+  if (!S.current) return;
+  const view = await api("GET", `/api/papers/${encodeURIComponent(S.current)}`);
+  const moved = !S.view || S.view.status !== view.status || S.view.phase !== view.phase;
+  S.view = view; S.fetchedAt = performance.now();
+  render(force);
+  if (moved) loadTasks().catch(() => {});  // keep the list's status in step
+}
+
+// ---------------------------------------------------------------- form
+
+async function showForm() {
+  S.current = null; S.view = null; S.preflight = null; S.requestKey = "rt-" + Date.now() + "-" + Math.random().toString(16).slice(2, 8);
+  $("main").innerHTML = "";
+  $("main").appendChild($("formTpl").content.cloneNode(true));
+  const options = S.agents.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
+  $("f_main").innerHTML = options || `<option value="">（没有已接入的 Agent，请先到本机设置）</option>`;
+  $("f_review").innerHTML = `<option value="">不审阅（质量将标为“审阅不可用”）</option>` + options;
+  $("f_mode").onchange = () => { $("f_consentWrap").hidden = $("f_mode").value !== "supervised"; };
+  for (const el of $("main").querySelectorAll("input,select,textarea")) el.addEventListener("input", () => { $("startBtn").disabled = true; });
+  $("preflightBtn").onclick = runPreflight;
+  $("startBtn").onclick = startTask;
+  loadTasks().catch(() => {});
+}
+
+function formBody() {
+  const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+  const main = $("f_main").value, review = $("f_review").value || null, model = $("f_model").value.trim();
+  const models = {};
+  if (model) models[main] = { model };
+  return {
+    client_request_id: S.requestKey,
+    request: { topic: $("f_topic").value.trim(), year_from: num("f_from"), year_to: num("f_to"), target_papers: num("f_n") || 5,
+               language: $("f_lang").value, sections: num("f_sections") || 4,
+               fulltext_policy: document.querySelector('input[name="f_policy"]:checked').value },
+    roles: { main_agent: main, review_agent: review, models },
+    resources: { allow_pdf_download: $("f_dl").checked, allow_upload: $("f_up").checked, allow_url_supplement: $("f_url").checked,
+                 max_download_mb: num("f_mb") || 20, local_roots: $("f_roots").value.split("\n").map((s) => s.trim()).filter(Boolean) },
+    execution_mode: $("f_mode").value, supervised_consent: $("f_consent").checked,
+    max_calls: num("f_calls"), token_budget_total: num("f_budget"),
+  };
+}
+
+async function runPreflight() {
+  const out = $("preflightOut");
+  try {
+    const p = await api("POST", "/api/papers/preflight", formBody());
+    S.preflight = p;
+    const e = p.estimate || { parts: {} };
+    let html = `<h3>本次将要批准的内容</h3>`;
+    for (const b of p.blockers || []) html += `<div class="badbox">${esc(b.message)}${b.code === "stage_not_proven" ? ' — <a href="/chat">去会话页手动调用一次</a>' : ""}</div>`;
+    for (const w of p.warnings || []) html += `<div class="warnbox">${esc(w)}</div>`;
+    if (p.request) {
+      html += `<table><tbody>
+        <tr><th>主题</th><td>${esc(p.request.topic)}（${esc(p.request.year_from || "不限")}–${esc(p.request.year_to || "不限")}，目标 ${esc(p.request.target_papers)} 篇，${esc(p.language)}）</td></tr>
+        <tr><th>全文缺失</th><td>${p.fulltext_policy === "continue_allowed" ? "方案一：可按现有资料继续（首次询问 30 分钟未选择则继续）" : "方案二：先等待补全文（不设超时）"}</td></tr>
+        <tr><th>检索来源</th><td>arXiv（${esc((p.resources.hosts || []).join(", "))}）；${esc(p.resources.downloads)}</td></tr>
+        <tr><th>数据发送</th><td>${esc(p.resources.sent)}</td></tr>
+        <tr><th>补充资料</th><td>上传${p.resources.allow_upload ? "允许" : "不允许"}；网络地址${p.resources.url_supplement === "public_http" ? "允许（仅公网 http/https）" : "不允许"}；本地目录：${esc((p.resources.local_roots || []).join("；") || "无")}</td></tr>
+        <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（规划 ${esc(e.parts.plan)}、筛选 ${esc(e.parts.screen)}、阅读 ${esc(e.parts.extract)}、综合 ${esc(e.parts.synthesize)}、大纲 ${esc(e.parts.outline)}、写作 ${esc(e.parts.write)}、审阅 ${esc(e.parts.review)}、修订最多 ${esc(e.parts.revise)}、摘要 ${esc(e.parts.abstract)}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
+        <tr><th>Token 预算</th><td>${p.token_budget_total ? esc(p.token_budget_total) : "不设（仍记录用量）"}</td></tr>
+        <tr><th>输出</th><td class="mono">${esc(p.output.location)}：${esc(p.output.files.join(", "))}</td></tr>
+        <tr><th>完成条件</th><td>导出综述与证据；执行完成与质量通过分别记录，审阅不可用或检查失败不会标为通过</td></tr>
+      </tbody></table>`;
+    }
+    out.innerHTML = html;
+    $("startBtn").disabled = !p.ok;
+  } catch (err) { out.innerHTML = `<div class="badbox">${esc(err.message)}</div>`; }
+}
+
+async function startTask() {
+  $("startBtn").disabled = true;
+  try {
+    const view = await api("POST", "/api/papers", formBody());
+    await loadTasks();
+    openTask(view.task_id);
+  } catch (err) { toast(err.message); $("startBtn").disabled = false; }
+}
+
+// ---------------------------------------------------------------- task view
+
+function remainingSeconds(sup) {
+  if (sup.remaining_seconds === null || sup.remaining_seconds === undefined) return null;
+  return Math.max(0, Math.round(sup.remaining_seconds - (performance.now() - S.fetchedAt) / 1000));
+}
+
+function fmt(sec) { const m = Math.floor(sec / 60), s = sec % 60; return `${m} 分 ${String(s).padStart(2, "0")} 秒`; }
+
+function render(force) {
+  const v = S.view;
+  if (!v) return;
+  const main = $("main");
+  if (force || !main.querySelector("#taskHead")) {
+    main.innerHTML = `<div id="taskHead" class="card"></div><div id="supBox"></div><div id="resultBox"></div>
+      <div id="papersBox" class="card"></div><div id="evidenceBox" class="card" hidden></div><div id="sectionsBox"></div>
+      <div id="stepsBox" class="card"></div>`;
+  }
+  renderHead(v);
+  renderSupplement(v);
+  renderResult(v);
+  renderPapers(v);
+  renderSections(v);
+  renderSteps(v);
+}
+
+function renderHead(v) {
+  const phaseIndex = v.phases.indexOf(v.phase);
+  const phases = v.phases.map((p, i) => `<span class="phase ${i < phaseIndex || v.phase === "done" ? "done" : i === phaseIndex ? "now" : ""}">${esc(PHASE[p] || p)}</span>`).join("");
+  const st = v.stage || {};
+  const summary = st.summary || {};
+  let ctl = "";
+  if (["running", "waiting_input"].includes(v.status)) ctl = `<button id="pauseBtn">暂停</button> <button id="stopBtn" class="danger">停止</button>`;
+  if (v.status === "paused") ctl = `<button id="resumeBtn" class="primary">继续</button> <button id="stopBtn" class="danger">停止</button>`;
+  if (["blocked", "stopped"].includes(v.status)) ctl = `<input id="reCalls" type="number" min="1" max="50" value="${esc(st.max_calls || 20)}" style="width:80px" title="新阶段调用上限" />
+      <button id="reauthBtn" class="primary">确认后重新授权继续</button> <span class="dim small">已完成的检索、阅读与写作会复用，不重复计费</span>`;
+  let block = "";
+  if (v.status === "blocked" || v.status === "stopped") {
+    block = `<div class="badbox">${esc(summary.needs || "阶段已结束")}${summary.message ? `<div class="small mono">${esc(summary.message)}</div>` : ""}</div>`;
+  }
+  $("taskHead").innerHTML = `<div class="row"><h2 style="margin:0;flex:1;min-width:200px">${esc(v.request.topic)}</h2>
+      ${chip(STATUS[v.status] || [v.status, ""])} ${chip(QUALITY[v.quality_status] || [v.quality_status, ""])}</div>
+    <div class="phases">${phases}</div>
+    <div class="row small dim">调用 ${esc(v.usage.calls)} 次（本阶段 ${esc(st.calls_used ?? "-")}/${esc(st.max_calls ?? "-")}）· 输入 ${esc(v.usage.input)} / 输出 ${esc(v.usage.output)} tokens${v.usage.unknown ? ` · 用量未知 ${esc(v.usage.unknown)} 次` : ""}
+      · 模型：${esc(v.roles.main_agent)}${v.roles.review_agent ? " / 审阅 " + esc(v.roles.review_agent) : "（无审阅）"} · <a href="/chat" title="每一步调用都在对应会话里可查">查看调用记录</a></div>
+    ${block}<div class="row">${ctl}</div>`;
+  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  const act = (action) => async () => { try { await api("POST", `/api/papers/${v.task_id}/stage/${action}`); await refresh(true); } catch (e) { toast(e.message); } };
+  on("pauseBtn", act("pause")); on("resumeBtn", act("resume"));
+  on("stopBtn", async () => { if (confirm("停止后不会再启动新的调用或下载；已发出的请求按实际状态显示。确认停止？")) await act("stop")(); });
+  on("reauthBtn", async () => {
+    if (!confirm("将以原研究请求与资源规则开启一个新阶段。确认？")) return;
+    try { await api("POST", `/api/papers/${v.task_id}/reauthorize`, { max_calls: Number($("reCalls").value) || undefined }); await refresh(true); }
+    catch (e) { toast(e.message); }
+  });
+}
+
+function missingOptions(sup) {
+  return `<option value="">按内容自动匹配</option>` + sup.items.filter((i) => i.state === "missing")
+    .map((i) => `<option value="${esc(i.paper_id)}">${esc(i.reference.slice(0, 74))}</option>`).join("");
+}
+
+function renderSupplement(v) {
+  const box = $("supBox");
+  const sup = v.supplement;
+  if (!sup) { box.innerHTML = ""; S.supSig = ""; return; }
+  const open = sup.batches.find((b) => b.batch_id === sup.open_batch_id);
+  const sig = JSON.stringify([sup.status, sup.round, sup.remaining, sup.batches.map((b) => [b.status, b.files.map((f) => f.status)])]);
+  const cd = box.querySelector("#countdown");
+  if (sig === S.supSig && box.firstChild) { if (cd) cd.textContent = fmt(remainingSeconds(sup) ?? 0); return; }
+  S.supSig = sig;
+  const items = sup.items.map((i) => `<div class="ref"><span class="mono">${esc(i.reference)}</span>
+      <div class="small dim">缺失原因：${esc(i.reason_text)} · 摘要${i.abstract_available ? "可读" : "不可得"} ·
+      ${i.state === "resolved" ? '<span class="chip ok">已补齐</span>' : i.state === "not_supplied" ? '<span class="chip">未补充</span>' : '<span class="chip warn">待补充</span>'}</div></div>`).join("");
+  const STATE = { awaiting_choice: "以下论文无法取得或读取全文。要补充全文吗？", awaiting_files: "正在等待你补充资料（不会自动跳过）。",
+                  validating_batch: "正在核对本批资料…", awaiting_more_choice: "本批补充后仍有论文缺少全文，是否继续补充？",
+                  resolved: { user_continue: "你已选择按现有资料继续。", timeout_continue: "首次询问 30 分钟内未选择，已按现有资料继续。", all_supplied: "缺失全文已全部补齐。" }[sup.decision] || "补充请求已关闭。" };
+  let html = `<div class="card"><h2>全文补充 ${sup.policy === "continue_allowed" ? '<span class="chip">方案一</span>' : '<span class="chip">方案二</span>'}</h2>
+    <div class="${sup.status === "resolved" ? "okbox" : "warnbox"}">${esc(STATE[sup.status])}
+      ${sup.status === "awaiting_choice" && sup.deadline_at ? `<div>剩余 <span id="countdown" class="countdown">${fmt(remainingSeconds(sup) ?? 0)}</span>，未选择将按现有全文与摘要继续。</div>` : ""}</div>
+    <details ${sup.status === "resolved" ? "" : "open"}><summary>缺失全文清单（${sup.items.length} 篇：已补齐 ${sup.items.filter((i) => i.state === "resolved").length}，${sup.status === "resolved" ? `未补充 ${sup.items.filter((i) => i.state === "not_supplied").length}` : `仍缺 ${sup.remaining}`}）</summary>${items}
+      <div class="row"><button class="mini" id="copyRefs">复制清单</button><button class="mini" id="dlRefs">下载 .txt</button></div></details>`;
+  if (sup.status === "awaiting_choice" || sup.status === "awaiting_more_choice") {
+    html += `<div class="row"><button id="supYes" class="primary">${sup.status === "awaiting_choice" ? "补充全文" : "继续补充"}</button>
+      <button id="supNo">不补充，按现有资料继续</button></div>`;
+  }
+  if (sup.status === "awaiting_files") {
+    html += `<h3>第 ${sup.round} 批补充</h3>
+      <div class="row"><input id="upFiles" type="file" multiple accept=".pdf,.txt,.md" /><select id="upTarget">${missingOptions(sup)}</select><button id="upBtn">上传</button></div>
+      <div class="row"><input id="refValue" placeholder="已授权目录中的文件路径，或 https:// 文件地址" style="flex:1;min-width:220px" />
+        <select id="refTarget">${missingOptions(sup)}</select><button id="refBtn">添加</button></div>
+      <p class="small dim">上传完成不等于全文可读：提交后统一核对是否为目标论文、能否解析，再一次告诉你结果。</p>`;
+    if (open && open.files.length) {
+      html += `<table><thead><tr><th>本批资料</th><th>目标</th><th></th></tr></thead><tbody>${open.files.map((f) => `<tr><td class="mono">${esc(f.origin)}</td>
+        <td>${esc(f.target_paper_id ? (sup.items.find((i) => i.paper_id === f.target_paper_id) || {}).number : "自动匹配")}</td>
+        <td><button class="mini" data-rm="${f.file_id}">移除</button></td></tr>`).join("")}</tbody></table>`;
+    }
+    html += `<div class="row"><button id="submitBtn" class="primary" ${open && open.files.length ? "" : "disabled"}>提交本次补充</button>
+      <button id="supNo">不再等待，按现有资料继续</button></div>`;
+  }
+  const done = sup.batches.filter((b) => b.status !== "open");
+  if (done.length) {
+    html += `<details ${sup.status === "awaiting_more_choice" ? "open" : ""}><summary>已提交批次（${done.length}）</summary>` + done.map((b) => `<h3>第 ${b.round} 批 ${b.result ? `· 补齐 ${b.result.accepted} 份，剩余 ${b.result.remaining} 篇` : "· 核对中"}</h3>
+      <table><tbody>${b.files.map((f) => `<tr><td class="mono">${esc(f.origin)}</td><td>${chip(FILESTAT[f.status] || [f.status, ""])}</td><td class="small">${esc(f.detail || "")}</td></tr>`).join("")}</tbody></table>`).join("") + `</details>`;
+  }
+  box.innerHTML = html + `</div>`;
+  const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+  const choose = (choice) => async () => {
+    try { await api("POST", `/api/papers/${v.task_id}/supplement/choice`, { request_id: sup.request_id, choice }); await refresh(true); }
+    catch (e) { toast(e.message); await refresh(true); }
+  };
+  on("supYes", choose("supplement"));
+  on("supNo", async () => { if (confirm("其余缺失论文将只按摘要或题录使用，并在成品中标明。确认？")) await choose("continue")(); });
+  on("copyRefs", () => navigator.clipboard.writeText(sup.items.filter((i) => i.state === "missing").map((i) => `${i.reference}（${i.reason_text}）`).join("\n")).then(() => toast("已复制")));
+  on("dlRefs", () => download(`/api/papers/${v.task_id}/supplement/references.txt`, `missing-fulltext-${v.task_id}.txt`));
+  on("upBtn", async () => {
+    const files = $("upFiles").files;
+    if (!files.length) { toast("请选择文件"); return; }
+    try {
+      await api("POST", `/api/papers/${v.task_id}/supplement/begin`, { request_id: sup.request_id }); // choice recorded before sending
+      const form = new FormData();
+      form.append("request_id", sup.request_id);
+      for (const f of files) { form.append("files", f, f.name); form.append("targets", $("upTarget").value); }
+      const r = await fetch(`/api/papers/${v.task_id}/supplement/files`, { method: "POST", headers: headers(false), body: form });
+      if (!r.ok) { const d = (await r.json()).detail; throw Error((d && d.message) || `HTTP ${r.status}`); }
+      await refresh(true);
+    } catch (e) { toast(e.message); }
+  });
+  on("refBtn", async () => {
+    const value = $("refValue").value.trim();
+    if (!value) return;
+    try {
+      await api("POST", `/api/papers/${v.task_id}/supplement/refs`, { request_id: sup.request_id, kind: /^https?:\/\//i.test(value) ? "url" : "local",
+        value, target_paper_id: $("refTarget").value || null });
+      await refresh(true);
+    } catch (e) { toast(e.message); }
+  });
+  on("submitBtn", async () => {
+    try { await api("POST", `/api/papers/${v.task_id}/supplement/submit`, { request_id: sup.request_id, batch_id: sup.open_batch_id }); await refresh(true); }
+    catch (e) { toast(e.message); }
+  });
+  for (const b of box.querySelectorAll("button[data-rm]")) b.onclick = async () => {
+    try { await api("DELETE", `/api/papers/${v.task_id}/supplement/files/${b.dataset.rm}`); await refresh(true); } catch (e) { toast(e.message); }
+  };
+}
+
+function renderResult(v) {
+  const box = $("resultBox");
+  const o = v.outcome || {};
+  if (!v.artifacts.length && !o.insufficient) { box.innerHTML = ""; return; }
+  const sample = o.sample || {};
+  const reasons = (o.quality_reasons || []).map((r) => `<li>${esc(r)}</li>`).join("");
+  const sig = JSON.stringify([v.artifacts.map((a) => a.sha256), v.quality_status]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = `<div class="card"><h2>成果</h2>
+    ${o.insufficient ? `<div class="badbox">资料不足：${esc(o.insufficient.detail || o.insufficient.reason)}。已交付资料不足说明，没有补造结论。</div>` : ""}
+    <div class="${v.quality_status === "passed" ? "okbox" : "warnbox"}">执行已完成；${esc((QUALITY[v.quality_status] || [v.quality_status])[0])}
+      ${v.quality_status !== "passed" ? "（成品标为草稿）" : ""}${reasons ? `<ul>${reasons}</ul>` : ""}</div>
+    <div class="small dim">纳入 ${esc(sample.included ?? "-")} 篇：全文 ${esc(sample.fulltext ?? "-")}、仅摘要 ${esc(sample.abstract_only ?? "-")}、仅题录 ${esc(sample.metadata_only ?? "-")}</div>
+    ${o.abstract ? `<h3>摘要</h3><p>${esc(o.abstract.abstract)}</p>` : ""}
+    ${(o.synthesis && o.synthesis.gaps || []).length ? `<h3>当前样本中的空白</h3><ul>${o.synthesis.gaps.map((g) => `<li>${esc(g.text)}</li>`).join("")}</ul>` : ""}
+    <div class="row">${v.artifacts.filter((a, i, all) => all.findIndex((b) => b.name === a.name) === i)
+      .map((a) => `<button data-art="${esc(a.name)}">下载 ${esc(a.name)}</button>`).join("")}</div></div>`;
+  for (const b of box.querySelectorAll("button[data-art]")) b.onclick = () => download(`/api/papers/${v.task_id}/artifacts/${b.dataset.art}`, b.dataset.art);
+}
+
+function renderPapers(v) {
+  const box = $("papersBox");
+  const sig = JSON.stringify(v.papers.map((p) => [p.screen, p.included, p.fulltext_status, p.read_depth, p.evidence]));
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  const rows = v.papers.map((p) => `<tr>
+      <td><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.title)}</a>
+        <div class="small dim">${esc((p.authors || []).slice(0, 4).join(", "))}${(p.authors || []).length > 4 ? " 等" : ""} · ${esc(p.year || "年份未知")} · arXiv ${esc(p.source_id)}
+        ${p.merged && p.merged.length ? ` · 合并重复 ${p.merged.length} 条` : ""}${p.abstract_available ? "" : " · 无摘要"}</div></td>
+      <td>${p.included ? '<span class="chip ok">纳入</span>' : `<span class="chip">${esc(p.screen === "exclude" ? "排除" : p.screen ? "未纳入" : "待筛选")}</span>`}
+        <div class="small dim">${esc(p.screen_reason || "")}</div></td>
+      <td class="hide-narrow">${p.included ? esc(p.fulltext_status === "available" ? "已获取" : p.fulltext_status === "supplied" ? "已补充" : p.fulltext_status === "missing" ? "缺失：" + (p.fulltext_reason_text || "") : "检查中") : ""}</td>
+      <td>${esc(DEPTH[p.read_depth] || (p.included ? "待阅读" : ""))}${p.read_status === "failed" ? ' <span class="chip bad">阅读失败</span>' : ""}</td>
+      <td>${p.evidence ? `<button class="mini" data-ev="${esc(p.paper_id)}">证据 ${p.evidence}</button>` : ""}</td></tr>`).join("");
+  box.innerHTML = `<h2>论文清单（${v.papers.length} 篇候选，${v.papers.filter((p) => p.included).length} 篇纳入）</h2>
+    <table><thead><tr><th>论文</th><th>筛选</th><th class="hide-narrow">全文</th><th>阅读深度</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="5" class="dim">尚无候选</td></tr>`}</tbody></table>`;
+  for (const b of box.querySelectorAll("button[data-ev]")) b.onclick = () => showEvidence(b.dataset.ev);
+}
+
+async function showEvidence(paperId, highlight) {
+  const v = S.view;
+  const box = $("evidenceBox");
+  try {
+    const data = await api("GET", `/api/papers/${v.task_id}/evidence${paperId ? "?paper_id=" + encodeURIComponent(paperId) : ""}`);
+    const list = highlight ? data.evidence.filter((e) => e.evidence_id === highlight) : data.evidence;
+    box.hidden = false;
+    box.innerHTML = `<div class="row"><h2 style="flex:1;margin:0">证据 ${paperId ? "· " + esc((v.papers.find((p) => p.paper_id === paperId) || {}).title || "") : ""}</h2>
+      <button class="mini" id="evClose">关闭</button></div>` + list.map((e) => `<div class="ev">
+      <div class="row small"><span class="mono">${esc(e.evidence_id)}</span> ${chip([e.level === "fulltext" ? "全文证据" : "摘要级证据", e.level === "fulltext" ? "ok" : "warn"])}
+        ${chip([e.verified ? "原文已核对" : "原文未核对", e.verified ? "ok" : "bad"])} <span class="dim">${esc(e.kind)} · ${esc(e.attribution === "speculated" ? "作者推测" : "作者报告")}</span></div>
+      <div>${esc(e.statement)}</div><blockquote>${esc(e.quote)}</blockquote>
+      <div class="small dim">${esc(e.paper_title || "")} · ${e.location.pdf_page ? `PDF 第 ${esc(e.location.pdf_page)} 页（PDF 页序，非印刷页码）` : "摘要"}
+        ${e.chunk_id ? ` · <a href="#" data-chunk="${esc(e.chunk_id)}" data-quote="${esc(e.quote)}">查看原文片段</a>` : ""}</div>
+      <div class="chunk"></div></div>`).join("");
+    $("evClose").onclick = () => { box.hidden = true; };
+    for (const a of box.querySelectorAll("a[data-chunk]")) a.onclick = async (ev) => {
+      ev.preventDefault();
+      const c = await api("GET", `/api/papers/${v.task_id}/chunks/${encodeURIComponent(a.dataset.chunk)}`);
+      const text = esc(c.text), q = esc(a.dataset.quote);
+      const idx = text.toLowerCase().indexOf(q.toLowerCase().slice(0, 40));
+      a.closest(".ev").querySelector(".chunk").innerHTML = `<div class="small mono" style="white-space:pre-wrap;margin-top:6px">${idx >= 0 ? text.slice(0, idx) + "<mark>" + text.slice(idx, idx + q.length) + "</mark>" + text.slice(idx + q.length) : text}</div>`;
+    };
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) { toast(e.message); }
+}
+
+function renderSections(v) {
+  const box = $("sectionsBox");
+  if (!v.sections.length) { box.innerHTML = ""; return; }
+  const sig = JSON.stringify(v.sections.map((s) => [s.status, s.review_status, s.revisions, (s.text || "").length]));
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  const REVIEW = { passed: ["审阅通过", "ok"], pending: ["待审阅", ""], revising: ["修订中", "info"], needs_review: ["需人工复核", "warn"],
+                   unavailable: ["审阅不可用", "warn"], not_applicable: ["无需审阅", ""] };
+  box.innerHTML = `<div class="card"><h2>正文（${v.sections.length} 节）</h2>` + v.sections.map((s) => {
+    const body = esc(s.text || "（尚未生成）").replace(/\[ev:([A-Za-z0-9_-]+)\]/g, (_, id) => `<span class="cite" data-cite="${id}">[证据]</span>`);
+    const issues = (s.issues || []).map((i) => `<div class="small warnbox">${esc(i.kind === "unknown_evidence_id" ? "引用了不存在的证据：" + i.ids.join(", ") : "待补充：" + (i.items || []).join("；"))}</div>`).join("");
+    const review = s.review && s.review.issues && s.review.issues.length ? `<details><summary class="small dim">审阅意见（${s.review.issues.length}）</summary>${s.review.issues.map((i) => `<div class="small">[${esc(i.severity)}] ${esc(i.problem)} — ${esc(i.suggestion)}</div>`).join("")}</details>` : "";
+    return `<h3>${s.idx + 1}. ${esc(s.title)} ${chip(REVIEW[s.review_status] || [s.review_status, ""])}${s.revisions ? ` <span class="chip">修订 ${s.revisions}</span>` : ""}</h3>
+      <div class="section-text">${body}</div>${issues}${review}`;
+  }).join("") + `<p class="small dim">点击 [证据] 可查看对应原文；下载的 review.md 中引用编号由真实元数据生成。</p></div>`;
+  for (const c of box.querySelectorAll(".cite")) c.onclick = () => showEvidence(null, c.dataset.cite);
+}
+
+function renderSteps(v) {
+  const box = $("stepsBox");
+  const sig = JSON.stringify(v.steps.map((s) => [s.status, s.attempts]));
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.innerHTML = `<details><summary><strong>执行记录</strong> <span class="dim small">（${v.steps.length} 步；模型步骤记录模板版本与调用 ID）</span></summary>
+    <table><thead><tr><th>步骤</th><th>状态</th><th class="hide-narrow">模板</th><th class="hide-narrow">调用</th></tr></thead><tbody>${v.steps.map((s) => `<tr>
+      <td class="mono small">${esc(s.kind)} · ${esc(s.name)}${s.target ? " · " + esc(s.target) : ""}${s.error ? `<div class="dim">${esc(s.error)}</div>` : ""}</td>
+      <td>${esc(s.status)}${s.attempts > 1 ? `（${s.attempts} 次）` : ""}</td>
+      <td class="mono small hide-narrow">${esc(s.template ? s.template.id + " #" + s.template.hash : "")}</td>
+      <td class="mono small hide-narrow">${esc((s.invocation_ids || []).join(", "))}</td></tr>`).join("")}</tbody></table></details>`;
+}
+
+// ---------------------------------------------------------------- boot
+
+async function connect() {
+  if (!S.desktop) {
+    S.token = $("token").value.trim() || S.developmentToken || "";
+    try { sessionStorage.setItem("agenthub.token", $("token").value.trim()); } catch (_) { /* storage blocked */ }
+  }
+  try {
+    const info = await api("GET", "/api/adapter");
+    S.agents = info.agent_ids || info.agents && Object.keys(info.agents) || [];
+    $("connChip").textContent = "已连接"; $("connChip").className = "chip ok";
+    await loadTasks();
+    if (!S.current) { if (S.tasks.length) openTask(S.tasks[0].task_id); else showForm(); }
+  } catch (e) { $("connChip").textContent = "未连接"; $("connChip").className = "chip bad"; toast(e.message); }
+}
+
+$("connectBtn").onclick = connect;
+$("newBtn").onclick = showForm;
+setInterval(async () => {
+  if (!S.current || document.hidden) return;
+  try { await refresh(false); } catch (_) { /* keep the last confirmed state */ }
+}, 2000);
+setInterval(() => {
+  const cd = $("countdown");
+  if (cd && S.view && S.view.supplement) cd.textContent = fmt(remainingSeconds(S.view.supplement) ?? 0);
+}, 1000);
+
+(async function boot() {
+  try {
+    const config = await (await fetch("/api/client-config")).json();
+    S.desktop = config.desktop; S.developmentToken = config.development_token;
+    if (S.desktop) { $("token").hidden = true; $("connectBtn").textContent = "重新连接"; $("settingsLink").hidden = false; }
+  } catch (e) { toast(e.message); }
+  let saved = "";
+  try { saved = sessionStorage.getItem("agenthub.token") || ""; } catch (_) { /* storage blocked */ }
+  $("token").value = saved;
+  await connect();
+})();
+</script>
+</body>
+</html>
