@@ -71,6 +71,9 @@ def compute_quality(sections: list, *, insufficient: bool, unknown_ids: bool, re
 
 
 def export(ctx: Any) -> dict:
+    if ctx.request.mode != "review":
+        from agenthub_kernel.papers.guidance_export import export_guidance
+        return export_guidance(ctx)
     session, task, req = ctx.session, ctx.task, ctx.request
     store = ctx.ap.papers.store
     outcome = task.outcome or {}
@@ -143,7 +146,7 @@ def export(ctx: Any) -> dict:
     md += ["## 研究范围与局限", "",
            f"- 检索来源：arXiv；年份：{req.year_from or '不限'}–{req.year_to or '不限'}；候选 {sample['candidates']} 篇，"
            f"纳入 {sample['included']} 篇（目标 {req.target_papers} 篇）。",
-           f"- 阅读深度：全文 {sample['fulltext']} 篇，仅摘要 {sample['abstract_only']} 篇，仅题录 {sample['metadata_only']} 篇。"
+           f"- 阅读深度：全文已获取、片段已读 {sample['fulltext']} 篇，仅摘要 {sample['abstract_only']} 篇，仅题录 {sample['metadata_only']} 篇。"
            "带 ᵃ 的引用只有摘要级证据。",
            "- 全文阅读只覆盖按关键词选出的片段，页码为 PDF 页序号，不是印刷页码。",
            "- 文中“当前样本未发现”仅指本次纳入的论文，不代表整个领域。"]

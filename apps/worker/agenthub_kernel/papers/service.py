@@ -139,7 +139,7 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
                                    if resources.allow_pdf_download else "不下载全文"},
         "output": {"location": os.path.join(store_root, "<任务ID>", "exports"),
                    "copy_to": os.path.join(resources.export_dir, "<任务ID>") if resources.export_dir else None,
-                   "files": ["review.md", "references.json", "evidence.json", "research-report.json"]},
+                   "files": (["review.md", "references.json", "evidence.json", "research-report.json"] if req.mode=="review" else ["study.md", "research-plan.md", "research-report.json"] + (["paper-project.md", "project.json"] if req.mode=="project" else []))},
         "fulltext_policy": req.fulltext_policy, "language": LANGUAGES[req.language],
         "templates": [t.meta() for t in TEMPLATES.values()], "agents": list(served),
         "proven": proven,
@@ -367,12 +367,14 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         "task_id": task.id, "conversation_id": task.conversation_id, "root_task_id": task.root_task_id,
         "request": task.request, "roles": task.roles, "resource_rules": task.resource_rules,
         "resource_rules_hash": task.resource_rules_hash, "status": task_status(session, task, stage),
-        "phase": task.phase, "phases": list(PHASES), "execution_status": "completed" if task.phase == "done" else
+        "phase": task.phase, "phases": (list(PHASES) if task.request.get("mode", "review")=="review" else ["plan","search","screen","fetch","fulltext_gate","read","related_read","directions","export","done"]), "execution_status": "completed" if task.phase == "done" else
         task_status(session, task, stage), "quality_status": task.quality_status,
         "outcome": {k: v for k, v in (task.outcome or {}).items() if k in (
             "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
-            "sample", "missing_citations", "export_copy", "reexported_at")},
+            "sample", "missing_citations", "export_copy", "reexported_at", "studies", "directions", "quality_dimensions")},
         "stage": stage_info, "server_time": _iso(now), "usage": usage,
+        "usage_by_step": {name: usage_of(session, [i for st in steps if st.name==name for i in (st.invocation_ids or [])])
+                          for name in sorted({st.name for st in steps if st.kind=="model"})},
         "papers": [{"paper_id": p.id, "title": p.title, "authors": p.authors, "year": p.year, "url": p.url,
                     "doi": p.doi, "source_id": p.source_id, "abstract_available": bool(p.abstract),
                     "screen": p.screen, "screen_reason": p.screen_reason, "included": p.included,

@@ -84,7 +84,9 @@
   }
 </style>
 <link rel="stylesheet" href="/assets/display.css?v=0.5.5" />
-<script src="/assets/display.js?v=0.5.5"></script>
+<link rel="stylesheet" href="/assets/katex/katex.min.css?v=0.16.22" />
+<script src="/assets/katex/katex.min.js?v=0.16.22"></script>
+<script src="/assets/display.js?v=0.7.0"></script>
 </head>
 <body>
 <header class="top">
@@ -122,6 +124,13 @@
       <div class="field"><label for="f_lang">输出语言</label>
         <select id="f_lang"><option value="zh">简体中文</option><option value="en">English</option></select></div>
     </div>
+    <h3>希望完成什么</h3>
+    <div class="grid">
+      <div class="field"><label for="f_goal">研究路径</label><select id="f_goal"><option value="project">理解推导 → 研究方案 → 我的论文项目</option><option value="proposal">理解推导与形成研究方案</option><option value="study">读懂核心论文与数学推导</option><option value="review">快速综述（只做片段归纳）</option></select></div>
+      <div class="field"><label for="f_core">核心精读篇数（按纳入顺序）</label><input id="f_core" type="number" min="1" max="3" value="1" /></div>
+      <div class="field"><label for="f_repairs">补读/局部修复轮数</label><input id="f_repairs" type="number" min="0" max="2" value="1" /></div>
+    </div>
+    <p class="small dim">优先讲清一篇核心论文：问题、符号、假设、逐式推导与手算例子。其余论文用于关联比较。解析损坏或证明缺失会指出具体缺口，候选方案需另行验证。</p>
     <h3>无法读取全文时怎么办</h3>
     <div class="field">
       <label><input type="radio" name="f_policy" value="continue_allowed" checked />
@@ -214,9 +223,9 @@ const STATUS = { running: ["进行中", "info"], waiting_input: ["等待你补�
 const QUALITY = { pending: ["质量：待定", ""], passed: ["质量：通过", "ok"], failed: ["质量：未通过", "bad"],
                   unavailable: ["质量：审阅不可用", "warn"], needs_review: ["质量：需人工复核", "warn"] };
 const PHASE = { plan: "检索规划", search: "检索去重", screen: "摘要筛选", fetch: "全文获取", fulltext_gate: "全文补充",
-                read: "阅读取证", synthesize: "综合分析", outline: "大纲", write: "分节写作", review: "审阅修订",
+                read: "阅读与数学讲解", related_read: "关联文献阅读", directions: "方法比较与研究方案", synthesize: "综合分析", outline: "大纲", write: "分节写作", review: "审阅修订",
                 abstract: "摘要", export: "导出", done: "完成" };
-const DEPTH = { fulltext: "全文", abstract: "仅摘要", metadata_only: "仅题录" };
+const DEPTH = { fulltext: "全文已获取，片段已读", abstract: "仅摘要", metadata_only: "仅题录" };
 const FILESTAT = { received: ["已收到，待核对", ""], accepted: ["已补齐", "ok"], mismatch: ["不是目标论文", "bad"],
                    ambiguous: ["匹配不明确", "warn"], parse_failed: ["无法解析", "bad"], fetch_failed: ["无法获取", "bad"],
                    duplicate: ["重复资料", "warn"], refused: ["超出授权范围", "bad"] };
@@ -347,7 +356,7 @@ function formBody() {
   return {
     client_request_id: S.requestKey,
     request: { topic: $("f_topic").value.trim(), year_from: num("f_from"), year_to: num("f_to"), target_papers: num("f_n") || 5,
-               language: $("f_lang").value, sections: num("f_sections") || 4,
+               mode: $("f_goal").value, core_papers: num("f_core"), repair_rounds: num("f_repairs"), language: $("f_lang").value, sections: num("f_sections") || 4,
                fulltext_policy: document.querySelector('input[name="f_policy"]:checked').value },
     roles: { main_agent: main, review_agent: review, models },
     resources: { allow_pdf_download: $("f_dl").checked, allow_upload: $("f_up").checked, allow_url_supplement: $("f_url").checked,
@@ -369,12 +378,12 @@ async function runPreflight() {
     for (const w of p.warnings || []) html += `<div class="warnbox">${esc(w)}</div>`;
     if (p.request) {
       html += `<table><tbody>
-        <tr><th>主题</th><td>${esc(p.request.topic)}（${esc(p.request.year_from || "不限")}–${esc(p.request.year_to || "不限")}，目标 ${esc(p.request.target_papers)} 篇，${esc(p.language)}）</td></tr>
+        <tr><th>主题</th><td>${esc(p.request.topic)}（${esc(p.request.year_from || "不限")}–${esc(p.request.year_to || "不限")}，目标 ${esc(p.request.target_papers)} 篇，路径 ${esc(p.request.mode || "review")}、核心 ${esc(p.request.core_papers || 1)} 篇，${esc(p.language)}）</td></tr>
         <tr><th>全文缺失</th><td>${p.fulltext_policy === "continue_allowed" ? "方案一：可按现有资料继续（首次询问 30 分钟未选择则继续）" : "方案二：先等待补全文（不设超时）"}</td></tr>
         <tr><th>检索来源</th><td>arXiv（${esc((p.resources.hosts || []).join(", "))}）；${esc(p.resources.downloads)}</td></tr>
         <tr><th>数据发送</th><td>${esc(p.resources.sent)}</td></tr>
         <tr><th>补充资料</th><td>上传${p.resources.allow_upload ? "允许" : "不允许"}；网络地址${p.resources.url_supplement === "public_http" ? "允许（仅公网 http/https）" : "不允许"}；本地目录：${esc((p.resources.local_roots || []).join("；") || "无")}</td></tr>
-        <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（规划 ${esc(e.parts.plan)}、筛选 ${esc(e.parts.screen)}、阅读 ${esc(e.parts.extract)}、综合 ${esc(e.parts.synthesize)}、大纲 ${esc(e.parts.outline)}、写作 ${esc(e.parts.write)}、审阅 ${esc(e.parts.review)}、修订最多 ${esc(e.parts.revise)}、摘要 ${esc(e.parts.abstract)}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
+        <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（${esc(Object.entries(e.parts).map(([k,n])=>k+": "+n).join("，"))}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
         <tr><th>Token 预算</th><td>${p.token_budget_total ? esc(p.token_budget_total) : "不设（仍记录用量）"}</td></tr>
         <tr><th>输出</th><td class="mono">${esc(p.output.files.join(", "))}<br>保存在 ${esc(p.output.location)}${p.output.copy_to ? `<br>并复制到你选的目录 ${esc(p.output.copy_to)}\\v&lt;版本&gt;` : ""}</td></tr>
         <tr><th>完成条件</th><td>导出综述与证据；执行完成与质量通过分别记录，审阅不可用或检查失败不会标为通过</td></tr>
@@ -410,13 +419,14 @@ function render(force) {
   if (force || !main.querySelector("#taskHead")) {
     main.innerHTML = `<div id="taskHead" class="pane"></div><div id="supBox"></div><div id="resultBox"></div>
       <div id="papersBox" class="pane"></div><div id="evidenceBox" class="pane" hidden></div><div id="sectionsBox"></div>
-      <div id="stepsBox" class="pane"></div>`;
+      <div id="guidanceBox"></div><div id="stepsBox" class="pane"></div>`;
   }
   renderHead(v);
   renderSupplement(v);
   renderResult(v);
   renderPapers(v);
   renderSections(v);
+  renderGuidance(v);
   renderSteps(v);
 }
 
@@ -451,8 +461,9 @@ function renderHead(v) {
   }
   if (v.continued_to) block += `<div class="okbox">已接续为新任务：<a href="#" data-open="${esc(v.continued_to)}">打开接续任务</a></div>`;
   if (v.continued_from) block += `<div class="small dim">接续自 <a href="#" data-open="${esc(v.continued_from)}">原研究</a>；“调用”合计含原研究已用部分。</div>`;
+  const qualityLabel=v.request.mode&&v.request.mode!=='review'&&v.quality_status==='passed'?['讲解模型核查完成；方案待验证','ok']:(QUALITY[v.quality_status] || [v.quality_status,'']);
   $("taskHead").innerHTML = `<div class="row"><h2 style="margin:0;flex:1;min-width:200px">${esc(v.request.topic)}</h2>
-      ${chip(STATUS[v.status] || [v.status, ""])} ${chip(QUALITY[v.quality_status] || [v.quality_status, ""])}</div>
+      ${chip(STATUS[v.status] || [v.status, ""])} ${chip(qualityLabel)}</div>
     <div class="phases">${phases}</div>
     <div class="row small dim">调用 ${esc(v.usage.calls)} 次（本阶段 ${esc(st.calls_used ?? "-")}/${esc(st.max_calls ?? "-")}）· 输入 ${esc(v.usage.input)} / 输出 ${esc(v.usage.output)} tokens${v.usage.unknown ? ` · 用量未知 ${esc(v.usage.unknown)} 次` : ""}
       · 模型：${esc(v.roles.main_agent)}${v.roles.review_agent ? " / 审阅 " + esc(v.roles.review_agent) : "（无审阅）"} · <a href="/chat" title="每一步调用都在对应会话里可查">查看调用记录</a></div>
@@ -587,7 +598,7 @@ function renderResult(v) {
   box.dataset.sig = sig;
   box.innerHTML = `<div class="pane"><h2>成果</h2>
     ${o.insufficient ? `<div class="badbox">资料不足：${esc(o.insufficient.detail || o.insufficient.reason)}。已交付资料不足说明，没有补造结论。</div>` : ""}
-    <div class="${v.quality_status === "passed" ? "okbox" : "warnbox"}">执行已完成；${esc((QUALITY[v.quality_status] || [v.quality_status])[0])}
+    <div class="${v.quality_status === "passed" ? "okbox" : "warnbox"}">执行已完成；${esc(v.request.mode&&v.request.mode!=='review'&&v.quality_status==='passed'?'讲解模型核查完成；方案待查重和验证':(QUALITY[v.quality_status] || [v.quality_status])[0])}
       ${v.quality_status !== "passed" ? "（成品标为草稿）" : ""}${reasons ? `<ul>${reasons}</ul>` : ""}</div>
     <div class="small dim">纳入 ${esc(sample.included ?? "-")} 篇：全文 ${esc(sample.fulltext ?? "-")}、仅摘要 ${esc(sample.abstract_only ?? "-")}、仅题录 ${esc(sample.metadata_only ?? "-")}</div>
     ${o.abstract ? `<h3>摘要</h3><p>${esc(o.abstract.abstract)}</p>` : ""}
@@ -670,6 +681,83 @@ function renderSections(v) {
       <div class="section-text">${body}</div>${issues}${review}`;
   }).join("") + `<p class="small dim">点击 [证据] 可查看对应原文；下载的 review.md 中引用编号由真实元数据生成。</p></div>`;
   for (const c of box.querySelectorAll(".cite")) c.onclick = () => showEvidence(null, c.dataset.cite);
+}
+
+function renderGuidance(v) {
+  const box=$("guidanceBox"), studies=v.outcome.studies || {}, directions=v.outcome.directions || {};
+  const sig=JSON.stringify([studies,directions,v.outcome.quality_dimensions,v.usage_by_step,v.status]);
+  if(box.dataset.sig===sig)return;
+  // Don't destroy a project form while the user edits it.
+  if(box.querySelector('[data-project-editor]'))return;
+  box.dataset.sig=sig;box.replaceChildren();
+  if(v.request.mode==='review'||!v.request.mode)return;
+  const add=(parent,tag,text)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;parent.append(e);return e;};
+  const panel=add(box,'div');panel.className='pane';add(panel,'h2','先读懂，再看数学推导');
+  const depth={material_missing:'核心全文不足',partial:'推导仍有缺口',method_read:'方法已整理，推导未核查',model_checked:'推导经模型审阅（非形式化证明）'};
+  for(const s of Object.values(studies)) {
+    add(panel,'h3',s.title);add(panel,'p',depth[s.depth] || s.depth);
+    const cov=s.coverage||{};add(panel,'p',`阅读覆盖：PDF 页 ${cov.pdf_pages || '未知'}，分块 ${cov.selected || 0}/${cov.total || 0}`);
+    for(const u of s.units || []) {
+      const detail=add(panel,'details');detail.open=['problem','intuition'].includes(u.kind);
+      add(detail,'summary',`${u.title} · ${u.id}`);
+      let text=u.text+(u.latex?'\n\n\\[\n'+u.latex+'\n\\]':'');
+      if(u.reason)text+='\n\n这一步的理由：'+u.reason;
+      if(u.depends_on.length)text+='\n\n依赖：'+u.depends_on.join(', ');
+      detail.append(AppDisplay.markdown(text));
+      for(const def of u.definitions || [])add(detail,'p',`${def.symbol}：${def.meaning}；范围：${def.domain}`);
+      add(detail,'p',u.origin==='source'?'原文内容':'本报告补充讲解/推导，仍需核对');
+      for(const r of u.sources || [])add(detail,'blockquote',r.chunk_id+'：'+r.quote);
+      if(v.status==='completed') {
+        const question=add(detail,'input');question.placeholder='例如：第 2 步为什么成立？';
+        const ask=add(detail,'button','追问这一步（先审批）');
+        ask.onclick=async()=>{try{
+          const mode=v.stage?.execution_mode || 'strict';
+          if(!confirm('只生成待审批调用，不立即启动模型。'+(mode==='supervised'?'继续使用用户监督边界。':'')))return;
+          const result=await api('POST',`/api/papers/${v.task_id}/questions`,{paper_id:s.paper_id,unit_id:u.id,
+            question:question.value.trim() || '请逐式解释这一步，并给出可核对的例子。',client_request_id:crypto.randomUUID(),
+            execution_mode:mode,supervised_consent:mode==='supervised'});
+          location.href='/chat#'+result.conversation_id;
+        }catch(e){toast(e.message);}};
+      }
+    }
+    for(const m of s.missing || [])add(panel,'p','需补齐：'+m.reason);
+    for(const i of s.issues || [])add(panel,'p',`${i.id} · ${i.unit_id}：${i.problem}；关闭条件：${i.closure}`);
+  }
+  if(directions.comparison){add(panel,'h2','比较方法与选择研究方案');panel.append(AppDisplay.markdown(directions.comparison));}
+  for(const c of directions.candidates || []) {
+    const d=add(panel,'details');add(d,'summary',`方案 ${c.id}：${c.question}（待查重、待验证）`);
+    const labels={baseline:'已有基线',change:'要改变的一步',rationale:'为什么尝试',method:'数学/算法路线',validation:'最小验证',success:'成功标准',failure_plan:'失败后怎么办',prerequisites:'知识与工具准备',first_week:'第一周任务'};
+    for(const [k,label] of Object.entries(labels)){add(d,'h4',label);d.append(AppDisplay.markdown(c[k]));}
+  }
+  if(v.request.mode==='project'&&v.status==='completed'&&(directions.candidates||[]).length) {
+    const coach=add(panel,'button','请 Agent 指导下一步写作（先审批）');coach.onclick=async()=>{try{
+      const core=Object.values(studies).find(s=>(s.units||[]).length);
+      if(!core)return;
+      if(!confirm('将已保存的项目、选定方案和基础设定交给 Agent。仅生成待审批调用，不立即运行。'))return;
+      const mode=v.stage?.execution_mode || 'strict';
+      const result=await api('POST',`/api/papers/${v.task_id}/questions`,{paper_id:core.paper_id,unit_id:core.units.find(u=>u.kind==='result')?.id || core.units[0].id,
+        question:'我是第一次写论文。请根据已保存的项目和选定研究方案，解释当前应该写哪一部分、需要什么材料、如何组织论证，并提供可修改的该部分草稿。只使用真实已有结果，不能把计划当成果。',
+        client_request_id:crypto.randomUUID(),execution_mode:mode,supervised_consent:mode==='supervised'});
+      location.href='/chat#'+result.conversation_id;
+    }catch(e){toast(e.message);}};
+    const edit=add(panel,'button','选择方案并记录论文进度');edit.onclick=async()=>{try{
+      const project=await api('GET',`/api/papers/${v.task_id}/project`);
+      const form=add(panel,'div');form.dataset.projectEditor='true';edit.disabled=true;
+      add(form,'p','保存为新版本，不调用模型。只有实际完成的证明或实验才填入结果。');
+      const select=add(form,'select');for(const c of directions.candidates){const o=add(select,'option',c.id+'：'+c.question);o.value=c.id;}
+      select.value=project.selected_candidate || directions.candidates[0].id;
+      const fields={contribution:'研究问题与贡献候选',proof_notes:'证明与方法笔记',implementation:'实现计划',experiments:'实验/反例与验证计划',results:'实际结果与图表记录',draft:'论文草稿',venue:'投稿准备',revision:'审稿意见与返修'};
+      const inputs={};for(const [key,label] of Object.entries(fields)){add(form,'label',label);inputs[key]=add(form,'textarea');inputs[key].value=project.notes[key]||'';}
+      const save=add(form,'button','保存项目新版本');save.onclick=async()=>{try{
+        const saved=await api('PUT',`/api/papers/${v.task_id}/project`,{expected_version:project.version,selected_candidate:select.value,
+          notes:Object.fromEntries(Object.keys(fields).map(k=>[k,inputs[k].value]))});
+        form.remove();edit.disabled=false;box.dataset.sig='';toast('项目版本 '+saved.version+' 已保存，可下载 paper-project.md');await refresh(true);
+      }catch(e){toast(e.message);}};
+      add(form,'button','取消').onclick=()=>{form.remove();edit.disabled=false;};
+    }catch(e){toast(e.message);}};
+  }
+  const audit=add(panel,'details');add(audit,'summary','质量维度与各步骤用量');
+  add(audit,'pre',JSON.stringify({quality:v.outcome.quality_dimensions,usage:v.usage_by_step},null,2));
 }
 
 function renderSteps(v) {

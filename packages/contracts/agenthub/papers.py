@@ -54,6 +54,10 @@ class ResearchRequest:
     #: Candidates fetched per search query (bounded; arXiv returns at most this many).
     candidates_per_query: int = 15
     sections: int = 4
+    # Legacy requests keep their exact hash and workflow. New UI explicitly opts in.
+    mode: str = "review"
+    core_papers: int = 1
+    repair_rounds: int = 1
 
     def __post_init__(self) -> None:
         topic = " ".join((self.topic or "").split())
@@ -80,10 +84,19 @@ class ResearchRequest:
             raise ValueError("candidates_per_query must be 5..50")
         if type(self.sections) is not int or not 2 <= self.sections <= 6:
             raise ValueError("sections must be 2..6")
+        if self.mode not in ("review", "study", "proposal", "project"):
+            raise ValueError("mode must be review, study, proposal or project")
+        if type(self.core_papers) is not int or not 1 <= self.core_papers <= min(3, self.target_papers):
+            raise ValueError("core_papers must be 1..min(3, target_papers)")
+        if type(self.repair_rounds) is not int or not 0 <= self.repair_rounds <= 2:
+            raise ValueError("repair_rounds must be 0..2")
 
     def as_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["sources"] = list(self.sources)
+        if self.mode == "review" and self.core_papers == 1 and self.repair_rounds == 1:
+            for name in ("mode", "core_papers", "repair_rounds"):
+                out.pop(name)
         return out
 
     def request_hash(self) -> str:
@@ -396,6 +409,16 @@ QUALITY_STATUSES = (QUALITY_PENDING, QUALITY_PASSED, QUALITY_FAILED, QUALITY_UNA
 
 
 def estimate_calls(request: ResearchRequest, *, review: bool, revisions: int = 1, retry_margin: int = 3) -> dict:
+    if request.mode != "review":
+        n, rounds = request.core_papers, request.repair_rounds
+        parts = {"plan": 1, "screen": 3, "extract_related": request.target_papers - n,
+                 "study": n, "review": n if review else 0,
+                 "targeted_read_or_repair": n * rounds,
+                 "recheck": n * rounds if review else 0,
+                 "directions": 0 if request.mode == "study" else 1}
+        expected = sum(parts.values()) - parts["targeted_read_or_repair"] - parts["recheck"]
+        return {"parts": parts, "expected": expected, "worst_case": sum(parts.values()) + retry_margin,
+                "retry_margin": retry_margin}
     queries = 3
     candidates = min(queries * request.candidates_per_query, 60)
     screen = -(-candidates // 20)

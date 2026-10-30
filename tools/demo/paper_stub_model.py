@@ -44,6 +44,9 @@ def respond(prompt: str) -> str:
     template, data = m.group(1), _data(prompt)
     repair = "Repair attempt" in prompt
     topic = data.get("topic", "")
+    if template.startswith(("research.study", "research.directions")):
+        from tools.demo.guidance_stub import respond as guidance_response
+        return json.dumps(guidance_response(template,data),ensure_ascii=False)
     if template == "research.plan.v1":
         if "SIM_BAD_JSON" in topic and not repair:
             return "I think the plan is: search for papers."  # not JSON: triggers one repair call

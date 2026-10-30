@@ -285,6 +285,18 @@ class ArtifactRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class ProjectRevisionRow(Base):
+    __tablename__ = "paper_project_revisions"
+    __table_args__ = (UniqueConstraint("task_id", "version"),)
+    id = Column(String, primary_key=True)
+    task_id = Column(ForeignKey("paper_tasks.id"), index=True, nullable=False)
+    version = Column(Integer, nullable=False)
+    selected_candidate = Column(String, nullable=False, default="")
+    notes = Column(JSON, nullable=False, default=dict)
+    actor = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 def ensure_schema(session) -> None:
     if session.get(PaperSchemaRow, PAPER_SCHEMA_VERSION) is None:
         session.add(PaperSchemaRow(version=PAPER_SCHEMA_VERSION))

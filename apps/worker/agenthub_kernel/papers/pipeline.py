@@ -387,8 +387,17 @@ def _model_of(ctx: Ctx, agent: str) -> Optional[str]:
 
 
 def phase_read(ctx: Ctx) -> Optional[str]:
+    if ctx.request.mode != "review":
+        from agenthub_kernel.papers.guidance import phase_read as study_read
+        return study_read(ctx)
+    return phase_related_read(ctx)
+
+
+def phase_related_read(ctx: Ctx) -> Optional[str]:
     plan = ctx.task.outcome.get("plan") or {}
     for p in _included(ctx):
+        if p.id in (ctx.task.outcome or {}).get("studies", {}):
+            continue
         if p.read_status in ("done", "failed", "skipped"):
             continue
         doc = ctx.session.get(PaperDocumentRow, p.document_id) if p.document_id else None
@@ -424,9 +433,11 @@ def phase_read(ctx: Ctx) -> Optional[str]:
         p.read_status, p.read_depth = "done", level
     count = len(ctx.session.scalars(select(EvidenceRow.id).where(EvidenceRow.task_id == ctx.task.id)).all())
     if count == 0:
+        if ctx.request.mode != "review":
+            return "directions"
         ctx.insufficient("no_evidence", "所有纳入论文都没有得到可核对的证据")
         return "export"
-    return "synthesize"
+    return "directions" if ctx.request.mode != "review" else "synthesize"
 
 
 def _save_evidence(ctx: Ctx, paper: PaperRow, doc: Optional[PaperDocumentRow], level: str, result: dict,
@@ -603,10 +614,12 @@ def phase_export(ctx: Ctx) -> Optional[str]:
     return "done"
 
 
+from agenthub_kernel.papers.guidance import phase_directions
+
 PHASE_HANDLERS = {"plan": phase_plan, "search": phase_search, "screen": phase_screen, "fetch": phase_fetch,
                   "fulltext_gate": phase_fulltext_gate, "read": phase_read, "synthesize": phase_synthesize,
                   "outline": phase_outline, "write": phase_write, "review": phase_review, "abstract": phase_abstract,
-                  "export": phase_export}
+                  "export": phase_export, "related_read": phase_related_read, "directions": phase_directions}
 
 
 def advance(ap: Any, session: Session, stage: StageRunRow, to_start: list) -> list:
