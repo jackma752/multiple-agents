@@ -12,9 +12,13 @@ Agent Hub 连接本机 Codex、Claude Code，以及 DeepSeek API。它保存调�
 
 [从源码运行](#从源码运行) · [安装与首次配置](#安装与首次配置) · [功能与操作顺序](#功能与操作顺序) · [通道能力](#通道能力) · [数据与卸载](#数据与卸载) · [常见问题](#常见问题)
 
+**Windows 下载：[安装包与免安装版](https://github.com/jackma752/multiple-agents/releases/latest)**
+
+普通用户下载 `windows-x64-setup.exe`，双击安装；免安装用户下载 `windows-x64-portable.zip`，完整解压后运行 `AgentHub.exe`。无需安装 Python。升级前先在旧程序中选择“退出 Hub”，再运行安装器。发行页同时提供 `SHA256SUMS.txt` 校验文件。
+
 ## 从源码运行
 
-GitHub 当前提供源码，安装包尚未随本次上传发布到 Releases。Windows 10/11 x64 用户先安装 Git、Python 3.11 或更高版本，再在 PowerShell 中运行：
+需要开发或修改代码时，Windows 10/11 x64 用户先安装 Git、Python 3.11 或更高版本，再在 PowerShell 中运行：
 
 ```powershell
 git clone https://github.com/jackma752/multiple-agents.git

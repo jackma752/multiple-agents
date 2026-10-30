@@ -45,7 +45,7 @@ Authorized-by: <授权来源：谁、何时、在哪里同意的>
 
 当前整合：2026-10-30 用户已明确要求把所有开发流程合并到本地 `main`，本轮按该授权整合；早期 main 停在 P2 的记录已过期。最新情况见 [完整整合记录](development-integration-2026-10-30.md)。此次授权不包含推送、删除历史或配置远程仓库。
 
-后续发布授权：同日用户另行要求上传 GitHub，并明确选择公开仓库 `jackma752/multiple-agents`。该授权允许创建该仓库、配置对应远程和上传 main；不扩展到删除历史、上传凭据或自动发布安装包。公开范围与检查见 [GitHub 发布记录](github-publication.md)。
+后续发布授权：同日用户另行要求上传 GitHub，并明确选择公开仓库 `jackma752/multiple-agents`，随后补充要求上传供他人使用的安装包。该授权允许创建该仓库、配置对应远程、上传 main，并构建和发布可下载的 Windows 安装包及免安装版；不扩展到删除历史或上传凭据。公开范围与检查见 [GitHub 发布记录](github-publication.md)。
 
 ## 6. 本机环境
 
