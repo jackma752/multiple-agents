@@ -19,6 +19,10 @@
 
 当前树约 439 个跟踪文件，最大约 1.83 MB，无 GitHub 单文件大小阻碍。图标及原图属于此前用户指定的项目资源；本记录不额外宣称它们已取得某种开源授权。
 
-README 的安装包入口明确与源码运行方式区分。公开源码保留测试，不能因为安装包排除测试就删除源码测试。首次推送后应核对仓库可见性、默认分支以及远程 main 与本地 main 提交一致。
+README 的安装包入口明确与源码运行方式区分。公开源码保留测试，不能因为安装包排除测试就删除源码测试。首次推送已核对仓库为 public、默认分支 main，远程 main 与当时本地源码提交 `362ba93` 一致。
 
 本轮文档变更验证：`python -m pytest tests/test_hygiene.py -q -o addopts='' --tb=short` 输出 `12 passed in 1.06s`；源码启动器 `python -m agenthub_rt.launcher --help` 通过，没有启动服务或模型。未重跑完整测试集，也未追加真实模型调用。
+
+## 安装包补充（2026-10-31）
+
+用户补充要求提供安装包后，构建 0.7.2，以已整合源码 `362ba93` 为基线。实际冻结程序启动/认证/资源/退出与包内容核验通过，详见 [0.7.2 发行记录](p6-release-0.7.2.md)。本次只上传 setup、便携 ZIP 和 SHA256SUMS 三个附件；GitHub 返回的三个附件大小与 SHA-256 全部匹配，已公开发布 [v0.7.2](https://github.com/jackma752/multiple-agents/releases/tag/v0.7.2)，`draft=false`。

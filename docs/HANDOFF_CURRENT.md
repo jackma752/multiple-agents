@@ -1,4 +1,12 @@
-# 当前交接：所有开发流程整合 main（2026-10-30）
+# 当前交接：GitHub 公开发行 0.7.2（2026-10-31）
+
+- 用户指定公开仓库 `jackma752/multiple-agents`，并补充要求上传可供他人使用的安装包。源码仓库和 README 入口为 [multiple-agents](https://github.com/jackma752/multiple-agents)，下载入口为 [0.7.2 Release](https://github.com/jackma752/multiple-agents/releases/tag/v0.7.2)。
+- 0.7.2 从整合后的 `362ba93` 构建，包含此前仅在 main 的 Codex 写入预检修复；本地产物在 `dist/p6-release-0.7.2`。安装包与 ZIP 不纳入源码，作为发行附件发布，见 [发行与验证记录](p6-release-0.7.2.md)。
+- 独立包内容/哈希检查及最小冻结程序离线检查通过，实例正常退出，真实模型调用 0。没有覆盖当前安装或操作用户研究。
+
+---
+
+# 之前交接：所有开发流程整合 main（2026-10-30）
 
 - 用户明确要求把所有开发流程合并 main。本轮从 `d6beb98` 建立独立整合分支，核对七条原未合并分支，合入缺失的 Windows 写入预检修复、P3 证据口径纠偏和历史整理提案，并收录其余已等价整合/被替代分支的原提交历史。细节见 [完整整合记录](development-integration-2026-10-30.md)。
 - 写入预检相关回归 **34 passed in 1.31s**；运行时代码只改 `codex_home_write_check`，保留 DeepSeek 配置及当前 P2–P6 实现。没有新增模型、网络或真实账号检查，没有重复长时间全量测试。
