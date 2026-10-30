@@ -700,11 +700,14 @@ function renderGuidance(v) {
     for(const u of s.units || []) {
       const detail=add(panel,'details');detail.open=['problem','intuition'].includes(u.kind);
       add(detail,'summary',`${u.title} · ${u.id}`);
-      let text=u.text+(u.latex?'\n\n\\[\n'+u.latex+'\n\\]':'');
-      if(u.reason)text+='\n\n这一步的理由：'+u.reason;
-      if(u.depends_on.length)text+='\n\n依赖：'+u.depends_on.join(', ');
+      let text=u.display_markdown;
+      if(text===undefined) {
+        text=u.text+(u.latex?'\n\n\\[\n'+u.latex+'\n\\]':'');
+        if(u.reason)text+='\n\n这一步的理由：'+u.reason;
+        if(u.depends_on.length)text+='\n\n依赖：'+u.depends_on.join(', ');
+      }
       detail.append(AppDisplay.markdown(text));
-      for(const def of u.definitions || [])add(detail,'p',`${def.symbol}：${def.meaning}；范围：${def.domain}`);
+      if(u.display_markdown===undefined)for(const def of u.definitions || [])add(detail,'p',`${def.symbol}：${def.meaning}；范围：${def.domain}`);
       add(detail,'p',u.origin==='source'?'原文内容':'本报告补充讲解/推导，仍需核对');
       for(const r of u.sources || [])add(detail,'blockquote',r.chunk_id+'：'+r.quote);
       if(v.status==='completed') {

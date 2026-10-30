@@ -96,6 +96,13 @@ def test_guided_flow_patches_one_unit_reuses_results_and_saves_project(hub):
     assert hub.model_calls()==before
     md=hub.api("GET",f"/api/papers/{tid}/artifacts/study.md").text
     assert "\\frac{q^n}" in md and "补充讲解" in md
+    assert "\n$$\n" in md and "\n\\[\n" not in md
+    assert all("display_markdown" in unit for unit in s["units"])
+    # Presentation fields must not enter persisted model data or subsequent prompts.
+    from agenthub_kernel.papers.db import ResearchTaskRow
+    with hub.client.app.state.db.session() as db:
+        stored=next(iter(db.get(ResearchTaskRow,tid).outcome["studies"].values()))
+        assert all("display_markdown" not in unit for unit in stored["units"])
     assert "下一步查证唯一性" in hub.api("GET",f"/api/papers/{tid}/artifacts/paper-project.md").text
     hub.restart()
     assert hub.api("GET",f"/api/papers/{tid}/project").json()["version"]==2

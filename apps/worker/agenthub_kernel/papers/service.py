@@ -363,15 +363,19 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         stage_info = {k: stage_info[k] for k in ("stage_id", "status", "summary", "calls_used", "rules_hash",
                                                  "execution_mode")} | {"max_calls": stage.rules.get("max_calls")}
     docs = {d.id: d for d in session.scalars(select(PaperDocumentRow).where(PaperDocumentRow.task_id == task.id))}
+    outcome = {k:v for k,v in (task.outcome or {}).items() if k in (
+        "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
+        "sample", "missing_citations", "export_copy", "reexported_at", "studies", "directions", "quality_dimensions")}
+    if outcome.get("studies"):
+        from agenthub_kernel.papers.guidance_export import display_studies
+        outcome["studies"] = display_studies(outcome["studies"])
     return {
         "task_id": task.id, "conversation_id": task.conversation_id, "root_task_id": task.root_task_id,
         "request": task.request, "roles": task.roles, "resource_rules": task.resource_rules,
         "resource_rules_hash": task.resource_rules_hash, "status": task_status(session, task, stage),
         "phase": task.phase, "phases": (list(PHASES) if task.request.get("mode", "review")=="review" else ["plan","search","screen","fetch","fulltext_gate","read","related_read","directions","export","done"]), "execution_status": "completed" if task.phase == "done" else
         task_status(session, task, stage), "quality_status": task.quality_status,
-        "outcome": {k: v for k, v in (task.outcome or {}).items() if k in (
-            "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
-            "sample", "missing_citations", "export_copy", "reexported_at", "studies", "directions", "quality_dimensions")},
+        "outcome": outcome,
         "stage": stage_info, "server_time": _iso(now), "usage": usage,
         "usage_by_step": {name: usage_of(session, [i for st in steps if st.name==name for i in (st.invocation_ids or [])])
                           for name in sorted({st.name for st in steps if st.kind=="model"})},

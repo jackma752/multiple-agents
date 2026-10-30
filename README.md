@@ -14,7 +14,7 @@ Agent Hub 连接本机 Codex、Claude Code，以及 DeepSeek API。它保存调�
 
 ## 安装与首次配置
 
-1. 运行 `AgentHub-0.7.0-windows-x64-setup.exe`，按向导安装到当前用户目录。目标系统为 Windows 10/11 x64。
+1. 运行 `AgentHub-0.7.1-windows-x64-setup.exe`，按向导安装到当前用户目录。目标系统为 Windows 10/11 x64。
 2. 从开始菜单打开 **Agent Hub**。浏览器自动打开本机页面并完成一次配对，无需复制开发令牌。
 3. 首次进入 **本机设置**，选择实际的项目文件夹，默认使用只读权限。需要 Codex 修改文件时，可明确选择允许写入。
 4. 点击 **扫描常见安装位置**，选择已安装的 CLI；没有发现时，手动填写原生 `.exe` 完整路径和该 Agent 已登录的配置目录。只勾选你要使用的 Agent。
@@ -28,6 +28,8 @@ Agent Hub 连接本机 Codex、Claude Code，以及 DeepSeek API。它保存调�
 尚未安装的 CLI 可按官方说明安装并登录：[Codex CLI](https://developers.openai.com/codex/cli/)、[Claude Code](https://code.claude.com/docs/en/setup)。API 密钥由 [DeepSeek 平台](https://platform.deepseek.com/)提供。配置页也提供这些入口。
 
 便携 ZIP 可解压整个 `AgentHub` 文件夹后运行 `AgentHub.exe`；不能单独复制 exe。便携版同样把账号配置和数据保存在当前用户目录，不能把这些用户数据随程序发给别人。
+
+导出的数学讲解使用 `$...$` 行内公式和 `$$...$$` 独立公式，请在支持数学显示的 Markdown 阅读器中打开。0.7.0 的旧报告可在升级后重新导出，无需重跑研究；重新导出不调用模型。
 
 ## 功能与操作顺序
 

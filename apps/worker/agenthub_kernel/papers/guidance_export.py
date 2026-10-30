@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from agenthub.papers import reference_text
 from agenthub_kernel.papers.db import ArtifactRow, PaperRow, PaperStepRow, ProjectRevisionRow
+from agenthub_kernel.papers.math_markdown import display, prose, symbol
 from agenthub_kernel.service import new_id
 
 DEPTH = {"material_missing":"缺少核心全文", "partial":"片段已读，推导有缺口", "method_read":"方法已整理，推导未核查",
@@ -18,17 +19,31 @@ def quality(studies, reviewer):
     return state, dimensions
 
 
+def unit_markdown(unit):
+    """Presentation only: raw units and quoted evidence remain unchanged."""
+    md=[prose(unit["text"]), ""]
+    for definition in unit.get("definitions", []):
+        md += [f"- {symbol(definition['symbol'])}：{prose(definition['meaning'])}；范围：{prose(definition['domain'])}"]
+    if unit.get("definitions"):md += [""]
+    if unit.get("latex"):md += [display(unit["latex"]), ""]
+    if unit.get("reason"):md += ["这一步的理由："+prose(unit["reason"]), ""]
+    if unit.get("depends_on"):md += ["依赖："+", ".join(unit["depends_on"]), ""]
+    return "\n".join(md)
+
+
+def display_studies(studies):
+    """Add display Markdown to response copies; never alter saved study data."""
+    return {key:{**study,"units":[{**unit,"display_markdown":unit_markdown(unit)}
+                                 for unit in study.get("units",[])]}
+            for key,study in studies.items()}
+
+
 def render_studies(studies):
     md=["# 论文理解与数学推导", "", "> 来源核对与模型审阅不等于数学证明已获形式化验证。", ""]
     for s in studies.values():
         md += [f"## {s['title']}", "", f"阅读状态：{DEPTH[s['depth']]}", ""]
         for u in s.get("units",[]):
-            md += [f"### {u['title']}（{u['id']}）", "", u["text"], ""]
-            for definition in u.get("definitions",[]):
-                md += [f"- {definition['symbol']}：{definition['meaning']}；范围：{definition['domain']}"]
-            if u.get("latex"):md += ["\\[",u["latex"],"\\]", ""]
-            if u.get("reason"):md += ["这一步的理由："+u["reason"], ""]
-            if u.get("depends_on"):md += ["依赖："+", ".join(u["depends_on"]), ""]
+            md += [f"### {u['title']}（{u['id']}）", "", unit_markdown(u)]
             md += ["来源：原文内容" if u["origin"]=="source" else "来源：本报告补充讲解/推导，仍需核对", ""]
         if s.get("missing"):
             md += ["### 继续理解前需补齐", ""]+["- "+m["reason"] for m in s["missing"]]+[""]
@@ -45,14 +60,14 @@ def render_studies(studies):
 
 
 def render_directions(directions):
-    md=["# 方法比较与可尝试的研究方案", "", directions.get("comparison","尚未形成方案"), "",
+    md=["# 方法比较与可尝试的研究方案", "", prose(directions.get("comparison","尚未形成方案")), "",
         "> 以下均为待查重、待证明或待实验的候选，不能直接写成论文成果。", ""]
     labels={"question":"研究问题","baseline":"已有基线","change":"要改变的一步","rationale":"为什么值得尝试",
             "method":"公式、证明路线或算法","validation":"最小验证","success":"成功标准","failure_plan":"失败后怎么办",
             "prerequisites":"知识与工具准备","first_week":"第一周任务"}
     for c in directions.get("candidates",[]):
         md += [f"## 方案 {c['id']}：{c['question']}", ""]
-        for key,label in labels.items():md += ["### "+label, "", c[key], ""]
+        for key,label in labels.items():md += ["### "+label, "", prose(c[key]), ""]
         md += ["依据论文："+", ".join(c["source_papers"]), ""]
     return "\n".join(md)
 
@@ -74,7 +89,7 @@ def project_markdown(project, directions):
         "经验研究：问题 → 相关工作 → 方法 → 实验 → 讨论。", "",
         "先完成可核对的最小验证，再把实际结果写进草稿。期刊要求应在选定目标后查官方说明。", ""]
     if chosen:md += ["## 当前第一步", "", chosen["first_week"], "", "## 验证路线", "", chosen["validation"], ""]
-    for key,label in zip(PROJECT_FIELDS,PROJECT_LABELS):md += ["## "+label, "", project["notes"].get(key) or "待完成（不会自动伪造证明、实验或投稿记录）", ""]
+    for key,label in zip(PROJECT_FIELDS,PROJECT_LABELS):md += ["## "+label, "", prose(project["notes"].get(key) or "待完成（不会自动伪造证明、实验或投稿记录）"), ""]
     return "\n".join(md)
 
 

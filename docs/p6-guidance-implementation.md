@@ -1,5 +1,7 @@
 # 0.7.0 论文理解与研究指导：实现与边界
 
+后续显示修复：0.7.1 统一网页和导出的公式界定符、符号表与裸 TeX 排版，既有结果不重新调用模型。见 [公式导出修复记录](issue-guidance-math-export.md)。
+
 2026-10-30，依据用户批准的 [改进需求](p6-research-guidance.md) 实施。基线是 `4784255`，它包含 0.6.5 安装包清单中的源码 `1c68d8571d146ba8599bdfcd0b98f75460ebca2c`，以及此前 0.5.2–0.5.5 的整合；没有从旧 main 重做。独立工作树 `.worktrees/p6-research-guidance` / `feat/p6-research-guidance`。
 
 ## 已实现

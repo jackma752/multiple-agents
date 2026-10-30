@@ -3,6 +3,12 @@ const fs=require('fs'),assert=require('assert/strict');
 const {chromium}=require('playwright');
 const root=process.cwd(),dir=root+'/apps/api/agenthub_rt/static';
 const fixture=JSON.parse(fs.readFileSync(root+'/var/guidance-check/browser-fixture.json','utf8'));
+// Authored presentation regression: the API supplies formatted response copies.
+Object.values(fixture.outcome.studies)[0].units.push({
+ id:'symbols-display',kind:'symbols',title:'公式符号显示',text:'raw source stays unchanged',latex:'',reason:'',depends_on:[],origin:'reconstruction',sources:[],
+ definitions:[{symbol:'X_t',meaning:'隐状态',domain:'\\mathbb{R}^d'}],
+ display_markdown:'- $X_t$：隐状态；范围：$\\mathbb{R}^d$\n\n$$\n\\mathrm{ESS}(W)=\\frac{1}{\\sum_{n=1}^{N}(W^n)^2}\n$$'
+});
 const mutations=[],errors=[],requests=[];
 let project={version:0,selected_candidate:'',notes:{}};
 (async()=>{
@@ -34,7 +40,9 @@ let project={version:0,selected_candidate:'',notes:{}};
   await page.evaluate(v=>{S.current=v.task_id;S.view=v;render(true);},fixture);
   await page.getByText('先读懂，再看数学推导',{exact:true}).waitFor();
   await page.getByText('相邻步距离 · step1',{exact:true}).click();
-  assert.equal(await page.locator('#guidanceBox .katex').count(),2);
+  assert.equal(await page.locator('#guidanceBox .katex').count(),5);
+  assert.equal(await page.locator('#guidanceBox .math-fallback').count(),0);
+  await page.getByText('公式符号显示 · symbols-display',{exact:true}).click();
   assert(await page.getByText('推导经模型审阅（非形式化证明）',{exact:true}).count());
   assert(await page.getByText('第一周任务',{exact:true}).count());
   await page.getByText('选择方案并记录论文进度',{exact:true}).click();
