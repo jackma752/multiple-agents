@@ -21,12 +21,12 @@ def quality(studies, reviewer):
 
 def unit_markdown(unit):
     """Presentation only: raw units and quoted evidence remain unchanged."""
-    md=[prose(unit["text"]), ""]
+    md=[prose(unit["text"],preserve_quotes=False), ""]
     for definition in unit.get("definitions", []):
-        md += [f"- {symbol(definition['symbol'])}：{prose(definition['meaning'])}；范围：{prose(definition['domain'])}"]
+        md += [f"- {symbol(definition['symbol'])}：{prose(definition['meaning'],preserve_quotes=False)}；范围：{prose(definition['domain'],preserve_quotes=False)}"]
     if unit.get("definitions"):md += [""]
     if unit.get("latex"):md += [display(unit["latex"]), ""]
-    if unit.get("reason"):md += ["这一步的理由："+prose(unit["reason"]), ""]
+    if unit.get("reason"):md += ["这一步的理由："+prose(unit["reason"],preserve_quotes=False), ""]
     if unit.get("depends_on"):md += ["依赖："+", ".join(unit["depends_on"]), ""]
     return "\n".join(md)
 
@@ -46,10 +46,10 @@ def render_studies(studies):
             md += [f"### {u['title']}（{u['id']}）", "", unit_markdown(u)]
             md += ["来源：原文内容" if u["origin"]=="source" else "来源：本报告补充讲解/推导，仍需核对", ""]
         if s.get("missing"):
-            md += ["### 继续理解前需补齐", ""]+["- "+m["reason"] for m in s["missing"]]+[""]
+            md += ["### 继续理解前需补齐", ""]+["- "+prose(m["reason"],preserve_quotes=False) for m in s["missing"]]+[""]
         if s.get("issues"):
             md += ["### 审阅的具体问题与关闭条件", ""]
-            md += [f"- {i['id']} · {i['unit_id']} · {i['severity']}：{i['problem']}；关闭条件：{i['closure']}" for i in s["issues"]]+[""]
+            md += [f"- {i['id']} · {i['unit_id']} · {i['severity']}：{prose(i['problem'],preserve_quotes=False)}；关闭条件：{prose(i['closure'],preserve_quotes=False)}" for i in s["issues"]]+[""]
         md += ["<details><summary>查看来源位置与阅读覆盖</summary>", ""]
         for u in s.get("units",[]):
             for ref in u.get("sources",[]):
@@ -60,14 +60,14 @@ def render_studies(studies):
 
 
 def render_directions(directions):
-    md=["# 方法比较与可尝试的研究方案", "", prose(directions.get("comparison","尚未形成方案")), "",
+    md=["# 方法比较与可尝试的研究方案", "", prose(directions.get("comparison","尚未形成方案"),preserve_quotes=False), "",
         "> 以下均为待查重、待证明或待实验的候选，不能直接写成论文成果。", ""]
     labels={"question":"研究问题","baseline":"已有基线","change":"要改变的一步","rationale":"为什么值得尝试",
             "method":"公式、证明路线或算法","validation":"最小验证","success":"成功标准","failure_plan":"失败后怎么办",
             "prerequisites":"知识与工具准备","first_week":"第一周任务"}
     for c in directions.get("candidates",[]):
         md += [f"## 方案 {c['id']}：{c['question']}", ""]
-        for key,label in labels.items():md += ["### "+label, "", prose(c[key]), ""]
+        for key,label in labels.items():md += ["### "+label, "", prose(c[key],preserve_quotes=False), ""]
         md += ["依据论文："+", ".join(c["source_papers"]), ""]
     return "\n".join(md)
 

@@ -1,4 +1,5 @@
 """Markdown compatibility examples; no model calls or mathematical rewriting."""
+import re
 import pytest
 
 from agenthub_kernel.papers.math_markdown import display, prose, symbol
@@ -24,6 +25,14 @@ from agenthub_kernel.papers.math_markdown import display, prose, symbol
     (r"取\tilde V_t与滤过\mathcal F_t。", r"取$\tilde V_t$与滤过$\mathcal F_t$。"),
     (r"\hat x_{t-1},\bar \mu_t,\mathbb R^d", r"$\hat x_{t-1}$,$\bar \mu_t$,$\mathbb R^d$"),
     (r"取\tilde\mu_t，\mathbf{x}_t和\frac{1}2。", r"取$\tilde\mu_t$，$\mathbf{x}_t$和$\frac{1}2$。"),
+    (r"维度d\in\{2,4,8,16,32,64\}，长度L\in\{2,4,8,16\}。", r"维度$d\in\{2,4,8,16,32,64\}$，长度$L\in\{2,4,8,16\}$。"),
+    (r"取t\in[\![T]\!]，进行更新。", r"取$t\in[\![T]\!]$，进行更新。"),
+    (r"选择d\in\left\{2,4,8,16\right\}。", r"选择$d\in\left\{2,4,8,16\right\}$。"),
+    (r"集合\{\{1,2\},\{4,8\}\}与\left(\left\{x_t\right\}\right)。", r"集合$\{\{1,2\},\{4,8\}\}$与$\left(\left\{x_t\right\}\right)$。"),
+    (r"二次型x^\top(B^{-1}-2A_t)x需有限。", r"二次型$x^\top(B^{-1}-2A_t)x$需有限。"),
+    (r"条件B^{-1}-2A_t\succ0与\Sigma^{-1}-2A_1\succ0。", r"条件$B^{-1}-2A_t\succ0$与$\Sigma^{-1}-2A_1\succ0$。"),
+    (r",\dots,", r",$\dots$,"),
+    (r"计算[g_s/\psi_s\cdot f_{s+1}(\psi_{s+1})](X_s)。", r"计算$[g_s/\psi_s\cdot f_{s+1}(\psi_{s+1})](X_s)$。"),
 ])
 def test_prose_formats_only_unmarked_mathematics(source, expected):
     assert prose(source) == expected
@@ -50,6 +59,9 @@ def test_prose_formats_only_unmarked_mathematics(source, expected):
     r"未知命令 \custom{x_t} 不作数学修复。",
     r"缺参数：\tilde、\hat、\mathcal、\frac，不猜补。",
     r"Do not swallow \tilde velocity or \mathcal Filter into math.",
+    r"代码`d\in\{2,4\}`与原文“L\in\{2,4,8\}”保持原样。",
+    r"[变量 x_t](X_s) [state x_t](X_s) [x_t](https://example.org/X_s)",
+    r"[x_t](relative/path) [x_t](./X_s) [x_t](paper.pdf) [x_t](#anchor)",
     'Quoted "x_t and \\mu" and \'x_t\'.',
     "> 原文 x_t 与 \\mu\n> 保留 x_{t-1}\n",
 ])
@@ -95,3 +107,35 @@ def test_equation_field_uses_exactly_one_obsidian_compatible_block(source):
 
 def test_empty_fields_do_not_add_empty_formula_blocks():
     assert prose("") == symbol("") == display("") == ""
+
+
+@pytest.mark.parametrize("source", [
+    r"维度d\in\{2,4,8,16,32,64\}，长度L\in\{2,4,8,16\}。",
+    r"对t\in[\![T]\!]有\tilde V_t和\mathcal F_t。",
+    r"在\mathbb{R}^d\to(0,\infty)中，令d\in\left\{2,4,8\right\}。",
+    r"二次型x^\top(B^{-1}-2A_t)x在B^{-1}-2A_t\succ0且\Sigma^{-1}-2A_1\succ0时有界，维度2,\dots,64。",
+    r"算子[g_s/\psi_s\cdot f_{s+1}(\psi_{s+1})](X_s)应有界。",
+])
+def test_known_generated_expressions_leave_no_unmarked_latex_outside_math(source):
+    rendered = prose(source)
+    outside = re.sub(r"\$\$[\s\S]*?\$\$|\$[^$\n]+\$", "", rendered)
+    assert re.search(r"\\(?:[A-Za-z]+|[{}!])", outside) is None
+    # Coverage is checked separately from successful rendering. No formula
+    # character may change while adding the missing Markdown delimiters.
+    assert rendered.replace("$", "") == source
+
+
+def test_generated_prose_can_format_math_inside_quotes_without_changing_them():
+    source = r'因此“从 f^\psi_t 抽样”并观察 "x_t 与 \mu"。'
+    expected = r'因此“从 $f^\psi_t$ 抽样”并观察 "$x_t$ 与 $\mu$"。'
+    assert prose(source) == source
+    assert prose(source, preserve_quotes=False) == expected
+    assert prose(expected, preserve_quotes=False) == expected
+    assert expected.replace("$", "") == source
+
+
+def test_quote_opt_out_keeps_code_blockquotes_links_and_existing_math_opaque():
+    source = ('> 原文“x_t与\\mu”\n\n'
+              '`“x_t与\\mu”` [“x_t”](https://example.org/x_t) '
+              r'$x_t + \text{"quote"}$')
+    assert prose(source, preserve_quotes=False) == source

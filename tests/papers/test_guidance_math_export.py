@@ -7,7 +7,7 @@ from agenthub_kernel.papers.guidance_export import display_studies, render_studi
 def test_report_and_web_use_the_same_math_presentation_without_rewriting_sources():
     units=[{
         "id":"symbols", "kind":"symbols", "title":"符号", "origin":"source",
-        "text":r"权重为 W_t^n，初始密度是 \mu。代码 `x_n` 保持原样。",
+        "text":r"权重为 W_t^n，初始密度是 \mu。代码 `x_n` 保持原样。因此“从 f^\psi_t 抽样”有意义。",
         "latex":r"\mathrm{ESS}(W)=\frac{1}{\sum_{n=1}^N(W^n)^2}",
         "reason":r"使用 \mu 的定义。", "depends_on":[],
         "definitions":[{"symbol":r"X_t", "meaning":"隐状态", "domain":r"\mathbb{R}^d"}],
@@ -19,6 +19,7 @@ def test_report_and_web_use_the_same_math_presentation_without_rewriting_sources
     assert "\n$$\n\\mathrm{ESS}" in md and "\n\\[\n" not in md
     assert "$X_t$：隐状态；范围：$\\mathbb{R}^d$" in md
     assert "$W_t^n$" in md and "$\\mu$" in md
+    assert r"从 $f^\psi_t$ 抽样" in md
     assert "`x_n`" in md
     assert r"Source literal x_n and \mu." in md
     presentation=display_studies(studies)

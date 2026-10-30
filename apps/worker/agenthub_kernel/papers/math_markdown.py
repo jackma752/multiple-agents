@@ -21,19 +21,21 @@ dot ddot sum prod int iint oint lim min max argmin argmax sup inf log ln exp
 sin cos tan det diag tr Pr E Var Cov const in notin subset subseteq supset
 supseteq le leq ge geq ne neq approx sim simeq equiv propto to mapsto rightarrow
 leftarrow infty partial nabla ell hbar top bot perp cdot times otimes oplus
-mid vert Vert lvert rvert lVert rVert ldots cdots vdots ddots pm mp
+mid vert Vert lvert rvert lVert rVert dots ldots cdots vdots ddots pm mp
 succ prec succeq preceq iff implies forall exists nexists land lor neg not
 cup cap setminus emptyset
 """.split())
 
 # Non-mathematical Markdown is masked before looking for math. In particular,
 # money is masked before dollar-delimited math, so "$10 and $20" is not math.
+_QUOTES = re.compile(r"“[^”\n]*”|‘[^’\n]*’|(?<!\w)\"[^\"\n]+\"|(?<!\w)'[^'\n]+'(?!\w)")
+_LINK = re.compile(r"!?\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))*\)")
 _OPAQUE = [
     re.compile(r"(?ms)^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}\1[ \t]*(?:\n|$)|\Z)"),
     re.compile(r"(`+)[^\n]*?\1"),
     re.compile(r"(?m)^[ \t]{0,3}>[^\n]*(?:\n[ \t]{0,3}>[^\n]*)*"),
-    re.compile(r"“[^”\n]*”|‘[^’\n]*’|(?<!\w)\"[^\"\n]+\"|(?<!\w)'[^'\n]+'(?!\w)"),
-    re.compile(r"!?\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))*\)"),
+    _QUOTES,
+    _LINK,
     re.compile(r"!?\[[^\]\n]*\]\[[^\]\n]*\]"),
     re.compile(r"(?m)^[ \t]{0,3}\[[^\]\n]+\]:[^\n]*"),
     re.compile(r"<(?:https?://|mailto:)[^>\n]+>"),
@@ -56,6 +58,7 @@ _ARG_COUNTS = {name: 1 for name in """
 mathbb mathcal mathrm mathsf mathit mathbf boldsymbol operatorname text sqrt
 overline underline hat widehat bar tilde widetilde vec dot ddot
 """.split()} | {name: 2 for name in ("frac", "dfrac", "tfrac")}
+_SIZED_DELIMITER = re.compile(r"\\(left|right)\s*(?:\\[{}]|[()[\]|.]|\\(?:langle|rangle|lVert|rVert|lvert|rvert))")
 
 
 def _group_end(text: str, start: int, opening: str = "{", closing: str = "}") -> int | None:
@@ -70,6 +73,52 @@ def _group_end(text: str, start: int, opening: str = "{", closing: str = "}") ->
             if depth == 0:
                 return i + 1
     return None
+
+
+def _delimited_end(text: str, start: int) -> int | None:
+    r"""An escaped set or a paired \left/\right group, keeping every token."""
+    if text.startswith(r"\{", start):
+        depth = 0
+        for match in re.finditer(r"\\[{}]", text[start:]):
+            depth += 1 if match[0] == r"\{" else -1
+            if depth == 0:
+                return start + match.end()
+        return None
+    first = _SIZED_DELIMITER.match(text, start)
+    if first is None or first[1] != "left":
+        return None
+    depth = 0
+    for match in _SIZED_DELIMITER.finditer(text, start):
+        depth += 1 if match[1] == "left" else -1
+        if depth == 0:
+            return match.end()
+    return None
+
+
+def _math_application_end(text: str, start: int) -> int | None:
+    """Distinguish [mathematical expression](X_s) from a Markdown link."""
+    close = _group_end(text, start, "[", "]")
+    if close is None:
+        return None
+    end = _group_end(text, close, "(", ")")
+    if end is None:
+        return None
+    label, target = text[start + 1:close - 1], text[close + 1:end - 1]
+    if not re.search(r"\\[A-Za-z]+|[_^]", label) or not target.strip():
+        return None
+    # A URL/path/anchor, CJK label, ordinary English word or Markdown syntax
+    # makes this an actual link. Only clearly mathematical labels qualify.
+    if re.search(r"[/.:#]", target):
+        return None
+    for value in (label, target):
+        if any(m[1] not in _COMMANDS for m in _COMMAND.finditer(value)):
+            return None
+        bare = _COMMAND.sub("", value)
+        if re.search(r"[^A-Za-z0-9\u0370-\u03ff_{}()[\],+*/=<>|!\-\\ \t]", bare):
+            return None
+        if any(len(word) > 1 for word in re.findall(r"[A-Za-z]+", bare)):
+            return None
+    return end
 
 
 def _command_end(text: str, start: int, *, known: bool = True, depth: int = 0) -> int | None:
@@ -139,6 +188,12 @@ def _scripts_end(text: str, end: int) -> int:
 
 
 def _atom(text: str, start: int) -> tuple[int, bool] | None:
+    application = _math_application_end(text, start)
+    if application is not None:
+        return _scripts_end(text, application), True
+    delimited = _delimited_end(text, start)
+    if delimited is not None:
+        return _scripts_end(text, delimited), True
     command = _command_end(text, start)
     if command is not None:
         return _scripts_end(text, command), True
@@ -148,7 +203,14 @@ def _atom(text: str, start: int) -> tuple[int, bool] | None:
             return None  # an ordinary word, not a one-letter variable
         return end, end > start + 1 or bool(re.fullmatch(r"[\u0370-\u03ff]", text[start]))
     number = re.match(r"\d+(?:\.\d+)?", text[start:])
-    return (start + number.end(), False) if number else None
+    if number is None:
+        return None
+    end = start + number.end()
+    if end < len(text) and _BARE_BASE.match(text, end):
+        factor = _atom(text, end)
+        if factor is not None:
+            return factor[0], True  # 2A_t is implicit multiplication, not a word
+    return end, False
 
 
 def _expression_end(text: str, start: int) -> int | None:
@@ -158,6 +220,10 @@ def _expression_end(text: str, start: int) -> int | None:
         return None
     end, certain = first
     while end < len(text):
+        delimited = _delimited_end(text, end)
+        if delimited is not None:
+            end, certain = _scripts_end(text, delimited), True
+            continue
         command = _command_end(text, end)
         if command is not None:
             end, certain = _scripts_end(text, command), True
@@ -170,7 +236,8 @@ def _expression_end(text: str, start: int) -> int | None:
                 # Function arguments may contain TeX/indices/numbers. Never
                 # absorb prose, quotes, URLs or inline Markdown into new math.
                 if (not _CJK.search(body) and not re.search(r"[`\"'$]|://", body)
-                        and all(m[1] in _COMMANDS for m in _COMMAND.finditer(body))):
+                        and all(m[1] in _COMMANDS or m[1] in ("left", "right", "langle", "rangle")
+                                for m in _COMMAND.finditer(body))):
                     certain = certain or bool(re.search(r"[\\_^=\u0370-\u03ff]", body))
                     end = _scripts_end(text, group)
                     continue
@@ -184,6 +251,11 @@ def _expression_end(text: str, start: int) -> int | None:
             following = _atom(text, end)
             if following is not None:
                 end, _ = following
+                continue
+        if certain and text[end - 1] in ")]}":
+            following = _atom(text, end)
+            if following is not None:
+                end, _ = following  # x^\top(B^{-1}-2A_t)x keeps its last factor
                 continue
         break
     return end if certain else None
@@ -229,14 +301,21 @@ def _format_segment(text: str) -> str:
     return "".join(out)
 
 
-def prose(text: str) -> str:
-    """Format generated explanatory prose, leaving protected material intact."""
+def prose(text: str, *, preserve_quotes: bool = True) -> str:
+    """Format prose; opt out of quote masking only for generated explanations.
+
+    Even when ``preserve_quotes=False``, quote characters stay literal and code,
+    blockquotes, links, paths and existing math remain opaque. Actual paper
+    quotations should bypass this formatter, rather than opt out of masking.
+    """
     if not text:
         return text
     # An outer construct owns its contents: math containing \text{"quoted"}
     # remains math, while a source quotation containing math remains verbatim.
     # At the same start, opaque syntax (notably money/code) takes precedence.
-    ranges = [(m.start(), 0, m.end()) for pattern in _OPAQUE for m in pattern.finditer(text)]
+    patterns = [p for p in _OPAQUE if preserve_quotes or p is not _QUOTES]
+    ranges = [(m.start(), 0, m.end()) for pattern in patterns for m in pattern.finditer(text)
+              if not (pattern is _LINK and _math_application_end(text, m.start()) == m.end())]
     ranges += [(m.start(), 1, m.end()) for m in _MARKED.finditer(text)]
     out = []
     cursor = 0
