@@ -1,0 +1,10 @@
+[
+  {
+    "path": "apps\\worker\\agenthub_kernel\\service.py",
+    "sha256": "59D1AECA28A44332EC47EBAF62297FC711BF0BB8A88DBE2675BEB00373A03061"
+  },
+  {
+    "path": "packages\\contracts\\agenthub\\contracts.py",
+    "sha256": "F1A0827C347CCA7FE126E0C7DADBCCDB135056AE1E4EA4DE235E7B8F55FCE723"
+  }
+]
