@@ -72,11 +72,24 @@ Reading additional input from stdin...
    拒绝信息也只进了模型自己的回答（可能还有我们看不到的渠道）；
 2. Codex **根本没有尝试写**——注意 `debug prompt-input` 显示模型能看到
    `<permission_profile>`（read-only 的 restricted 档案），它可能据此直接答复"不能写"；
-3. **本机版本与官方文档存在差异**：官方文档列出了 `exec --json` 的工具事件，
-   而本次运行没有出现（详见 §6 的核实任务）。
+3. 其它原因（例如模型自行判断不该写）。
 
-**准确表述**：**本次探针未取得实际尝试及拒绝证据，因此无法判断**。
-**不得**把它外推成"`codex exec` 模式下的工具事件一律不可观测"——那是需要核实的假设，不是结论。
+### 补充（2026-10-14，后续文档核实；不改变本次判定）
+
+后续的 app-server 可行性研究核对了**官方 exec 事件分类**
+（openai/codex 的 `codex-rs/exec/src/exec_events.rs`，版本线 `rust-v0.162.0`）：
+条目**只在实际发生该活动时才发出**，`file_change` 的说明是
+"The item is emitted only as a completed event once the patch succeeds or fails"。
+
+因此本次 4 事件的形态**与文档行为一致**：
+
+* **不能**据此推断"本机版本与官方文档存在差异"；
+* 同样**不能**推断"该模式下工具事件一律不可观测"。
+
+**准确表述仍然是**：本次探针**未取得实际尝试及拒绝证据，无法判断**。
+要区分解释 1 与 2，需要在**另行批准**的真实调用中用一个**明确要求执行命令**的提示词
+（例如 `run echo hi`），届时才会出现 `command_execution` 条目——那属于新的调用范围，
+本文件不作任何预先结论。相关清单见 `docs/appserver-feasibility.md` §3（version-check）。
 
 ## 5. 本次确认成立的部分（可以写进结论）
 
@@ -90,9 +103,9 @@ Reading additional input from stdin...
 | 选项 | 需要什么 | 说明 |
 |---|---|---|
 | A. 就此记录，保持"未验证" | 无（0 次调用） | **本轮已选定 A**：能力继续标为未验证，本次结果保持 INCONCLUSIVE |
-| B. 先核实"版本差异"，再决定是否重跑 | 0 次调用（离线核实） | 对照官方文档与本机 `exec --json` / schema 捕获；若文档确实承诺工具事件而本机没有，则属版本差异，需要重新设计探测；**本轮下一任务即为 app-server 方向的离线评估**（见 `docs/appserver-feasibility.md`） |
-| C. 改用命令式提示词制造 `command_execution` | 1 次真实调用 + 独立批准"执行一条写文件的命令" | 权限范围确实扩大；且需先做完 B 的核实 |
-| D. 换用 app-server 路线 | 另立任务 | 协议里有 `item/commandExecution/requestApproval` 与 `turn/interrupt`；**本轮已启动其离线可行性与最小原型** |
+| B. 先核实文档口径，再决定是否重跑 | 0 次调用（离线核实） | **已完成（本轮）**：官方 exec 事件分类显示"条目只在实际发生该活动时才发出"，因此本次 4 事件形态**与文档一致**——既非版本差异的证据，也非"不可观测"的证据。详见 §4 补充与 `docs/appserver-feasibility.md` §3 |
+| C. 改用命令式提示词制造 `command_execution` | 1 次真实调用 + 独立批准"执行一条写文件的命令" | 权限范围确实扩大；这是唯一能把"尝试后被拒"与"根本没尝试"分开的做法，需另行批准 |
+| D. 换用 app-server 路线 | 另立任务 | 协议里有 `item/commandExecution/requestApproval` 与 `turn/interrupt`；**已启动其离线可行性与最小原型**（分支 `feat/appserver-proto`，见 `docs/appserver-feasibility.md`） |
 
 ## 7. 清理与保留
 
