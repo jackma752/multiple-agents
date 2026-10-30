@@ -1,4 +1,4 @@
-# Agent Hub
+# multiple-agents · Agent Hub
 
 <img src="apps/api/agenthub_rt/static/brand/app-icon-256.png" alt="Agent Hub 项目图标" width="96" height="96">
 
@@ -10,7 +10,25 @@ Agent Hub 连接本机 Codex、Claude Code，以及 DeepSeek API。它保存调�
 >
 > 当前各通道能力不同。Codex/Claude 的原生子 Agent 不能由 Hub 完整限额或停止，使用前请阅读下方能力表。
 
-[安装与首次配置](#安装与首次配置) · [功能与操作顺序](#功能与操作顺序) · [通道能力](#通道能力) · [数据与卸载](#数据与卸载) · [常见问题](#常见问题)
+[从源码运行](#从源码运行) · [安装与首次配置](#安装与首次配置) · [功能与操作顺序](#功能与操作顺序) · [通道能力](#通道能力) · [数据与卸载](#数据与卸载) · [常见问题](#常见问题)
+
+## 从源码运行
+
+GitHub 当前提供源码，安装包尚未随本次上传发布到 Releases。Windows 10/11 x64 用户先安装 Git、Python 3.11 或更高版本，再在 PowerShell 中运行：
+
+```powershell
+git clone https://github.com/jackma752/multiple-agents.git
+Set-Location multiple-agents
+python -m venv .venv
+& '.\.venv\Scripts\python.exe' -m pip install -e .
+& '.\.venv\Scripts\python.exe' -m agenthub_rt.launcher --port 8080
+```
+
+浏览器会自动打开本机设置页，按下文配置你自己的工作区、Agent 和网络。GitHub 源码不包含账号登录资料、API 密钥、模型客户端或研究数据；这些在使用者本机配置。不同版本并行试用时须设置独立的 `AGENT_HUB_DESKTOP_HOME`，仅更换端口不会隔离数据目录。
+
+已有 Hub 用户启动源码版前先退出旧实例；同一端口已有服务时，启动器会打开现有实例。
+
+日常开发和测试说明见 [开发文档](开发文档.md)。源码保留测试与离线模拟夹具，发行安装包单独排除它们。
 
 ## 安装与首次配置
 
