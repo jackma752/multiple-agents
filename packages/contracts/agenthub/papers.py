@@ -37,7 +37,9 @@ FULLTEXT_POLICIES = (FULLTEXT_CONTINUE, FULLTEXT_WAIT)
 CHOICE_TIMEOUT_SECONDS = 30 * 60
 
 LANGUAGES = {"zh": "简体中文", "en": "English"}
-SOURCES = ("arxiv",)
+SOURCES = ("arxiv", "openalex", "crossref", "semantic_scholar")
+SOURCE_LABELS = {"arxiv": "arXiv", "openalex": "OpenAlex", "crossref": "Crossref",
+                 "semantic_scholar": "Semantic Scholar"}
 MAX_TARGET_PAPERS = 30
 MAX_TOPIC_CHARS = 500
 
@@ -78,7 +80,7 @@ class ResearchRequest:
             raise ValueError(f"language must be one of {sorted(LANGUAGES)}")
         if self.fulltext_policy not in FULLTEXT_POLICIES:
             raise ValueError(f"fulltext_policy must be one of {FULLTEXT_POLICIES}")
-        if not self.sources or set(self.sources) - set(SOURCES):
+        if not self.sources or len(set(self.sources)) != len(self.sources) or set(self.sources) - set(SOURCES):
             raise ValueError(f"sources must be a subset of {SOURCES}")
         if type(self.candidates_per_query) is not int or not 5 <= self.candidates_per_query <= 50:
             raise ValueError("candidates_per_query must be 5..50")
@@ -112,7 +114,8 @@ def _hash(data: Any) -> str:
 # --------------------------------------------------------------------------- #
 
 #: Hosts each source may contact (search API and open PDF links).
-SOURCE_HOSTS = {"arxiv": ("export.arxiv.org", "arxiv.org")}
+SOURCE_HOSTS = {"arxiv": ("export.arxiv.org", "arxiv.org"), "openalex": ("api.openalex.org",),
+                "crossref": ("api.crossref.org",), "semantic_scholar": ("api.semanticscholar.org",)}
 MAX_DOWNLOAD_BYTES = 40 * 1024 * 1024
 URL_SUPPLEMENT_OFF = "off"
 URL_SUPPLEMENT_PUBLIC = "public_http"  # any public http(s) host on 80/443, checked per hop
@@ -151,8 +154,13 @@ class ResourceRules:
     #: the Hub's task directory. Left out of ``as_dict`` when empty so earlier tasks'
     #: hashes hold.
     export_dir: str = ""
+    # Explicit opt-in for publisher/repository PDF URLs returned by approved sources.
+    # Omitted when false so previously approved resource hashes remain identical.
+    allow_public_fulltext: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.allow_public_fulltext) is not bool:
+            raise ValueError("allow_public_fulltext must be boolean")
         for name in ("sources", "local_roots", "send_to"):
             if isinstance(getattr(self, name), list):
                 object.__setattr__(self, name, tuple(getattr(self, name)))
@@ -180,6 +188,8 @@ class ResourceRules:
             out[name] = list(getattr(self, name))
         if not self.export_dir:
             out.pop("export_dir")
+        if not self.allow_public_fulltext:
+            out.pop("allow_public_fulltext")
         return out
 
     def rules_hash(self) -> str:
@@ -257,7 +267,7 @@ def resource_decision(rules: ResourceRules, action: str, target: str = "", *,
     if action == ACTION_DOWNLOAD:
         if not rules.allow_pdf_download:
             return False, "download_not_approved"
-        return check_url(target, hosts=rules.hosts(), resolve=resolve)
+        return check_url(target, hosts=None if rules.allow_public_fulltext else rules.hosts(), resolve=resolve)
     if action == ACTION_FETCH_URL:
         if rules.url_supplement != URL_SUPPLEMENT_PUBLIC:
             return False, "url_supplement_not_approved"
@@ -409,9 +419,11 @@ QUALITY_STATUSES = (QUALITY_PENDING, QUALITY_PASSED, QUALITY_FAILED, QUALITY_UNA
 
 
 def estimate_calls(request: ResearchRequest, *, review: bool, revisions: int = 1, retry_margin: int = 3) -> dict:
+    candidates = 3 * request.candidates_per_query * len(request.sources)
+    screen = -(-candidates // 20)
     if request.mode != "review":
         n, rounds = request.core_papers, request.repair_rounds
-        parts = {"plan": 1, "screen": 3, "extract_related": request.target_papers - n,
+        parts = {"plan": 1, "screen": screen, "extract_related": request.target_papers - n,
                  "study": n, "review": n if review else 0,
                  "targeted_read_or_repair": n * rounds,
                  "recheck": n * rounds if review else 0,
@@ -419,9 +431,6 @@ def estimate_calls(request: ResearchRequest, *, review: bool, revisions: int = 1
         expected = sum(parts.values()) - parts["targeted_read_or_repair"] - parts["recheck"]
         return {"parts": parts, "expected": expected, "worst_case": sum(parts.values()) + retry_margin,
                 "retry_margin": retry_margin}
-    queries = 3
-    candidates = min(queries * request.candidates_per_query, 60)
-    screen = -(-candidates // 20)
     parts = {"plan": 1, "screen": screen, "extract": request.target_papers, "synthesize": 1, "outline": 1,
              "write": request.sections, "review": request.sections if review else 0,
              "revise": request.sections * revisions if review else 0, "abstract": 1}

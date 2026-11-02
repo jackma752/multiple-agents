@@ -1,4 +1,13 @@
-# 当前交接：GitHub 公开发行 0.7.2（2026-10-31）
+# 当前交接：科研补齐 0.8.0 本地候选（2026-11-02）
+
+- 用户要求补全项目并查看 ClawsGo 主机页，独立分支 `feat/p6-research-completion`、工作树 `.worktrees/p6-research-completion`，基线 main `434e241`。本轮实现多来源检索/去重/审计、可移植文字成果包、版本化实验记录与描述比较，见 [范围与验证](p6-research-completion.md)。
+- 论文测试 174 项、权限/HTTP/桌面/协作计划回归 261 项通过，离线页面已检查多来源预检、实验保存/重开/比较及窄屏。真实模型调用 0。安装包和冻结程序检查待在本轮发行记录补充。
+- 只读观察 ClawsGo：当前无主机，未创建云资源或进行科研实测。远程主机、GPU、自动实验执行、富文本 LaTeX/图表编辑尚未实现；真实研究质量和出版级排版未验收。
+- 当前 main、GitHub 发行、用户安装和研究资料保持，未推送或合并。本地候选测试使用独立数据目录和端口；不能与现有实例共用数据目录。
+
+---
+
+# 之前交接：GitHub 公开发行 0.7.2（2026-10-31）
 
 - 用户指定公开仓库 `jackma752/multiple-agents`，并补充要求上传可供他人使用的安装包。源码仓库和 README 入口为 [multiple-agents](https://github.com/jackma752/multiple-agents)，下载入口为 [0.7.2 Release](https://github.com/jackma752/multiple-agents/releases/tag/v0.7.2)。
 - 0.7.2 从整合后的 `362ba93` 构建，包含此前仅在 main 的 Codex 写入预检修复；本地产物在 `dist/p6-release-0.7.2`。安装包与 ZIP 不纳入源码，作为发行附件发布，见 [发行与验证记录](p6-release-0.7.2.md)。

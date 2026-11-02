@@ -84,7 +84,11 @@ def _resources(data: dict, req: ResearchRequest, agents: list) -> ResourceRules:
             raise ValueError(f"导出目录不存在：{export_dir}")
         if not os.access(export_dir, os.W_OK):
             raise ValueError(f"导出目录不可写：{export_dir}")
-    return ResourceRules(export_dir=export_dir,sources=req.sources, allow_pdf_download=data.get("allow_pdf_download", True) is not False,
+    public_fulltext = data.get("allow_public_fulltext", False)
+    if type(public_fulltext) is not bool:
+        raise ValueError("allow_public_fulltext must be boolean")
+    return ResourceRules(export_dir=export_dir,sources=req.sources, allow_public_fulltext=public_fulltext,
+                         allow_pdf_download=data.get("allow_pdf_download", True) is not False,
                          max_download_bytes=int(data.get("max_download_mb", 20)) * 1024 * 1024,
                          allow_upload=data.get("allow_upload", True) is not False, local_roots=tuple(roots),
                          url_supplement=URL_SUPPLEMENT_PUBLIC if data.get("allow_url_supplement", True) is not False
@@ -129,17 +133,24 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
         warnings.append("未选择审阅 Agent：成品的质量状态将是“审阅不可用”，不会标为通过")
     if extractor_version().endswith("(missing)"):
         warnings.append("PDF 解析组件缺失：只能使用摘要和文本资料")
+    files = (["review.md", "references.json", "evidence.json", "research-report.json"] if req.mode == "review"
+             else ["review.md", "study.md", "research-plan.md", "references.json", "research-report.json"] +
+             (["paper-project.md", "project.json"] if req.mode == "project" else []))
+    files += [name[:-3] + suffix for name in list(files) if name.endswith(".md")
+              for suffix in (".html", ".docx", ".tex")]
+    files += ["EXPORT-README.txt", "MANIFEST.json", "research-bundle.zip"]
     return {
         "ok": not blockers, "blockers": blockers, "warnings": warnings, "request": req.as_dict(),
         "roles": roles, "execution_mode": mode, "estimate": estimate, "max_calls": max_calls,
         "token_budget_total": body.get("token_budget_total"),
         "resources": {**resources.as_dict(), "hosts": list(resources.hosts()),
                       "sent": f"论文题名、摘要和选中的全文片段会发送给：{', '.join(roles['agents'])}",
-                      "downloads": "仅 arXiv 开放 PDF（" + ", ".join(h for s in req.sources for h in SOURCE_HOSTS[s]) + "）"
+                      "downloads": ("允许访问来源返回的公网开放全文地址（逐次检查）" if resources.allow_public_fulltext else
+                                    "仅已批准来源的固定主机（外部出版商 PDF 需另选公网全文下载）")
                                    if resources.allow_pdf_download else "不下载全文"},
         "output": {"location": os.path.join(store_root, "<任务ID>", "exports"),
                    "copy_to": os.path.join(resources.export_dir, "<任务ID>") if resources.export_dir else None,
-                   "files": (["review.md", "references.json", "evidence.json", "research-report.json"] if req.mode=="review" else ["study.md", "research-plan.md", "research-report.json"] + (["paper-project.md", "project.json"] if req.mode=="project" else []))},
+                   "files": files},
         "fulltext_policy": req.fulltext_policy, "language": LANGUAGES[req.language],
         "templates": [t.meta() for t in TEMPLATES.values()], "agents": list(served),
         "proven": proven,
@@ -277,7 +288,7 @@ def reauthorize(session: Session, adapter: Any, user_id: str, task_id: str, body
 
 
 def reexport(session: Session, autopilot: Any, user_id: str, task_id: str) -> ResearchTaskRow:
-    """Rebuild the four export files of a finished task from what is stored. No model call.
+    """Rebuild exports of a finished task from what is stored. No model call.
 
     Same export code and checks as the pipeline's last step; quality is
     recomputed from the stored sections and reviews, never raised by hand.
@@ -365,7 +376,7 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
     docs = {d.id: d for d in session.scalars(select(PaperDocumentRow).where(PaperDocumentRow.task_id == task.id))}
     outcome = {k:v for k,v in (task.outcome or {}).items() if k in (
         "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
-        "sample", "missing_citations", "export_copy", "reexported_at", "studies", "directions", "quality_dimensions")}
+        "sample", "missing_citations", "export_copy", "reexported_at", "studies", "directions", "quality_dimensions", "search_sources")}
     if outcome.get("studies"):
         from agenthub_kernel.papers.guidance_export import display_studies
         outcome["studies"] = display_studies(outcome["studies"])
@@ -380,7 +391,7 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         "usage_by_step": {name: usage_of(session, [i for st in steps if st.name==name for i in (st.invocation_ids or [])])
                           for name in sorted({st.name for st in steps if st.kind=="model"})},
         "papers": [{"paper_id": p.id, "title": p.title, "authors": p.authors, "year": p.year, "url": p.url,
-                    "doi": p.doi, "source_id": p.source_id, "abstract_available": bool(p.abstract),
+                    "doi": p.doi, "source": p.source, "source_id": p.source_id, "abstract_available": bool(p.abstract),
                     "screen": p.screen, "screen_reason": p.screen_reason, "included": p.included,
                     "fulltext_status": p.fulltext_status, "fulltext_reason": p.fulltext_reason,
                     "fulltext_reason_text": MISSING_REASONS.get(p.fulltext_reason or "", p.fulltext_reason),

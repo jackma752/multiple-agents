@@ -43,7 +43,7 @@ from agenthub.papers import (
 from agenthub.stage import STAGE_COMPLETED, STAGE_RUNNABLE, rules_of
 from agenthub_kernel.autopilot import _Blocked, _event
 from agenthub_kernel.db import ChatMessageRow, InvocationRow, StageGrantRow, StageRunRow
-from agenthub_kernel.papers import arxiv, supplement, validate
+from agenthub_kernel.papers import arxiv, sources, supplement, validate
 from agenthub_kernel.papers.db import (
     EvidenceRow, MissingItemRow, PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow, ResearchTaskRow,
     SectionRow, SupplementBatchRow, SupplementFileRow, SupplementRequestRow,
@@ -251,7 +251,8 @@ def _years(req: ResearchRequest) -> str:
 def phase_plan(ctx: Ctx) -> Optional[str]:
     req = ctx.request
     data = {"topic": req.topic, "years": _years(req), "target_papers": req.target_papers,
-            "source": "arXiv (title/abstract keyword search)"}
+            "source": ("arXiv" if tuple(req.sources) == ("arxiv",) else ", ".join(req.sources))
+                      + " (title/abstract keyword search)"}
     state, result = ctx.model("plan", None, PLAN, data, _h([data, PLAN.sha256]), validate.plan)
     if state != "done":
         return None
@@ -263,17 +264,24 @@ def phase_search(ctx: Ctx) -> Optional[str]:
     req, plan = ctx.request, ctx.task.outcome["plan"]
     rows = []
     for index, query in enumerate(plan["queries"]):
-        url = arxiv.query_url(query["terms"], year_from=req.year_from, year_to=req.year_to,
-                              max_results=req.candidates_per_query)
-        rows.append(ctx.tool("search", f"q{index}", _h(url), {"url": url, "terms": query["terms"], "index": index}))
+        for source in req.sources:
+            url = sources.query_url(source, query["terms"], year_from=req.year_from, year_to=req.year_to,
+                                    max_results=req.candidates_per_query)
+            # Preserve arXiv's old key and hash so resumed legacy tasks reuse it.
+            target = f"q{index}" if source == "arxiv" else f"{source}:q{index}"
+            payload = {"url": url, "terms": query["terms"], "index": index}
+            if source != "arxiv": payload["source"] = source
+            rows.append(ctx.tool("search", target, _h(url), payload))
     if any(r.status in ("pending", "running") for r in rows):
         return None
+    ctx.outcome(search_sources=[{"query": r.target, "status": r.status, "error": r.error,
+                                "counts": r.result} for r in rows])
     total = len(ctx.session.scalars(select(PaperRow.id).where(PaperRow.task_id == ctx.task.id)).all())
     if not any(r.status == "succeeded" for r in rows):
         ctx.insufficient("search_failed", "; ".join(sorted({r.error or "" for r in rows}))[:300])
         return "export"
     if total == 0:
-        ctx.insufficient("no_results", "arXiv 在给定年份与检索词下没有返回结果")
+        ctx.insufficient("no_results", "已选择的来源在给定年份与检索词下没有返回结果")
         return "export"
     return "screen"
 
@@ -719,16 +727,19 @@ def _execute(runtime: PaperRuntime, job: dict, resource: Any) -> dict:
     name, payload = job["name"], job["payload"]
     fetcher = runtime.fetcher
     if name == "search":
-        ok, why = resource_decision(resource, ACTION_SEARCH, "arxiv")
+        source = payload.get("source", "arxiv")
+        ok, why = resource_decision(resource, ACTION_SEARCH, source)
         if not ok:
             return {"error": why}
         runtime.polite()
-        got = fetcher.fetch(payload["url"], max_bytes=5 * 1024 * 1024, accept="application/atom+xml",
-                            allowed=lambda u: check_url(u, hosts=resource.hosts(), resolve=fetcher.resolve))
+        from agenthub.papers import SOURCE_HOSTS
+        got = fetcher.fetch(payload["url"], max_bytes=5 * 1024 * 1024,
+                            accept="application/atom+xml" if source == "arxiv" else "application/json",
+                            allowed=lambda u: check_url(u, hosts=SOURCE_HOSTS[source], resolve=fetcher.resolve))
         if not got.ok:
             return {"error": got.error}
         try:
-            return {"entries": arxiv.parse_feed(got.body)}
+            return {"entries": sources.parse_results(source, got.body)}
         except ValueError as exc:
             return {"error": "bad_feed:" + str(exc)[:80]}
     if name == "fetch":
@@ -875,24 +886,39 @@ def _upsert_papers(session: Session, task: ResearchTaskRow, entries: list, index
     """Merge on source id, then DOI, then normalized title AND first-author surname - never title alone."""
     existing = list(session.scalars(select(PaperRow).where(PaperRow.task_id == task.id)))
     by_source = {(p.source, p.source_id): p for p in existing}
-    by_doi = {p.doi.lower(): p for p in existing if p.doi}
-    by_title = {(normalize_title(p.title), _surname(p.authors)): p for p in existing if p.authors}
+    for p in existing:
+        for alias in p.merged or []:
+            by_source[(alias.get("source", p.source), alias["source_id"])] = p
+    by_doi = {sources.doi(p.doi): p for p in existing if sources.doi(p.doi)}
+    by_title = {}
+    for p in existing:
+        if p.authors: by_title.setdefault((normalize_title(p.title), _surname(p.authors)), []).append(p)
     new = merged = 0
     rank = len(existing)
     for e in entries:
+        e = {**e, "doi": sources.doi(e.get("doi"))}
         key = (e["source"], e["source_id"])
         first = _surname(e.get("authors") or [])
         hit, why = by_source.get(key), "same_source_id"
         if hit is None and e.get("doi"):
-            hit, why = by_doi.get(e["doi"].lower()), "same_doi"
+            hit, why = by_doi.get(e["doi"]), "same_doi"
         if hit is None and e.get("authors"):
-            hit, why = by_title.get((normalize_title(e["title"]), first)), "same_title_and_first_author"
+            candidates = by_title.get((normalize_title(e["title"]), first), [])
+            # Distinct known DOIs are not duplicates; ambiguous titles remain separate.
+            candidates = [p for p in candidates if not (p.doi and e["doi"] and sources.doi(p.doi) != e["doi"])]
+            if len(candidates) == 1:
+                hit, why = candidates[0], "same_title_and_first_author"
         if hit is not None:
             if f"q{index}" not in (hit.queries or []):
                 hit.queries = [*(hit.queries or []), f"q{index}"]
-            if why != "same_source_id" and e["source_id"] not in {m["source_id"] for m in hit.merged or []}:
-                hit.merged = [*(hit.merged or []), {"source_id": e["source_id"], "reason": why}]
+            if why != "same_source_id" and key not in {(m.get("source", hit.source), m["source_id"]) for m in hit.merged or []}:
+                hit.merged = [*(hit.merged or []), {"source": e["source"], "source_id": e["source_id"], "reason": why}]
                 merged += 1
+            # A duplicate source can supply an abstract or OA PDF absent in the first result.
+            for field in ("abstract", "pdf_url", "doi", "venue"):
+                if not getattr(hit, field) and e.get(field): setattr(hit, field, e[field])
+            by_source[key] = hit
+            if hit.doi: by_doi[hit.doi] = hit
             continue
         paper = PaperRow(id=new_id("pap"), task_id=task.id, rank=rank, queries=[f"q{index}"], merged=[],
                          **{k: e.get(k) for k in ("source", "source_id", "source_version", "title", "authors", "year",
@@ -902,9 +928,9 @@ def _upsert_papers(session: Session, task: ResearchTaskRow, entries: list, index
         session.add(paper)
         by_source[key] = paper
         if paper.doi:
-            by_doi[paper.doi.lower()] = paper
+            by_doi[paper.doi] = paper
         if paper.authors:
-            by_title[(normalize_title(paper.title), first)] = paper
+            by_title.setdefault((normalize_title(paper.title), first), []).append(paper)
         new += 1
     session.flush()
     return {"entries": len(entries), "new": new, "merged": merged}

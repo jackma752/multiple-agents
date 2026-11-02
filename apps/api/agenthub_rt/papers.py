@@ -85,6 +85,12 @@ class ProjectIn(BaseModel):
     notes: dict[str, str] = Field(default_factory=dict)
 
 
+class ExperimentsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_version: StrictInt = Field(ge=0)
+    records: list[dict] = Field(max_length=30)
+
+
 class QuestionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     paper_id: str
@@ -105,6 +111,32 @@ def register_papers(app, db) -> None:
 
     def store():
         return app.state.autopilot.papers.store
+
+    @app.get("/api/papers/{task_id}/experiments")
+    def experiments_get(task_id: str, principal: Principal = Depends(authenticate)):
+        from agenthub_kernel.papers.experiments import view
+        require_approver(principal)
+        with db.session() as session:
+            try:
+                return view(session, service.owned_task(session, task_id, principal.identity))
+            except QuotaError as exc:
+                raise refused(exc)
+
+    @app.put("/api/papers/{task_id}/experiments")
+    def experiments_save(task_id: str, body: ExperimentsIn, principal: Principal = Depends(authenticate)):
+        from agenthub_kernel.papers.experiments import save
+        require_approver(principal)
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                task = service.owned_task(session, task_id, principal.identity)
+                result = save(session, task, body.expected_version, body.records, principal.identity)
+                service.reexport(session, app.state.autopilot, principal.identity, task_id)
+                return result
+            except QuotaError as exc:
+                raise refused(exc)
+            except ValueError as exc:
+                raise HTTPException(422, detail=str(exc))
 
     @app.get("/api/papers/{task_id}/project")
     def project_get(task_id: str, principal: Principal = Depends(authenticate)):
@@ -521,5 +553,9 @@ def register_papers(app, db) -> None:
             data = store().read(rel, sha)
         except (OSError, ValueError):
             raise HTTPException(410, detail={"code": "artifact_changed", "message": "导出文件已被移动或修改"})
-        media = "text/markdown; charset=utf-8" if name.endswith(".md") else "application/json"
+        media = {".md":"text/markdown; charset=utf-8", ".html":"text/html; charset=utf-8",
+                 ".tex":"text/plain; charset=utf-8", ".txt":"text/plain; charset=utf-8",
+                 ".csv":"text/csv; charset=utf-8", ".zip":"application/zip",
+                 ".docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}.get(
+                     os.path.splitext(name)[1], "application/json")
         return Response(data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"'})

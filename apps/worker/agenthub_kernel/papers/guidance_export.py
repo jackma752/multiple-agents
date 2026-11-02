@@ -112,12 +112,17 @@ def export_guidance(ctx):
     usage=usage_of(session,[i for st in steps for i in (st.invocation_ids or [])])
     project=project_of(session,task)
     report={"contract":"agenthub.guidance/1","task_id":task.id,"request":task.request,"studies":studies,
+            "source_results":(task.outcome or {}).get("search_sources",[]),
             "directions":directions,"quality_status":state,"quality_dimensions":dimensions,"usage":usage,
             "usage_by_step":{n:usage_of(session,[i for s in steps if s.name==n for i in (s.invocation_ids or [])]) for n in {s.name for s in steps}}}
     files={"review.md":(study+"\n\n"+plan).encode("utf-8"),"study.md":study.encode("utf-8"),
            "research-plan.md":plan.encode("utf-8"),"references.json":_json(references),"research-report.json":_json(report)}
     if ctx.request.mode=="project":
         files.update({"paper-project.md":project_markdown(project,directions).encode("utf-8"),"project.json":_json(project)})
+    from agenthub_kernel.papers.experiments import export_files
+    from agenthub_kernel.papers.portable import enrich
+    files.update(export_files(session,task))
+    files=enrich(files)
     for name,data in files.items():
         rel,sha,size=ctx.ap.papers.store.write_export(task.id,task.input_version,name,data)
         row=session.scalar(select(ArtifactRow).where(ArtifactRow.task_id==task.id,ArtifactRow.version==task.input_version,ArtifactRow.name==name))

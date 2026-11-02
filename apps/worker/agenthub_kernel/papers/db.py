@@ -285,6 +285,17 @@ class ArtifactRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class ExperimentRevisionRow(Base):
+    __tablename__ = "paper_experiment_revisions"
+    __table_args__ = (UniqueConstraint("task_id", "version"),)
+    id = Column(String, primary_key=True)
+    task_id = Column(ForeignKey("paper_tasks.id"), index=True, nullable=False)
+    version = Column(Integer, nullable=False)
+    records = Column(JSON, nullable=False, default=list)
+    actor = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class ProjectRevisionRow(Base):
     __tablename__ = "paper_project_revisions"
     __table_args__ = (UniqueConstraint("task_id", "version"),)

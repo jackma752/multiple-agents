@@ -14,7 +14,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
-VERSION = '0.7.2'
+VERSION = '0.8.0'
 EXCLUDED = ['pytest', '_pytest', 'httpx', 'IPython', 'tkinter', 'unittest', 'doctest',
             'agenthub_adapters.appserver_stub', 'agenthub_adapters.mock', 'agenthub_rt.dev_auth', 'tests', 'tools']
 
@@ -35,7 +35,7 @@ def build(args):
         '--hidden-import','sqlalchemy.dialects.sqlite','--hidden-import','uvicorn.loops.asyncio',
         '--hidden-import','uvicorn.protocols.http.h11_impl','--hidden-import','uvicorn.lifespan.on',
         # P6: the PDF text extractor is imported lazily inside the paper parser.
-        '--collect-submodules','pypdf','--hidden-import','agenthub_kernel.papers.db',
+        '--collect-submodules','pypdf','--collect-submodules','agenthub_kernel.papers',
         '--copy-metadata','pydantic','--copy-metadata','fastapi', '--copy-metadata','uvicorn']
     for path in ['packages/contracts','packages/adapters','apps/worker','apps/api']:
         command += ['--paths',str(ROOT/path)]

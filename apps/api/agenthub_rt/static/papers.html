@@ -105,7 +105,7 @@
     <button id="newBtn" class="primary" style="width:100%">+ 新建研究</button>
     <ul id="taskList"></ul>
     <details id="archivedTasks" class="archived" hidden><summary id="archivedSummary">已归档</summary><ul id="archivedList"></ul></details>
-    <p class="dim small">首版来源：arXiv。成品是可追溯的综述/研究简报，不是系统综述、荟萃分析或原创实验。</p>
+    <p class="dim small">可选 arXiv、OpenAlex、Crossref 和 Semantic Scholar。成品保留来源和证据，研究结论仍需人工核查。</p>
   </aside>
   <main id="main"></main>
 </div>
@@ -160,6 +160,12 @@
         <select id="f_mode"><option value="strict">严格</option><option value="supervised">用户监督</option></select></div>
     </div>
     <label id="f_consentWrap" hidden><input id="f_consent" type="checkbox" /> 我了解用户监督边界：原生派生与远端停止不保证受控。</label>
+    <div class="field" style="margin-top:10px"><label>文献来源（可多选，来源可能限流或暂时不可用）</label><div class="row">
+      <label><input type="checkbox" name="f_source" value="arxiv" checked /> arXiv</label>
+      <label><input type="checkbox" name="f_source" value="openalex" /> OpenAlex</label>
+      <label><input type="checkbox" name="f_source" value="crossref" /> Crossref</label>
+      <label><input type="checkbox" name="f_source" value="semantic_scholar" /> Semantic Scholar</label>
+    </div></div>
     <details style="margin-top:10px"><summary class="dim">高级设置：调用上限、预算与资料范围</summary>
       <div class="grid" style="margin-top:8px">
         <div class="field"><label for="f_calls">本研究最多模型调用次数</label><input id="f_calls" type="number" min="0" max="50" placeholder="空 = 按预检建议；0 = 不限" /></div>
@@ -167,7 +173,8 @@
         <div class="field"><label for="f_mb">单个文件上限（MB）</label><input id="f_mb" type="number" min="1" max="40" value="20" /></div>
       </div>
       <div class="row">
-        <label><input id="f_dl" type="checkbox" checked /> 下载 arXiv 开放 PDF</label>
+        <label><input id="f_dl" type="checkbox" checked /> 下载已批准来源的开放 PDF</label>
+        <label><input id="f_pubpdf" type="checkbox" /> 允许下载检索来源返回的公网全文地址（出版商/机构库）</label>
         <label><input id="f_up" type="checkbox" checked /> 允许上传补充资料</label>
         <label><input id="f_url" type="checkbox" checked /> 允许用网络地址补充</label>
       </div>
@@ -357,9 +364,11 @@ function formBody() {
     client_request_id: S.requestKey,
     request: { topic: $("f_topic").value.trim(), year_from: num("f_from"), year_to: num("f_to"), target_papers: num("f_n") || 5,
                mode: $("f_goal").value, core_papers: num("f_core"), repair_rounds: num("f_repairs"), language: $("f_lang").value, sections: num("f_sections") || 4,
+               sources: Array.from(document.querySelectorAll('input[name="f_source"]:checked')).map(e => e.value),
                fulltext_policy: document.querySelector('input[name="f_policy"]:checked').value },
     roles: { main_agent: main, review_agent: review, models },
-    resources: { allow_pdf_download: $("f_dl").checked, allow_upload: $("f_up").checked, allow_url_supplement: $("f_url").checked,
+    resources: { allow_pdf_download: $("f_dl").checked, allow_public_fulltext: $("f_pubpdf").checked,
+                 allow_upload: $("f_up").checked, allow_url_supplement: $("f_url").checked,
                  max_download_mb: num("f_mb") || 20, local_roots: $("f_roots").value.split("\n").map((s) => s.trim()).filter(Boolean),
                  export_dir: $("f_export").value.trim() },
     execution_mode: $("f_mode").value, supervised_consent: $("f_consent").checked,
@@ -380,7 +389,7 @@ async function runPreflight() {
       html += `<table><tbody>
         <tr><th>主题</th><td>${esc(p.request.topic)}（${esc(p.request.year_from || "不限")}–${esc(p.request.year_to || "不限")}，目标 ${esc(p.request.target_papers)} 篇，路径 ${esc(p.request.mode || "review")}、核心 ${esc(p.request.core_papers || 1)} 篇，${esc(p.language)}）</td></tr>
         <tr><th>全文缺失</th><td>${p.fulltext_policy === "continue_allowed" ? "方案一：可按现有资料继续（首次询问 30 分钟未选择则继续）" : "方案二：先等待补全文（不设超时）"}</td></tr>
-        <tr><th>检索来源</th><td>arXiv（${esc((p.resources.hosts || []).join(", "))}）；${esc(p.resources.downloads)}</td></tr>
+        <tr><th>检索来源</th><td>${esc(p.request.sources.join(", "))}（${esc((p.resources.hosts || []).join(", "))}）；${esc(p.resources.downloads)}</td></tr>
         <tr><th>数据发送</th><td>${esc(p.resources.sent)}</td></tr>
         <tr><th>补充资料</th><td>上传${p.resources.allow_upload ? "允许" : "不允许"}；网络地址${p.resources.url_supplement === "public_http" ? "允许（仅公网 http/https）" : "不允许"}；本地目录：${esc((p.resources.local_roots || []).join("；") || "无")}</td></tr>
         <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（${esc(Object.entries(e.parts).map(([k,n])=>k+": "+n).join("，"))}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
@@ -419,7 +428,7 @@ function render(force) {
   if (force || !main.querySelector("#taskHead")) {
     main.innerHTML = `<div id="taskHead" class="pane"></div><div id="supBox"></div><div id="resultBox"></div>
       <div id="papersBox" class="pane"></div><div id="evidenceBox" class="pane" hidden></div><div id="sectionsBox"></div>
-      <div id="guidanceBox"></div><div id="stepsBox" class="pane"></div>`;
+      <div id="guidanceBox"></div><div id="experimentBox"></div><div id="stepsBox" class="pane"></div>`;
   }
   renderHead(v);
   renderSupplement(v);
@@ -427,6 +436,7 @@ function render(force) {
   renderPapers(v);
   renderSections(v);
   renderGuidance(v);
+  renderExperiments(v);
   renderSteps(v);
 }
 
@@ -601,6 +611,8 @@ function renderResult(v) {
     <div class="${v.quality_status === "passed" ? "okbox" : "warnbox"}">执行已完成；${esc(v.request.mode&&v.request.mode!=='review'&&v.quality_status==='passed'?'讲解模型核查完成；方案待查重和验证':(QUALITY[v.quality_status] || [v.quality_status])[0])}
       ${v.quality_status !== "passed" ? "（成品标为草稿）" : ""}${reasons ? `<ul>${reasons}</ul>` : ""}</div>
     <div class="small dim">纳入 ${esc(sample.included ?? "-")} 篇：全文 ${esc(sample.fulltext ?? "-")}、仅摘要 ${esc(sample.abstract_only ?? "-")}、仅题录 ${esc(sample.metadata_only ?? "-")}</div>
+    ${(o.search_sources || []).length ? `<details><summary>各来源检索结果（失败不表示没有文献）</summary><ul>${o.search_sources.map(s=>`<li>${esc(s.query)}：${esc(s.status)}${s.error?' · '+esc(s.error):''}；新增 ${esc(s.counts?.new??0)} 条，合并 ${esc(s.counts?.merged??0)} 条</li>`).join('')}</ul></details>` : ''}
+    <p class="small dim">成果包含原文导出与可编辑文字稿。HTML 可离线阅读/打印为 PDF；DOCX 和 LaTeX 保留公式源文，尚未做公式排版转换。</p>
     ${o.abstract ? `<h3>摘要</h3><p>${esc(o.abstract.abstract)}</p>` : ""}
     ${(o.synthesis && o.synthesis.gaps || []).length ? `<h3>当前样本中的空白</h3><ul>${o.synthesis.gaps.map((g) => `<li>${esc(g.text)}</li>`).join("")}</ul>` : ""}
     ${o.export_copy ? `<div class="${o.export_copy.ok ? "okbox" : "badbox"} small">${o.export_copy.ok ? "已复制到" : "复制到所选目录失败（" + esc(o.export_copy.error) + "），以下载为准："} <span class="mono">${esc(o.export_copy.directory)}</span></div>` : ""}
@@ -624,7 +636,7 @@ function renderPapers(v) {
   box.dataset.sig = sig;
   const rows = v.papers.map((p) => `<tr>
       <td><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.title)}</a>
-        <div class="small dim">${esc((p.authors || []).slice(0, 4).join(", "))}${(p.authors || []).length > 4 ? " 等" : ""} · ${esc(p.year || "年份未知")} · arXiv ${esc(p.source_id)}
+        <div class="small dim">${esc((p.authors || []).slice(0, 4).join(", "))}${(p.authors || []).length > 4 ? " 等" : ""} · ${esc(p.year || "年份未知")} · ${esc(p.source || "arxiv")} ${esc(p.source_id)}
         ${p.merged && p.merged.length ? ` · 合并重复 ${p.merged.length} 条` : ""}${p.abstract_available ? "" : " · 无摘要"}</div></td>
       <td>${p.included ? '<span class="chip ok">纳入</span>' : `<span class="chip">${esc(p.screen === "exclude" ? "排除" : p.screen ? "未纳入" : "待筛选")}</span>`}
         <div class="small dim">${esc(p.screen_reason || "")}</div></td>
@@ -761,6 +773,58 @@ function renderGuidance(v) {
   }
   const audit=add(panel,'details');add(audit,'summary','质量维度与各步骤用量');
   add(audit,'pre',JSON.stringify({quality:v.outcome.quality_dimensions,usage:v.usage_by_step},null,2));
+}
+
+function renderExperiments(v) {
+  const box = $("experimentBox");
+  if (v.phase !== "done" || box.dataset.task === v.task_id) return;
+  box.dataset.task = v.task_id;
+  box.innerHTML = '<div class="pane"><h2>实验记录与指标比较</h2><p class="small dim">记录你实际执行的结果或明确标记的演示数据；不会运行代码、调用模型或自动声称复现成功。</p><button data-open-experiments>打开实验记录</button><div data-experiments></div></div>';
+  const target = box.querySelector('[data-experiments]');
+  box.querySelector('[data-open-experiments]').onclick = async () => {
+    try {
+      const data = await api('GET', `/api/papers/${v.task_id}/experiments`);
+      target.replaceChildren();
+      const add = (tag,text) => { const e=document.createElement(tag); if(text!==undefined)e.textContent=text; target.append(e); return e; };
+      const versionText=add('p');
+      const showVersion=()=>{versionText.textContent=`版本 ${data.version}；相同数据集/条件/指标的一组中，第一项作为基线。仅计算描述统计，不判定显著性。`;};showVersion();
+      const list = add('div'), entries = [];
+      function row(record) {
+        const r = record || {id:'exp-'+Date.now()+'-'+entries.length,label:'',dataset:'',protocol:'',metric:'',direction:'min',provenance:'reported',samples:[],note:''};
+        const panel=document.createElement('div'); panel.className='pane';list.append(panel);
+        const grid=document.createElement('div');grid.className='grid';panel.append(grid);
+        const field=()=>{const box=document.createElement('div');box.className='field';grid.append(box);return box;};
+        const fields={};
+        for(const [key,label] of Object.entries({label:'方法 / 实验名',dataset:'数据集及版本',protocol:'相同实验条件 / 样本划分',metric:'指标名称和单位',samples:'各次测量值（用逗号分隔）',note:'执行命令、种子或原始记录位置'})) {
+          const box=field();const lab=document.createElement('label');lab.textContent=label;box.append(lab);
+          const input=document.createElement('input'); input.id='experiment-'+r.id+'-'+key;lab.htmlFor=input.id;
+          input.value=key==='samples'?r.samples.join(', '):(r[key]||'');box.append(input);fields[key]=input;
+        }
+        for(const [key,options] of Object.entries({direction:[['min','越小越好'],['max','越大越好']],provenance:[['reported','我记录的测量数据（未独立验证）'],['demo','演示 / 合成数据']]})) {
+          const box=field();const lab=document.createElement('label');lab.textContent=key==='direction'?'指标方向':'数据来源';box.append(lab);
+          const select=document.createElement('select');select.id='experiment-'+r.id+'-'+key;lab.htmlFor=select.id;
+          for(const [value,text] of options){const o=document.createElement('option');o.value=value;o.textContent=text;select.append(o);}select.value=r[key];box.append(select);fields[key]=select;
+        }
+        const entry={record:r,fields,panel};entries.push(entry);
+        const remove=document.createElement('button');remove.textContent='从此版本移除';remove.onclick=()=>{panel.remove();entries.splice(entries.indexOf(entry),1);};panel.append(remove);
+      }
+      data.records.forEach(row);
+      const plus=add('button','添加一项实验');plus.onclick=()=>row();
+      const save=add('button','保存版本并比较（不调用模型）');
+      save.onclick=async()=>{
+        save.disabled=true;
+        try {
+          const records=entries.map(({record,fields})=>({id:record.id,...Object.fromEntries(Object.entries(fields).map(([key,input])=>[key,key==='samples'?input.value.split(/[,，\s]+/).filter(Boolean).map(x=>Number(x)):input.value]))}));
+          const result=await api('PUT',`/api/papers/${v.task_id}/experiments`,{expected_version:data.version,records});
+          data.version=result.version;showVersion();
+          const old=target.querySelector('[data-comparison]');if(old)old.remove();
+          const table=add('div');table.dataset.comparison='true';
+          for(const c of result.comparisons){const p=document.createElement('p');p.textContent=`${c.label} · ${c.metric}：n=${c.n}，均值=${c.mean}，标准差=${c.sample_stddev??'样本不足'}；相对本组基线变化=${c.delta}（${c.provenance==='demo'?'演示':'用户记录'}）`;table.append(p);}
+          toast('实验记录版本 '+result.version+' 已保存，成果包含原始样本'); await refresh();
+        } catch(e){toast(e.message);} finally {save.disabled=false;}
+      };
+    } catch(e) {toast(e.message);}
+  };
 }
 
 function renderSteps(v) {

@@ -60,7 +60,9 @@ def test_full_flow_with_two_batches_then_continue(hub):
                      "2601.00104": "fulltext", "2601.00105": "abstract"}
     assert view["quality_status"] == "passed", view["outcome"].get("quality_reasons")
     names = {a["name"] for a in view["artifacts"]}
-    assert names == {"review.md", "references.json", "evidence.json", "research-report.json"}
+    assert names == {"review.md", "references.json", "evidence.json", "research-report.json",
+                     "review.html", "review.tex", "review.docx", "EXPORT-README.txt",
+                     "MANIFEST.json", "research-bundle.zip"}
     assert hub.launched() > before
 
     # Evidence: real ids, verbatim quotes, locatable chunks.

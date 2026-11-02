@@ -131,7 +131,8 @@ def export(ctx: Any) -> dict:
     banner = f"> 执行状态：已完成；质量状态：{quality}"
     if quality != QUALITY_PASSED:
         banner += "（草稿：" + "；".join(quality_reasons) + "）"
-    md += [banner, f"> 性质：基于 {sample['included']} 篇 arXiv 论文的可追溯叙述性综述/研究简报，"
+    source_names = ", ".join(req.sources)
+    md += [banner, f"> 性质：基于 {sample['included']} 篇论文的可追溯叙述性综述/研究简报（来源：{source_names}），"
            "不是系统综述、荟萃分析或原创实验报告。", f"> 输出语言：{lang}", ""]
     if insufficient:
         md += ["## 资料不足说明", "", f"本次未能形成有依据的综述正文：{insufficient.get('detail') or insufficient['reason']}。",
@@ -144,7 +145,7 @@ def export(ctx: Any) -> dict:
         if s.review_status not in ("passed", "not_applicable"):
             md += [f"> 本节审阅状态：{s.review_status}", ""]
     md += ["## 研究范围与局限", "",
-           f"- 检索来源：arXiv；年份：{req.year_from or '不限'}–{req.year_to or '不限'}；候选 {sample['candidates']} 篇，"
+           f"- 检索来源：{source_names}；年份：{req.year_from or '不限'}–{req.year_to or '不限'}；候选 {sample['candidates']} 篇，"
            f"纳入 {sample['included']} 篇（目标 {req.target_papers} 篇）。",
            f"- 阅读深度：全文已获取、片段已读 {sample['fulltext']} 篇，仅摘要 {sample['abstract_only']} 篇，仅题录 {sample['metadata_only']} 篇。"
            "带 ᵃ 的引用只有摘要级证据。",
@@ -180,7 +181,8 @@ def export(ctx: Any) -> dict:
                    "invocation_ids": st.invocation_ids, "template": st.template, "error": st.error} for st in steps],
         "usage": usage_of(session, [i for st in steps for i in (st.invocation_ids or [])]),
         "models": {"roles": task.roles},
-        "limitations": ["首版仅 arXiv 来源", "关键词片段选择，不是语义检索", "不支持 OCR、公式与表格精读",
+        "source_results": outcome.get("search_sources", []),
+        "limitations": ["来源失败与无结果不等于领域无文献", "关键词片段选择，不是语义检索", "不支持 OCR、公式与表格精读",
                         "质量状态来自确定性检查与模型审阅，不能替代人工核对"],
     }
     evidence_out = [{"evidence_id": e.id, "paper_id": e.paper_id, "level": e.level, "kind": e.kind,
@@ -194,6 +196,10 @@ def export(ctx: Any) -> dict:
         "evidence.json": _json(evidence_out),
         "research-report.json": _json(report),
     }
+    from agenthub_kernel.papers.experiments import export_files
+    from agenthub_kernel.papers.portable import enrich
+    files.update(export_files(session, task))
+    files = enrich(files)
     version = task.input_version
     for name, data in files.items():
         rel, sha, size = store.write_export(task.id, version, name, data)
@@ -240,6 +246,7 @@ def _copy_out(ctx: Any, files: dict, version: int) -> Optional[dict]:
 
 def _meta(p: PaperRow) -> dict:
     return {"title": p.title, "authors": list(p.authors or []), "year": p.year, "doi": p.doi, "url": p.url,
+            "source": p.source, "source_id": p.source_id, "merged_sources": p.merged,
             "venue": p.venue, "arxiv_id": p.source_id if p.source == "arxiv" else None}
 
 
