@@ -28,6 +28,7 @@ from agenthub_kernel.db import (
     ChatMessageRow,
     EventRow,
     InvocationRow,
+    NativeAgentRow,
     PolicyVersionRow,
     QuotaReservationRow,
     StageGrantRow,
@@ -404,13 +405,15 @@ class PolicyService:
             select(TaskRow).where(TaskRow.root_task_id == root_task_id)
         ).all()
         sub_task_ids = {t.id for t in tasks if t.depth >= include_depth}
+        native = self.session.scalar(select(func.count()).select_from(NativeAgentRow).where(
+            NativeAgentRow.root_task_id == root_task_id))
         if not sub_task_ids:
-            return 0
+            return native
         launched = self.session.scalars(
             select(InvocationRow).where(InvocationRow.task_id.in_(sub_task_ids))
         ).all()
         # launched = created (draft->...); count those not draft
-        return sum(1 for inv in launched if inv.status != InvocationStatus.DRAFT.value)
+        return native + sum(1 for inv in launched if inv.status != InvocationStatus.DRAFT.value)
 
     def _tree_concurrent_count(self, root_task_id: str) -> int:
         """Count sub-agent (depth >= 1) invocations occupying a concurrent slot.
@@ -423,8 +426,10 @@ class PolicyService:
             select(TaskRow).where(TaskRow.root_task_id == root_task_id)
         ).all()
         sub_task_ids = {t.id for t in tasks if t.depth >= 1}
+        native = self.session.scalar(select(func.count()).select_from(NativeAgentRow).where(
+            NativeAgentRow.root_task_id == root_task_id, NativeAgentRow.state != "finished"))
         if not sub_task_ids:
-            return 0
+            return native
         running = self.session.scalars(
             select(InvocationRow).where(
                 InvocationRow.task_id.in_(sub_task_ids),
@@ -433,7 +438,7 @@ class PolicyService:
                 ),
             )
         ).all()
-        return len(running)
+        return native + len(running)
 
     def _tree_invocation_count(self, root_task_id: str) -> int:
         tasks = self.session.scalars(
@@ -442,7 +447,8 @@ class PolicyService:
         task_ids = {t.id for t in tasks}
         if not task_ids:
             return 0
-        return self.session.scalar(
+        return self.session.scalar(select(func.count()).select_from(NativeAgentRow).where(
+            NativeAgentRow.root_task_id == root_task_id)) + self.session.scalar(
             select(func.count()).select_from(InvocationRow).where(
                 InvocationRow.task_id.in_(task_ids)
             )

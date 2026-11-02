@@ -47,8 +47,13 @@ class ConversationTurn:
     collect_plan_id: Optional[int] = None
     model: Optional[str] = None
     reasoning_effort: Optional[str] = None
+    native_subagents: str = "disabled"
 
     def __post_init__(self) -> None:
+        from agenthub.native import native_profile
+        native_profile({"native_subagents": self.native_subagents})
+        if self.native_subagents == "approved" and (self.agent_id != "claude-code" or self.execution_mode != "strict"):
+            raise ValueError("native subagents require Claude strict mode")
         from agenthub.models import validate_selection
         validate_selection(self.model, self.reasoning_effort)
         for name in ("plan_item_id", "collect_plan_id"):
@@ -85,6 +90,8 @@ class ConversationTurn:
     def request_hash(self) -> str:
         """Deduplication hash, separate from the policy-bound approval hash."""
         data = asdict(self)
+        if data["native_subagents"] == "disabled":
+            del data["native_subagents"]  # preserve old request hashes
         if data["context_mode"] == INDEPENDENT:
             # Keys stored before context_mode existed must still replay.
             del data["context_mode"]

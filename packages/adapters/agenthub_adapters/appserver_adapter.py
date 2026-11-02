@@ -122,6 +122,14 @@ PINNED_APPSERVER = {
 #: is not consulted when the model declares a multi-agent version (plan §2.1):
 #: it is sent as a request, never shown as "sub-agents disabled".
 APPSERVER_ARGV_TAIL = ("app-server", "--stdio", "--disable", "multi_agent")
+STRICT_APPSERVER_ARGV_TAIL = ("-c", "agents.enabled=false", *APPSERVER_ARGV_TAIL)
+
+
+def verify_native_disabled(result: dict) -> bool:
+    """A request/unknown key is not proof: require explicit effective false."""
+    config = result.get("config") if isinstance(result, dict) else None
+    agents = config.get("agents") if isinstance(config, dict) else None
+    return isinstance(agents, dict) and agents.get("enabled") is False
 
 #: Settings sent with thread/start and thread/resume, then read back (D2).
 THREAD_SETTINGS = {"sandbox": "read-only", "approvalPolicy": "on-request", "approvalsReviewer": "user"}
@@ -472,6 +480,12 @@ class CodexAppServerFactory:
         return problems
 
     def __call__(self, invocation_id: str, workdir: str) -> Any:
+        return self._launch(invocation_id, workdir, strict=False)
+
+    def open_strict(self, invocation_id: str, workdir: str) -> Any:
+        return self._launch(invocation_id, workdir, strict=True)
+
+    def _launch(self, invocation_id: str, workdir: str, *, strict: bool) -> Any:
         from agenthub_adapters.appserver import StdioTransport
         from agenthub_adapters.codex import build_env
 
@@ -483,7 +497,8 @@ class CodexAppServerFactory:
             raise LaunchRefused(f"launch refused: {why}")
         env = build_env(codex_home=self.codex_home, proxy=self.proxy, ca_bundle=self.ca_bundle)
         diagnostic_cwd = os.path.join(getattr(self, "log_root", os.path.dirname(workdir)), invocation_id)
-        return StdioTransport(list(self.argv), env=env, cwd=workdir,
+        argv = [self.codex_path, *STRICT_APPSERVER_ARGV_TAIL] if strict else list(self.argv)
+        return StdioTransport(argv, env=env, cwd=workdir,
                               stderr_path=log_path(diagnostic_cwd, invocation_id, "appserver-stderr"))
 
 
@@ -748,6 +763,8 @@ class AppServerCodexAdapter(AdapterContract):
                                   REAL_APPSERVER_BLOCK_REASON)
 
     def supervised_execution_admission(self) -> ExecutionAdmission:
+        if _trusted_offline(self.transport_factory):
+            return self.execution_admission()
         factory = self.transport_factory
         if type(factory) is not CodexAppServerFactory:
             return ExecutionAdmission(False, "blocked", "appserver_real_unverified",
@@ -884,7 +901,10 @@ class AppServerCodexAdapter(AdapterContract):
                 return AdapterStartResult("", ok=False, terminal=True,
                                           detail="local stop requested before launch; nothing started")
         try:
-            transport = self.transport_factory(invocation_id, workdir)
+            if snapshot.execution_mode == "strict" and type(self.transport_factory) is CodexAppServerFactory:
+                transport = self.transport_factory.open_strict(invocation_id, workdir)
+            else:
+                transport = self.transport_factory(invocation_id, workdir)
         except OSError as exc:
             self.store.set_status(invocation_id, FAILED, f"launch failed: {type(exc).__name__}")
             return AdapterStartResult("", ok=False, terminal=True,
@@ -915,8 +935,14 @@ class AppServerCodexAdapter(AdapterContract):
         try:
             client.start()
             session.initialize(client_name="agent-hub", version=self.version)
+            if snapshot.execution_mode == "strict" and type(self.transport_factory) is CodexAppServerFactory:
+                effective = client.request("config/read", {"includeLayers": False, "cwd": workdir})
+                if not verify_native_disabled(effective):
+                    raise _Refused("native subagents were not explicitly disabled in the effective configuration")
+                facts["native_agents_disabled_readback"] = True
+                thread_settings["config"] = {"agents.enabled": False}
             if writable:
-                thread_settings["config"] = workspace_thread_config(client, workdir)
+                thread_settings["config"] = {**thread_settings.get("config", {}), **workspace_thread_config(client, workdir)}
             if resume_id:
                 facts["opening_method"] = THREAD_RESUME
                 result = client.request(THREAD_RESUME, {"threadId": resume_id, "cwd": workdir,

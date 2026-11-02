@@ -77,6 +77,7 @@ class TurnIn(MessageIn):
     agent_id: str = Field(min_length=1, max_length=200)
     client_request_id: str = Field(min_length=1, max_length=128)
     execution_mode: Literal["strict", "supervised"] = "strict"
+    native_subagents: Literal["disabled", "approved"] = "disabled"
     # native_resume continues the provider thread of this agent's latest reply;
     # the thread id is bound into the approved snapshot.
     context_mode: Literal["independent", "native_resume"] = "independent"

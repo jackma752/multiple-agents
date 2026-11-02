@@ -76,6 +76,8 @@ def conversation_of(session: Any, invocation_id: str) -> Optional[str]:
 
 
 def card_view(session: Any, row: ToolApprovalRow) -> dict[str, Any]:
+    from agenthub_kernel.db import NativeAgentRow
+    native = session.scalar(select(NativeAgentRow).where(NativeAgentRow.card_id == row.id))
     return {
         "tool_approval_id": row.id, "invocation_id": row.invocation_id,
         "conversation_id": conversation_of(session, row.invocation_id),
@@ -88,6 +90,8 @@ def card_view(session: Any, row: ToolApprovalRow) -> dict[str, Any]:
         "delivery": row.delivery, "decision_sent": row.decision_sent,
         "card_hash": card_hash(row),
         "auto": _auto_rule(session, row.id),
+        "native_agent": ({"id": native.id, "depth": native.depth, "state": native.state,
+                          "agent_type": native.agent_type} if native else None),
     }
 
 
@@ -172,6 +176,47 @@ class ToolGate:
         # event stream instead of sitting in a buffer behind it.
         self.before_open = before_open
         self.opened: list[str] = []
+        self.native_workdir = None
+        self.native_violation = False
+
+    def bind_native(self, workdir: str) -> None:
+        """Adapter-owned empty cwd, never a value taken from a hook request."""
+        import os
+        if not os.path.isabs(workdir):
+            raise ValueError("native working directory must be absolute")
+        self.native_workdir = os.path.realpath(workdir)
+
+    def native_event(self, event: dict) -> dict:
+        from agenthub_kernel.native_tools import handle
+        return handle(self, event)
+
+    def native_unfinished(self) -> bool:
+        from agenthub_kernel.db import NativeAgentRow
+        if self.native_violation:
+            return True
+        try:
+            with self.db.session() as session:
+                return session.scalar(select(NativeAgentRow.id).where(
+                    NativeAgentRow.invocation_id == self.invocation_id,
+                    NativeAgentRow.state != "finished").limit(1)) is not None
+        except Exception:
+            return True
+
+    def native_delivered(self, event: dict, *, decision: str, ok: bool) -> None:
+        """Records response transport only; never evidence the tool executed."""
+        if event.get("hook_event_name") != "PreToolUse":
+            return
+        with self.db.session() as session:
+            row = session.scalar(select(ToolApprovalRow).where(
+                ToolApprovalRow.invocation_id == self.invocation_id,
+                ToolApprovalRow.request_key == "claude:" + str(event.get("tool_use_id"))))
+            if row is None or row.delivery != TOOL_DELIVERY_SENDING:
+                return
+            expected = "allow" if row.status == TOOL_APPROVAL_APPROVED else "deny"
+            if decision != expected:
+                return  # a duplicate callback's deny didn't deliver the first allow
+            card_id, answer = row.id, "accept" if decision == "allow" else "decline"
+        self.delivered(card_id, decision=answer, ok=ok)
 
     def open(self, *, method: str, request_key: str, thread_id: str, turn_id: str,
              item_id: str, details: Any, available_decisions: Any,
@@ -257,6 +302,12 @@ class ToolGate:
                     row.delivery = TOOL_DELIVERY_BLOCKED
                     session.flush()
                     return None
+                if row.method == "claude/PreToolUse" and row.status == TOOL_APPROVAL_APPROVED:
+                    from agenthub_kernel.native_tools import claim_native
+                    if now() >= row.expires_at or not claim_native(session, row, self.native_workdir):
+                        row.delivery = TOOL_DELIVERY_BLOCKED
+                        session.flush()
+                        return None
                 from agenthub_kernel.db import StageGrantRow, StageRunRow
                 from agenthub.stage import STAGE_RUNNABLE
                 grant = session.scalar(select(StageGrantRow).where(StageGrantRow.invocation_id == row.invocation_id))

@@ -454,6 +454,26 @@ class ToolApprovalRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class NativeAgentRow(Base):
+    """One authorized native launch; uncertainty never releases its slot.
+
+    Shares TreeQuotaRow with Hub-created invocations. The card binds the full
+    request; provider ids are linked only after an unambiguous start event.
+    """
+    __tablename__ = "native_agents"
+    id = Column(String, primary_key=True)
+    invocation_id = Column(ForeignKey("invocations.id"), index=True, nullable=False)
+    card_id = Column(ForeignKey("tool_approvals.id"), unique=True, nullable=False)
+    root_task_id = Column(String, index=True, nullable=False)
+    provider_agent_id = Column(String, nullable=True)
+    parent_agent_id = Column(String, nullable=False, default="")
+    agent_type = Column(String, nullable=False)
+    depth = Column(Integer, nullable=False)
+    state = Column(String, nullable=False, default="reserved")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+
+
 class ToolGateClosureRow(Base):
     """No tool decision of this call may be sent to the provider any more.
 

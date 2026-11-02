@@ -222,6 +222,8 @@ def _tool_events(conn: Connection, new: list[Any], dirty: list[Any]) -> list[tup
 
 
 def _after_flush(session: Session, _ctx: Any) -> None:
+    from agenthub.native import NATIVE_STATUS_EVENT
+    from agenthub_kernel.db import NativeAgentRow
     from agenthub_kernel.db import (
         ApprovalRow, ChatMessageRow, ConversationRow, EventRow, InvocationRow,
         ToolApprovalRow,
@@ -232,7 +234,7 @@ def _after_flush(session: Session, _ctx: Any) -> None:
     if not new and not dirty:
         return
     interesting = (ConversationRow, ChatMessageRow, ApprovalRow, InvocationRow, EventRow,
-                   ToolApprovalRow)
+                   ToolApprovalRow, NativeAgentRow)
     if not any(isinstance(o, interesting) for o in new + dirty):
         return
     conn = session.connection()
@@ -295,6 +297,14 @@ def _after_flush(session: Session, _ctx: Any) -> None:
         }))
 
     out.extend(_tool_events(conn, new, dirty))
+    for native in [o for o in new + dirty if isinstance(o, NativeAgentRow)]:
+        if native not in new and not get_history(native, "state").has_changes():
+            continue
+        cid = _conversation_of_invocation(conn, native.invocation_id)
+        if cid:
+            out.append((cid, NATIVE_STATUS_EVENT, {"invocation_id": native.invocation_id,
+                "native_agent_id": native.id, "tool_approval_id": native.card_id,
+                "state": native.state, "depth": native.depth}))
 
     if out:
         _append(conn, out)

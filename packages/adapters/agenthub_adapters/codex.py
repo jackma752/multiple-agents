@@ -611,6 +611,9 @@ class CodexAdapter(AdapterContract):
 
     def supervised_execution_admission(self) -> ExecutionAdmission:
         """User-selected bounded operation, not a claim that native children are controlled."""
+        simulated = self.execution_admission()
+        if simulated.mode == "simulation":
+            return simulated
         if (type(self.runner) is not SubprocessCodexRunner or self.command_prefix
                 or self.sandbox != "read-only" or not self.disable_subagents
                 or not self.expected_identity or not math.isfinite(self.timeout_seconds)

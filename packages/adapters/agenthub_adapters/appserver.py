@@ -277,6 +277,7 @@ class StdioTransport:
             self._proc = subprocess.Popen(
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
                 stderr=self._stderr_file, env=env, cwd=cwd,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except BaseException:
             self._close_handle(self._stderr_file)

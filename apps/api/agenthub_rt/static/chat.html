@@ -185,6 +185,9 @@
             <option value="supervised">用户监督模式</option>
           </select>
         </label>
+        <label title="仅限 Claude 严格文件工具模式；还需开启右侧协作并设置数量限制。每次启动仍单独审批。">原生子 Agent
+          <select id="nativeAgents"><option value="disabled">关闭</option><option value="approved">逐次审批</option></select>
+        </label>
         <label title="作为可见的说明加在消息前，随审批绑定；是软目标，不会截断回复">输出
           <select id="outputStyle" aria-label="输出偏好">
             <option value="" selected>默认</option>
@@ -361,6 +364,7 @@ function absorbMessage(m) {
     patch(call(inv.invocation_id), {
       status: inv.status, error: inv.error, approval_id: inv.approval_id, approval_status: inv.approval_status,
       agent_id: inv.agent_id, execution_mode: inv.execution_mode, model:inv.model, reasoning_effort:inv.reasoning_effort,
+      native_subagents: inv.native_subagents,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
       context_preview: inv.context_preview, plan_item: inv.plan_item, authorized_by: inv.authorized_by,
@@ -855,6 +859,10 @@ function apply(ev, gen = S.viewGen) {
     case "stream.native_agent_observed":
       call(p.invocation_id).native.push(p);
       break;
+    case "native_agent.status":
+      fetchCard(p.tool_approval_id, gen);
+      needUsage(gen);
+      break;
     case "task.interrupt_requested": {
       // The effective point (from any client): tool decisions closed first.
       const c = call(p.invocation_id);
@@ -1087,6 +1095,7 @@ async function send(event) {
       file_refs: S.refs.slice(),
       summary_id: S.attachSummary, include_history: S.includeHistory,
       output_style: $("outputStyle").value,
+      native_subagents: $("nativeAgents").value,
     });
     if (current(gen)) patch(call(turn.invocation_id), turn);
     $("text").value = "";
@@ -1096,6 +1105,7 @@ async function send(event) {
     S.includeHistory = false;  // a summary stays attached until removed; history is per drafting call
     renderSuggestions();
     $("mode").value = "";  // the next call needs its own explicit choice
+    $("nativeAgents").value = "disabled";
     if (current(gen)) needMessages(gen);
     if (untitled) await loadConvs();  // its first message just gave it a title
   });
@@ -1374,11 +1384,13 @@ const CARD_LABEL = {
   expired: ["已过期（按拒绝处理）", ""], void: ["已作废（请求已结束）", ""],
 };
 const METHOD_LABEL = {
+  "claude/PreToolUse": "Claude 请求使用工具或启动子 Agent",
   "item/commandExecution/requestApproval": "Agent 请求执行命令",
   "item/fileChange/requestApproval": "Agent 请求修改文件",
   "item/permissions/requestApproval": "Agent 请求权限",
 };
 const DETAIL_LABEL = { command: "命令（原文）", command_view: "命令（拆开后）", cwd: "目录",
+  native_hook: "本次工具请求（含子 Agent 来源及完整参数）",
   reason: "理由（模型提供的说明）", reason_source: null, path: "路径", grantRoot: "授权范围",
   changes: "文件变更", additionalPermissions: "本次命令申请的额外权限", networkApprovalContext: "网络授权范围",
   approval_scope: null, approval_block_reason: "当前不能允许的原因",
@@ -1432,6 +1444,7 @@ function renderCard(id) {
     : card.delivery === "not_sent" ? "未发送（请求已结束）" : null;
   return el("div", { class: "card" + (pending ? "" : " done") },
     el("h4", {}, METHOD_LABEL[card.method] || card.method || "工具请求"),
+    card.native_agent ? el("div", {class:"note"}, `原生子 Agent · 深度 ${card.native_agent.depth} · ${card.native_agent.agent_type} · ${{reserved:'已预留',running:'运行中',finished:'已结束',unknown:'状态未确认，保留名额'}[card.native_agent.state] || card.native_agent.state}`) : null,
     card.loading ? el("div", { class: "note" }, "读取中…") : el("dl", {}, rows.flat()),
     el("div", { class: "row" },
       chip(label, kind),
@@ -1480,8 +1493,10 @@ function renderCall(c) {
   if(c.workspace) {
     notes.push(`工作区：${c.workspace} · ${c.workspace_access === 'workspace-write' ? '允许写入' : '只读（不能修改文件）'}`);
     notes.push(c.agent_id === 'codex' ? 'Codex 可在此工作区读取；允许写入时可修改。需要审批的工具仍由本次工具卡或阶段规则决定，原生直接操作不保证逐项拦截。'
-      : c.agent_id === 'claude-code' ? '当前 Claude 通道未开放原生文件工具；需要阅读的内容请添加文件引用。' : '此 API 通道没有本机文件工具；只能读取明确附带的文件片段和交接内容。');
+      : c.agent_id === 'claude-code' ? (supervised ? '用户监督模式使用文件引用。' : '严格模式中的文件工具需逐次审批；命令、MCP、后台运行和原生续接不开放。') : '此 API 通道没有本机文件工具；只能读取明确附带的文件片段和交接内容。');
   }
+  if(c.agent_id === 'claude-code' && !supervised)
+    notes.push(c.native_subagents === 'approved' ? '原生子 Agent：每次启动单独审批，并计入全树数量和并发；当前只开放一层前台子任务。' : '原生子 Agent：关闭。');
   if (c.execution_timeout_seconds !== undefined && c.execution_timeout_seconds !== null)
     notes.push(`单次执行时限：${c.execution_timeout_seconds === 0 ? '不限时（可手动停止）' : (c.execution_timeout_seconds / 60) + ' 分钟'}`);
   const handoff = c.handoff || [];
@@ -2147,6 +2162,9 @@ function lastNativeThread(agent) {
 }
 
 function renderComposer() {
+  const nativeAllowed = $("agent").value === "claude-code" && $("mode").value === "strict";
+  $("nativeAgents").disabled = !nativeAllowed;
+  if (!nativeAllowed) $("nativeAgents").value = "disabled";
   const agent = $("agent").value;
   const thread = lastNativeThread(agent);
   const active = [...S.calls.values()].some((c) => ["starting", "running", "unknown"].includes(c.status));

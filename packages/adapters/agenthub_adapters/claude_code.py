@@ -1,19 +1,17 @@
-"""Claude Code adapter: the minimum non-interactive path for P3 (offline so far).
+"""Claude Code adapter: non-interactive calls and a scoped strict file profile.
 
 One call = one ``claude -p`` process with a fixed argv, the prompt on stdin and
-one JSON result object on stdout (``--output-format json``). Nothing here has
-run against Claude Code: the argv, the result shape and the flags come from the
-official documentation (code.claude.com headless / CLI reference, read
-2026-10-23) and from a static string scan of the pinned binary. Each such fact
-is "documented, not observed" until the real test (docs/claude-code-adapter.md).
+one JSON result object on stdout (``--output-format json``). The file-hooks-v1
+profile was checked on 2026-11-03 against the exact 2.1.308 binary using a
+synthetic localhost provider, with no real model or credentials. See
+docs/native-strict.md for the tested scope and remaining limitations.
 
 Admission (same structure as the app-server adapter):
 
 * the trusted offline fixtures (:class:`FakeClaudeRunner`, and the bundled stub
   run by :class:`StubClaudeLauncher`) are ``simulation``;
-* a real launch is blocked in strict mode: native sub-agents and tool
-  interception are not proven controllable (``--tools ""`` is a request, never
-  proof);
+* strict admits only a reviewed binary/profile pair: scoped file tools and
+  manually approved new foreground general-purpose children, no shell/MCP;
 * supervised mode admits only :class:`ClaudeCodeLauncher` built from the
   reviewed :data:`PINNED_CLAUDE_CODE` constant, the fixed argv, a proxy and a
   readable CA bundle, a config directory and work root outside the repository,
@@ -43,6 +41,7 @@ Rules this adapter enforces:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -110,6 +109,13 @@ CLAUDE_ARGV_TAIL = (
     "--max-budget-usd", "1.00",  # client-side estimate; spend can pass it
     "--no-session-persistence",  # no transcript on disk; no resume
 )
+
+STRICT_PROFILE = "file-hooks-v1"
+# Populated only by acceptance against the exact binary, never from a profile
+# file or model output. Loopback synthetic-model evidence is labelled as such.
+STRICT_VERIFIED_SHA256: frozenset[str] = frozenset({
+    "c9796ba22a9221586b36371b36f5b66198d66eb4badf6a4cf4a5f7b07becea53",
+})
 
 #: What the context preview may say about this adapter (T-1d): the prompt is
 #: ``task_input`` on stdin, verbatim. ``observed`` are real runs under this pin
@@ -664,10 +670,11 @@ class ClaudeCodeAdapter(AdapterContract):
             return "unavailable"
         if not isinstance(value, str) or not value or value == "unknown":
             return "unavailable"
-        return value
+        return value if self._simulated() else value + ";strict-profile=" + STRICT_PROFILE
 
     def capabilities(self) -> dict[str, Any]:
-        """Implemented paths only; nothing has been verified against Claude Code."""
+        """Scoped runtime evidence; no claim about untested binaries or tools."""
+        strict_verified = not self._strict_problems()
         return {
             "post_message": True,      # one prompt via stdin; not run against Claude Code
             "final_reply": True,       # result.result of the JSON object
@@ -676,14 +683,21 @@ class ClaudeCodeAdapter(AdapterContract):
             "cancel": False,           # unsupported
             "stop_local_process": type(self.runner) is ProcessRunner,
             "limit_dir": "unknown",
-            "intercept_tool": False,
-            "control_subagent": False,
-            "tools_disabled_requested": True,  # --tools "": a request, not proof
+            "intercept_tool": strict_verified,
+            "control_subagent": strict_verified,
+            "tools_disabled_requested": not strict_verified,
+            "supervised_tools_disabled_requested": True,
             "real_usage": "unknown",   # recorded when the result carries it; unverified
             "verified": {"post_message": False, "final_reply": False, "real_usage": False,
                          "stream": False, "resume_session": False, "cancel": False,
-                         "intercept_tool": False, "control_subagent": False},
+                         "intercept_tool": strict_verified, "control_subagent": strict_verified},
             "transport": TRANSPORT,
+            "strict_profile": STRICT_PROFILE,
+            "strict_tools": ["Read", "Grep", "Glob", "Write", "Edit", "Agent"],
+            "strict_shell": False,
+            "strict_profile_verified": strict_verified,
+            "strict_native_scope": "new foreground general-purpose children; one native layer; manual launch approval; no token budget",
+            "native_subagents_default": "disabled",
         }
 
     def _simulated(self) -> bool:
@@ -696,9 +710,36 @@ class ClaudeCodeAdapter(AdapterContract):
         if self._simulated():
             return ExecutionAdmission(True, "simulation", "offline_fixture",
                                       "离线 Claude Code 桩验证，不调用真实 Claude Code。")
-        return ExecutionAdmission(False, "blocked", "claude_code_controls_unverified", REAL_BLOCK_REASON)
+        if self._strict_problems():
+            return ExecutionAdmission(False, "blocked", "claude_code_controls_unverified", REAL_BLOCK_REASON)
+        return ExecutionAdmission(True, "strict", "claude_file_hooks_verified",
+            "严格文件工具模式：工具操作逐次审批；原生子 Agent 默认关闭，明确开启后逐次审批并计入全树配额。"
+            "不开放 Shell、MCP、后台运行与原生续接；Token 预算不是单回合硬上限。")
+
+    def _strict_problems(self) -> list[str]:
+        if type(self.launcher) is not ClaudeCodeLauncher or type(self.runner) is not ProcessRunner:
+            return ["unsupported_launcher"]
+        if (self.launcher.expected_identity or {}).get("sha256") not in STRICT_VERIFIED_SHA256:
+            return ["strict_profile_not_verified_for_binary"]
+        problems = self.launcher.supervised_problems()
+        if _inside(self.workdir_root, REPO_ROOT):
+            problems.append("workdir_inside_repository")
+        if not (type(self.timeout_seconds) in (int, float) and math.isfinite(self.timeout_seconds)
+                and 0 <= self.timeout_seconds <= 86400):
+            problems.append("invalid_timeout")
+        return problems
+
+    def supports_tool_approval(self) -> bool:
+        return True
+
+    def start_streaming(self, invocation_id, snapshot, *, gate_token=None, emit=None, tool_gate=None):
+        # Text output remains the final JSON object. This extension supplies
+        # the kernel ToolGate while the CLI waits on its live approval cards.
+        return self.start(invocation_id, snapshot, gate_token=gate_token, tool_gate=tool_gate)
 
     def supervised_execution_admission(self) -> ExecutionAdmission:
+        if self._simulated():
+            return self.execution_admission()
         if type(self.launcher) is not ClaudeCodeLauncher or type(self.runner) is not ProcessRunner:
             return ExecutionAdmission(False, "blocked", "claude_code_controls_unverified", REAL_BLOCK_REASON)
         try:
@@ -731,7 +772,7 @@ class ClaudeCodeAdapter(AdapterContract):
     # -- gated start --------------------------------------------------------
 
     def start(self, invocation_id: str, snapshot: InvocationSnapshot, *,
-              gate_token: Optional[str] = None) -> AdapterStartResult:
+              gate_token: Optional[str] = None, tool_gate: Any = None) -> AdapterStartResult:
         if not gate_token:
             return AdapterStartResult("", ok=False, terminal=True,
                                       detail="refused: no kernel gate token (invocation not approved)")
@@ -762,9 +803,18 @@ class ClaudeCodeAdapter(AdapterContract):
             workspace = approved_workspace(snapshot)
             if execution_timeout(snapshot, self.timeout_seconds) != self.timeout_seconds:
                 raise ValueError("approved execution time limit differs from the current adapter")
-            workdir = workspace or os.path.join(self.workdir_root, invocation_id)
+            native_strict = snapshot.execution_mode == "strict" and not self._simulated()
+            if native_strict and tool_gate is None:
+                raise ValueError("strict execution requires the kernel native tool gate")
+            if native_strict and workspace and (_inside(self.workdir_root, workspace)
+                    or _inside(self.launcher.config_dir, workspace)):
+                raise ValueError("approved workspace overlaps protected execution configuration")
+            # Keep executable project customizations out of the CLI cwd. The
+            # kernel scopes file tool requests to the approved workspace.
+            workdir = (os.path.join(self.workdir_root, invocation_id) if native_strict
+                       else workspace or os.path.join(self.workdir_root, invocation_id))
             os.makedirs(workdir, exist_ok=True)
-            if not workspace and os.listdir(workdir):
+            if (native_strict or not workspace) and os.listdir(workdir):
                 return AdapterStartResult("", ok=False, terminal=True,
                                           detail="refused: work directory is not empty; nothing started")
             logs = os.path.join(self.workdir_root, "_logs")
@@ -794,8 +844,28 @@ class ClaudeCodeAdapter(AdapterContract):
             "env_stripped": stripped, "env_set": added,  # names only
         }
         try:
-            run = self.runner.run(invocation_id, argv, env, workdir, snapshot.task_input,
-                                  self.timeout_seconds, stdout_path, stderr_path)
+            with contextlib.ExitStack() as stack:
+                if native_strict:
+                    from agenthub_adapters.claude_hooks import ClaudeHookBridge
+                    bridge = stack.enter_context(ClaudeHookBridge(tool_gate, cwd=workdir,
+                        config_root=os.path.join(self.workdir_root, "_hooks"),
+                        permissions=snapshot.permissions, timeout=min(tool_gate.ttl_seconds, 300)))
+                    argv = [self.launcher.path, *bridge.argv()]
+                    if snapshot.model:
+                        argv += ["--model", snapshot.model]
+                    if snapshot.reasoning_effort:
+                        argv += ["--effort", snapshot.reasoning_effort]
+                    env["CLAUDE_CODE_DISABLE_FILE_MENTIONS"] = "1"
+                    env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1"
+                    env["CLAUDE_CODE_FORK_SUBAGENT"] = "0"
+                    env["CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"] = "0"
+                    facts["env_set"] = sorted(set(added) | {
+                        "CLAUDE_CODE_DISABLE_FILE_MENTIONS", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+                        "CLAUDE_CODE_FORK_SUBAGENT", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD"})
+                    facts["strict_profile"] = STRICT_PROFILE
+                    facts["argv_tail"] = []  # do not retain credential-bearing settings paths
+                run = self.runner.run(invocation_id, argv, env, workdir, snapshot.task_input,
+                                      self.timeout_seconds, stdout_path, stderr_path)
         except ClaudeLaunchFailed as exc:
             # Provably nothing is running: definitive, the slot may be freed.
             self.store.set_payload(invocation_id, {**facts, "verdict": FAILED, "terminal": True,
@@ -811,6 +881,8 @@ class ClaudeCodeAdapter(AdapterContract):
 
         parsed = parse_result(run.stdout_text)
         verdict, terminal, detail = classify(run, parsed)
+        if native_strict and tool_gate.native_unfinished():
+            verdict, terminal, detail = RUNNING, False, "native child end state is unconfirmed; quota retained"
         result = parsed.result or {}
         session_id = result.get("session_id") if isinstance(result.get("session_id"), str) else ""
         local_id = session_id or f"claude-code-{invocation_id}"

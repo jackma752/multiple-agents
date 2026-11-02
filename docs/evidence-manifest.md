@@ -1,5 +1,17 @@
 # 真实运行证据清单
 
+## 原生严格模式：真实 CLI 与合成模型（2026-11-03）
+
+用户要求“继续”实施。均为新建空配置、本机合成模型/零模型配置读取，不读真实登录文件，不调用在线模型。路径相对 `.worktrees/`；原始输出、数据库及诊断仅留在忽略目录。结论和失败边界见 [原生严格模式](native-strict.md)。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `native-strict/var/native-runtime-release.json` | 22035 | `4345d83a8f7bdad92a6f594a709135d6c7bea5a66a685ef181febcb67ec7a9ad` |
+| `native-strict/var/native-worker-release.json` | 2289 | `abff69f3325f6c3da8eb7e45b21bd4ab22f33f9dfa6ef6472b786a59b5b26c6d` |
+| `native-strict/var/codex-native-disabled.json` | 312 | `86e531271e90bda906344b3488063ce9fe69de4535cb1a1ea78d7e347b9d81fc` |
+| `native-strict/var/codex-disabled-turn.json` | 1100 | `7a4444e439d83e2bef47a7cc82c47b95d6de9f7c623e3630ee028147cee12cd7` |
+| `native-strict/var/codex-pretool-spawn-failed.json` | 1130 | `f4cc32f1fcde6e20475e1e902d0033ff0396c51b52dd1722966f19c57c52b5e9` |
+
 ## 严格模式零模型核验与传输基准（2026-11-03）
 
 结果见 [0.8.1 记录](strict-transmission-0.8.1.md)。程序身份核验只读采用文件，不启动 CLI/模型或读登录文件；真实元数据查询无模型；本机基准只写专用测试消息。下列文件均只含状态/数字，原件保留 var。

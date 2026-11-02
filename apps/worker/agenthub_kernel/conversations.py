@@ -96,6 +96,7 @@ def turn_view(session: Session, message: ChatMessageRow) -> dict[str, Any]:
         "payload_hash": inv.payload_hash, "status": inv.status,
         "error": inv.error,
         "execution_mode": inv.snapshot.get("execution_mode", "strict"),
+        "native_subagents": (inv.snapshot.get("permissions") or {}).get("native_subagents", "disabled"),
         "workspace": (inv.snapshot.get("permissions") or {}).get("workspace"),
         "workspace_access": (inv.snapshot.get("permissions") or {}).get("workspace_access"),
         "execution_timeout_seconds": (inv.snapshot.get("permissions") or {}).get("execution_timeout_seconds"),
@@ -385,6 +386,7 @@ def submit_turn(
         adapter_version=adapter_version, handoff=handoff, context_preview=preview,
         model=request.model, reasoning_effort=request.reasoning_effort,
         model_provider=provider_of(request.agent_id) if request.model else None,
+        permissions=({"native_subagents": "approved"} if request.native_subagents == "approved" else {}),
     )
     inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)

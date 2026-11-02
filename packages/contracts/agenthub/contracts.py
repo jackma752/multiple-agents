@@ -176,6 +176,8 @@ class InvocationSnapshot:
     model_provider: Optional[str] = None
 
     def __post_init__(self) -> None:
+        from agenthub.native import native_profile
+        native_profile(self.permissions)
         from agenthub.workspace import execution_timeout
         execution_timeout(self, None)
         from agenthub.models import validate_selection
@@ -365,8 +367,10 @@ def execution_admission(adapter: Any, execution_mode: str = "strict") -> Executi
         admission = adapter.execution_admission()
         if execution_mode not in {"strict", "supervised"}:
             return ExecutionAdmission()
-        if execution_mode == "supervised" and not admission.allowed:
-            admission = adapter.supervised_execution_admission()
+        if execution_mode == "supervised":
+            supervised = getattr(adapter, "supervised_execution_admission", None)
+            if callable(supervised):
+                admission = supervised()
     except Exception:
         return ExecutionAdmission()
     if (

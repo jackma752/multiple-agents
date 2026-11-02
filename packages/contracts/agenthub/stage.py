@@ -210,6 +210,11 @@ def tool_decision(rules: ToolRules, method: str, details: dict[str, Any]) -> tup
     writable root is always declined.
     """
     details = details if isinstance(details, dict) else {}
+    if method == "claude/PreToolUse":
+        hook = details.get("native_hook") or {}
+        if hook.get("tool_name") in ("Write", "Edit") and rules.allow_file_changes:
+            return "approved", "file changes allowed; native workspace gate rechecks before delivery"
+        return "declined", "this native tool or subagent launch is not in the stage rules"
     if details.get("additionalPermissions") or details.get("networkApprovalContext"):
         return "declined", "additional access is not covered by command prefixes or file changes"
     if details.get("grantRoot"):

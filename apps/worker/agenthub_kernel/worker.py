@@ -828,6 +828,8 @@ class Worker:
             # "unavailable" (a broken declaration) never matches. On mismatch
             # the call cannot run and its approval is left as it is.
             refusal = None
+            from agenthub_kernel.native_tools import launch_preflight
+            refusal = launch_preflight(session, inv)
             if inv.snapshot.get("model") and not getattr(target, "supports_model_selection", False):
                 refusal = ("model_selection_unsupported", "该适配器不能选择模型，调用未启动")
             if inv.snapshot.get("reasoning_effort") and not getattr(target, "supports_effort_selection", False):
