@@ -630,8 +630,9 @@ class Database:
         )
         # Conversation events are recorded from the flush itself; see events.py.
         self.events_ready = False
-        from agenthub_kernel.events import install_event_capture
+        from agenthub_kernel.events import ConversationWakeups, install_event_capture
 
+        self.event_wakeups = ConversationWakeups()
         install_event_capture(self._sessionmaker)
 
     def _enable_wal(self) -> None:
@@ -659,6 +660,14 @@ class Database:
             try:
                 yield session
                 session.commit()
+                # Publish only after commit. This hint never starts a call or
+                # carries model text; SSE readers still query their own cursor.
+                changed = session.info.pop("event_wakeup_cids", set())
+                if changed:
+                    try:
+                        self.event_wakeups.publish(changed)
+                    except Exception:
+                        pass  # Notification failure cannot undo an already committed write.
             except Exception:
                 session.rollback()
                 raise

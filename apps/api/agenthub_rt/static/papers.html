@@ -160,6 +160,7 @@
         <select id="f_mode"><option value="strict">严格</option><option value="supervised">用户监督</option></select></div>
     </div>
     <label id="f_consentWrap" hidden><input id="f_consent" type="checkbox" /> 我了解用户监督边界：原生派生与远端停止不保证受控。</label>
+    <p id="f_mode_hint" class="small dim"></p>
     <div class="field" style="margin-top:10px"><label>文献来源（可多选，来源可能限流或暂时不可用）</label><div class="row">
       <label><input type="checkbox" name="f_source" value="arxiv" checked /> arXiv</label>
       <label><input type="checkbox" name="f_source" value="openalex" /> OpenAlex</label>
@@ -194,7 +195,7 @@
 
 <script>
 "use strict";
-const S = { token: "", desktop: false, tasks: [], current: null, view: null, agents: [], timer: null,
+const S = { token: "", desktop: false, tasks: [], current: null, view: null, agents: [], adapterInfo: {}, timer: null,
             fetchedAt: 0, preflight: null, supSig: "", evidenceFor: null, requestKey: null };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -288,10 +289,14 @@ async function showForm() {
   const options = S.agents.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
   $("f_main").innerHTML = options || `<option value="">（没有已接入的 Agent，请先到本机设置）</option>`;
   $("f_review").innerHTML = `<option value="">不审阅（质量将标为“审阅不可用”）</option>` + options;
-  $("f_mode").onchange = () => { $("f_consentWrap").hidden = $("f_mode").value !== "supervised"; };
+  // New drafts start on an admitted strict channel; later user choices stay explicit.
+  const strictAgents=S.agents.filter(a=>((S.adapterInfo.agents || {})[a] || S.adapterInfo).execution_admission?.allowed);
+  const realStrict=strictAgents.find(a=>{const x=(S.adapterInfo.agents || {})[a] || S.adapterInfo;return x.execution_admission.mode==='strict' && !x.stub;});
+  if(realStrict || strictAgents.length) $("f_main").value=realStrict || strictAgents[0];
+  $("f_mode").onchange = renderModePosture;
   for (const el of $("main").querySelectorAll("input,select,textarea")) el.addEventListener("input", () => { $("startBtn").disabled = true; });
   for (const role of ["main", "review"]) {
-    $(`f_${role}`).addEventListener("change", () => setupRole(role));
+    $(`f_${role}`).addEventListener("change", async () => { await setupRole(role); if(role==='main') await setupRole('review'); });
     $(`f_${role}_model`).addEventListener("input", () => renderEfforts(role));
   }
   for (const role of ["main", "review"]) {
@@ -319,7 +324,9 @@ async function loadCatalog(agent, refresh) {
   return CATALOGS[agent];
 }
 async function setupRole(role) {
+  renderModePosture();
   const agent = $(`f_${role}`).value, input = $(`f_${role}_model`);
+  if(input.dataset.agent!==agent) { input.value=''; input.dataset.agent=agent; $(`f_${role}_effort`).value=''; }
   const sameAsMain = role === "review" && agent && agent === $("f_main").value;
   if (!agent || sameAsMain) {
     // One agent has one model per stage: a reviewer on the main agent uses the main agent's model.
@@ -333,7 +340,7 @@ async function setupRole(role) {
   if ($(`f_${role}`).value !== agent) return;
   $(`f_${role}_models`).innerHTML = (catalog.models || []).map((m) => `<option value="${esc(m.id)}">${esc(m.display_name || m.id)}</option>`).join("");
   const saved = rememberedModel(agent);
-  if (!input.value) input.value = saved.model || "";
+  if (!input.value) input.value = saved.model || (catalog.default_source==='adapter_configuration' ? catalog.default_model || '' : '');
   input.disabled = catalog.selection === false;
   renderEfforts(role, saved.model === input.value ? saved.reasoning_effort : null);
   $(`f_${role}_refresh`).hidden = catalog.refresh_available === false;
@@ -343,13 +350,30 @@ async function setupRole(role) {
     : [catalog.default_model ? `接入方默认 ${catalog.default_model}` : "", catalog.message || "", catalog.catalog_note || ""]
         .filter(Boolean).join("；"));
 }
+function renderModePosture() {
+  if (!$("f_mode")) return;
+  const mode=$("f_mode").value;
+  $("f_consentWrap").hidden=mode!=='supervised';
+  const selected=[...new Set([$("f_main").value,$("f_review").value].filter(Boolean))];
+  const blocked=[],simulated=[];
+  for(const agent of selected) {
+    const info=(S.adapterInfo.agents || {})[agent] || S.adapterInfo;
+    const admission=info[mode==='strict'?'execution_admission':'supervised_admission'];
+    if(admission && admission.allowed===false) blocked.push(agent+'：'+admission.reason);
+    else if(admission?.mode==='simulation' || info.stub===true) simulated.push(agent);
+  }
+  $("f_mode_hint").textContent=blocked.length ? blocked.join('；')
+    : simulated.length ? simulated.join('、')+' 是离线模拟，不能据此验证真实严格控制。'
+    : mode==='strict' ? '严格模式会在启动前检查通道能力、审批和预算；未知能力不会自动放行。' : '用户监督模式需明确勾选边界同意；不会自动切换模式。';
+}
 function renderEfforts(role, preferred) {
   const agent = $(`f_${role}`).value, catalog = CATALOGS[agent] || {}, select = $(`f_${role}_effort`);
   const current = preferred !== undefined && preferred !== null ? preferred : select.value;
   const model = (catalog.models || []).find((m) => m.id === $(`f_${role}_model`).value.trim());
   const efforts = [...(model && model.reasoning_efforts || [])];
   if (current && !efforts.includes(current)) efforts.push(current);
-  select.innerHTML = `<option value="">默认强度</option>` + efforts.map((e) => `<option value="${esc(e)}" ${e === current ? "selected" : ""}>${esc(e)}</option>`).join("");
+  const labels={none:'关闭推理',low:'较低',high:'较高',xhigh:'超高',max:'最高'};
+  select.innerHTML = `<option value="">默认强度</option>` + efforts.map((e) => `<option value="${esc(e)}" ${e === current ? "selected" : ""}>${esc(labels[e] || e)}</option>`).join("");
   select.disabled = catalog.effort_selection === false || !efforts.length || $(`f_${role}_model`).disabled;
 }
 
@@ -851,6 +875,7 @@ async function connect() {
   }
   try {
     const info = await api("GET", "/api/adapter");
+    S.adapterInfo = info;
     S.agents = info.agent_ids || info.agents && Object.keys(info.agents) || [];
     $("connChip").textContent = "已连接"; $("connChip").className = "chip ok";
     await loadTasks();

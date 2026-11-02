@@ -425,25 +425,34 @@ def register_conversations(app, db) -> None:
             deadline = time.monotonic() + timeout
             beat = time.monotonic() + SSE_HEARTBEAT_SECONDS
             after = cursor
-            yield f"retry: {SSE_RETRY_MS}\n\n"
-            while True:
-                for event in page["events"]:
-                    yield sse_frame(event)
-                after = page["next_after_seq"]
-                if page["has_more"]:
-                    page = await run_in_threadpool(next_page, after)
-                    continue
-                now = time.monotonic()
-                if now >= deadline or await request.is_disconnected():
-                    return
-                if now >= beat:
-                    beat = now + SSE_HEARTBEAT_SECONDS
-                    yield ": keep-alive\n\n"
-                await asyncio.sleep(min(poll, max(deadline - now, 0)))
-                try:
-                    page = await run_in_threadpool(next_page, after)
-                except CursorAhead:
-                    return  # Stream was replaced underneath us; client re-syncs.
+            token, wake = db.event_wakeups.subscribe(cid)
+            try:
+                yield f"retry: {SSE_RETRY_MS}\n\n"
+                while True:
+                    if page["events"]:
+                        # A batch can contain many SSE frames in one transport write.
+                        yield "".join(sse_frame(event) for event in page["events"])
+                    after = page["next_after_seq"]
+                    if page["has_more"]:
+                        page = await run_in_threadpool(next_page, after)
+                        continue
+                    now = time.monotonic()
+                    if now >= deadline or await request.is_disconnected():
+                        return
+                    if now >= beat:
+                        beat = now + SSE_HEARTBEAT_SECONDS
+                        yield ": keep-alive\n\n"
+                    try:
+                        await asyncio.wait_for(wake.wait(), timeout=min(poll, max(deadline-now, 0)))
+                    except asyncio.TimeoutError:
+                        pass  # A separate Worker process cannot publish to this notifier.
+                    wake.clear()  # Clear before reading, so commits during the read are not lost.
+                    try:
+                        page = await run_in_threadpool(next_page, after)
+                    except CursorAhead:
+                        return
+            finally:
+                db.event_wakeups.unsubscribe(cid, token)
 
         return StreamingResponse(frames(), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache", "X-Accel-Buffering": "no",

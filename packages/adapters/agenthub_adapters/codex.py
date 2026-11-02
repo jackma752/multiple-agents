@@ -74,8 +74,8 @@ DEFAULT_SANDBOX = "read-only"
 SUBAGENT_FEATURE = "multi_agent"
 
 NATIVE_SUBAGENT_BLOCK_REASON = (
-    "当前 Codex 配置曾在传入禁用参数后派生原生子 Agent，无法保证逐次审批和配额；"
-    "不满足严格协作要求，已阻止新的真实调用。可使用 Mock 或手动交接。"
+    "当前适配器尚未验证原生子 Agent 的逐次审批和限额控制，严格模式暂不可用。"
+    "请选择支持严格控制的通道，或明确选择用户监督模式。"
 )
 
 

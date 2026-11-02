@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import socket
 import ssl
+import gzip
+import io
+import zlib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -30,6 +33,8 @@ class FetchResult:
     final_url: str = ""
     error: str = ""  # machine code when not ok
     hops: list = field(default_factory=list)
+    wire_bytes: int = 0
+    encoding: str = "identity"
 
 
 def resolve_host(host: str) -> list[str]:
@@ -69,23 +74,39 @@ class HttpFetcher:
             hops.append({"url": current, "allowed": ok, "why": why})
             if not ok:
                 return FetchResult(False, error=why, final_url=current, hops=hops)
-            request = urllib.request.Request(current, headers={"User-Agent": USER_AGENT, "Accept": accept})
+            request = urllib.request.Request(current, headers={"User-Agent": USER_AGENT, "Accept": accept,
+                                                               "Accept-Encoding": "gzip"})
             try:
                 response = self._opener.open(request, timeout=self.timeout)
             except urllib.error.HTTPError as exc:
-                if exc.code in (301, 302, 303, 307, 308) and exc.headers.get("Location"):
-                    current = urljoin(current, exc.headers["Location"])
+                status = exc.code
+                location = exc.headers.get("Location")
+                exc.close()
+                if status in (301, 302, 303, 307, 308) and location:
+                    current = urljoin(current, location)
                     continue
-                return FetchResult(False, status=exc.code, error=f"http_{exc.code}", final_url=current, hops=hops)
+                return FetchResult(False, status=status, error=f"http_{status}", final_url=current, hops=hops)
             except (urllib.error.URLError, OSError, ValueError) as exc:
                 return FetchResult(False, error="unreachable:" + type(exc).__name__, final_url=current, hops=hops)
             with response:
                 body = response.read(max_bytes + 1)
                 if len(body) > max_bytes:
                     return FetchResult(False, status=response.status, error="too_large", final_url=current, hops=hops)
+                size = len(body)
+                encoding = response.headers.get("Content-Encoding", "identity").strip().lower()
+                if encoding == "gzip":
+                    try:
+                        with gzip.GzipFile(fileobj=io.BytesIO(body)) as decoded:
+                            body = decoded.read(max_bytes + 1)
+                    except (OSError, EOFError, ValueError, zlib.error):
+                        return FetchResult(False, status=response.status, error="bad_content_encoding", final_url=current, hops=hops)
+                    if len(body) > max_bytes:
+                        return FetchResult(False, status=response.status, error="too_large", final_url=current, hops=hops)
+                elif encoding not in ("identity", ""):
+                    return FetchResult(False, status=response.status, error="unsupported_content_encoding", final_url=current, hops=hops)
                 return FetchResult(True, status=response.status,
                                    content_type=response.headers.get("Content-Type", ""),
-                                   body=body, final_url=current, hops=hops)
+                                   body=body, final_url=current, hops=hops, wire_bytes=size, encoding=encoding or "identity")
         return FetchResult(False, error="too_many_redirects", final_url=current, hops=hops)
 
 

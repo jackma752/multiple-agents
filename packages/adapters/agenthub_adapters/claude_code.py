@@ -134,8 +134,8 @@ STRIPPED_ENV_NAMES = frozenset({
 })
 
 REAL_BLOCK_REASON = (
-    "严格模式不启动真实 Claude Code：原生子 Agent 与工具事前拦截均未验证"
-    "（--tools \"\" 只是请求，不是证明）。"
+    "当前 Claude Code 通道对内部子 Agent 和工具操作的严格控制仍未验证，严格模式暂不可用。"
+    "请选用严格模式可用的通道，或明确选择用户监督模式。"
 )
 SUPERVISED_REASON = (
     "仅保证 Hub 审批、固定身份与固定参数核验、本次入口进程控制。"

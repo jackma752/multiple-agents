@@ -27,6 +27,7 @@ Limits (by design):
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections import defaultdict
@@ -60,6 +61,46 @@ TREE_PAYLOAD_KEYS = (
     "requested_by", "actor", "accepted", "closed_cards", "blocked_decisions",
     "in_flight", "already_sent", "code",
 )
+
+
+class ConversationWakeups:
+    """Post-commit local hints. Database cursors remain the source of truth.
+
+    Subscribers belong to their own event loops; publishing is safe from a
+    worker thread. Other processes use the existing bounded polling fallback.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._listeners = {}
+
+    def subscribe(self, cid):
+        loop, signal, token = asyncio.get_running_loop(), asyncio.Event(), object()
+        signal.set()  # Re-read once to cover commits between initial replay and subscription.
+        with self._lock:
+            self._listeners.setdefault(cid, {})[token] = (loop, signal)
+        return token, signal
+
+    def unsubscribe(self, cid, token):
+        with self._lock:
+            listeners = self._listeners.get(cid, {})
+            listeners.pop(token, None)
+            if not listeners:
+                self._listeners.pop(cid, None)
+
+    def publish(self, cids):
+        with self._lock:
+            listeners = [(cid, token, loop, signal) for cid in cids
+                         for token, (loop, signal) in self._listeners.get(cid, {}).items()]
+        for cid, token, loop, signal in listeners:
+            try:
+                loop.call_soon_threadsafe(signal.set)
+            except RuntimeError:  # A disconnected client's event loop was closed.
+                self.unsubscribe(cid, token)
+
+
+def _mark_wakeup(session, out):
+    session.info.setdefault("event_wakeup_cids", set()).update(cid for cid, _, _ in out)
 
 
 def install_event_capture(maker: sessionmaker) -> None:
@@ -257,6 +298,7 @@ def _after_flush(session: Session, _ctx: Any) -> None:
 
     if out:
         _append(conn, out)
+        _mark_wakeup(session, out)
 
 
 def _append(conn: Connection, out: list[tuple[str, str, dict[str, Any]]]) -> None:
@@ -421,6 +463,7 @@ class StreamSink:
                         )).inserted_primary_key[0]
                     out.append((self._conversation_id, etype, payload))
                 _append(conn, out)
+                _mark_wakeup(session, out)
         except Exception:  # noqa: BLE001 - may concern model text; never logged
             self.dropped += len(batch)
             return

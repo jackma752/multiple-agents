@@ -149,8 +149,8 @@ NO_TURN_USAGE = {"inputTokens": 0, "cachedInputTokens": 0, "cacheWriteInputToken
 DECLINE_ONLY = ["decline"]
 
 REAL_APPSERVER_BLOCK_REASON = (
-    "严格模式不启动真实 app-server：原生子 Agent 的事前控制与工具事前拦截均未验证"
-    "（S3–S5 只各验证了一条窄路径，只认定当次）。"
+    "当前 Codex 通道对内部子 Agent 和工具操作的严格控制仍未验证，严格模式暂不可用。"
+    "请选用严格模式可用的通道，或明确选择用户监督模式。"
 )
 SUPERVISED_REASON = (
     "Hub 对收到的命令和文件修改审批请求逐次允许或拒绝；允许仅限本次请求，不添加会话级免审批规则。"

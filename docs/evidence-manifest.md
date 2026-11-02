@@ -1,5 +1,15 @@
 # 真实运行证据清单
 
+## 严格模式零模型核验与传输基准（2026-11-03）
+
+结果见 [0.8.1 记录](strict-transmission-0.8.1.md)。程序身份核验只读采用文件，不启动 CLI/模型或读登录文件；真实元数据查询无模型；本机基准只写专用测试消息。下列文件均只含状态/数字，原件保留 var。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `strict-transmission/var/transmission-benchmark.json` | 491 | `120a5f7c479a6390ce45e4fe05a927644ebf14bd12b558a36ac74430eec5f7c1` |
+| `strict-transmission/var/live-compression.json` | 187 | `3e85d28c3d13029aabe65b01d5c6eee266696b2c7fd136423e78850cc065c1bb` |
+| `strict-transmission/var/adopted-mode-check/result.json` | 2160 | `72f068e1dca1b8102ba70c571dcfa263c340fe00536d558fc41a0c0e1daaf623` |
+
 ## P6 0.8.0 真实在线验收（2026-11-02，部分通过）
 
 结论与授权见 [在线验收](p6-online-080.md)。路径相对于 `.worktrees/`；不提交原始论文、模型输出、数据库或凭据。9 次真实调用，52,866 Token；多源筛选与核心引文校验未通过，未继续追加模型请求。

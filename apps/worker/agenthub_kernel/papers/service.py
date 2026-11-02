@@ -17,7 +17,7 @@ from typing import Any, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from agenthub.contracts import Policy
+from agenthub.contracts import Policy, execution_admission
 from agenthub.models import validate_selection
 from agenthub.papers import (
     LANGUAGES, MISSING_REASONS, PHASES, ResearchRequest, ResourceRules, SOURCE_HOSTS, SUP_OPEN, SUP_VALIDATING,
@@ -28,7 +28,7 @@ from agenthub.stage import (
     MAX_STAGE_CALLS, PLAN_PAPER, STAGE_ACTIVE, STAGE_BLOCKED, STAGE_COMPLETED, STAGE_ENDED, STAGE_PAUSED,
     STAGE_STOPPED, StageRules, ToolRules,
 )
-from agenthub_kernel.adapters import adapter_binding
+from agenthub_kernel.adapters import adapter_binding, adapter_for
 from agenthub_kernel.archive import archived_ids
 from agenthub_kernel.autopilot import _event, open_stage, proven_modes, served_agents, stage_view
 from agenthub_kernel.db import ConversationRow, InvocationRow, StageRunRow, TaskRow
@@ -118,7 +118,14 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
         blockers.append({"code": "budget_needs_per_call", "message": "设置总 Token 预算时，请同时填写单次调用预留量"})
     mode = body.get("execution_mode") or "strict"
     proven = proven_modes(session, adapter, user_id)
+    admissions = {}
     for agent in roles["agents"]:
+        admission = execution_admission(adapter_for(adapter, agent), mode)
+        admissions[agent] = admission.to_dict()
+        if not admission.allowed:
+            blockers.append({"code": "execution_mode_unavailable", "agent": agent,
+                "message": f"{agent} 当前不能使用{'严格' if mode == 'strict' else '用户监督'}模式：{admission.reason}"})
+            continue
         if mode not in proven.get(agent, []):
             blockers.append({"code": "stage_not_proven", "agent": agent,
                              "message": f"{agent} 需先在聊天页以{'用户监督' if mode == 'supervised' else '严格'}模式"
@@ -162,6 +169,7 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
         "fulltext_policy": req.fulltext_policy, "language": LANGUAGES[req.language],
         "templates": [t.meta() for t in TEMPLATES.values()], "agents": list(served),
         "proven": proven,
+        "mode_admissions": admissions,
     }
 
 
