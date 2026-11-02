@@ -11,6 +11,8 @@
 | `native-strict/var/codex-native-disabled.json` | 312 | `86e531271e90bda906344b3488063ce9fe69de4535cb1a1ea78d7e347b9d81fc` |
 | `native-strict/var/codex-disabled-turn.json` | 1100 | `7a4444e439d83e2bef47a7cc82c47b95d6de9f7c623e3630ee028147cee12cd7` |
 | `native-strict/var/codex-pretool-spawn-failed.json` | 1130 | `f4cc32f1fcde6e20475e1e902d0033ff0396c51b52dd1722966f19c57c52b5e9` |
+| `native-strict/var/package-082-check.json` | 655 | `86a0a1f892e421a9b8c11b6745fae40bc0efe5f39a39b80c06d77a6b9ff97ad4` |
+| `native-strict/var/runs/result-empty-66c53869-f3f5-46f2-9fa6-6c670d25b10b.json` | 549 | `47e7bf475eee3d6b797e4dca1357d1175ef4fc6347b016a755497d3270e4b056` |
 
 ## 严格模式零模型核验与传输基准（2026-11-03）
 
