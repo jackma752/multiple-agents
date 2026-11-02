@@ -38,6 +38,7 @@ class ResearchIn(BaseModel):
     supervised_consent: StrictBool = False
     max_calls: Optional[StrictInt] = None
     token_budget_total: Optional[StrictInt] = Field(default=None, ge=1)
+    token_budget_per_call: Optional[StrictInt] = Field(default=None, ge=1)
 
 
 class ReauthorizeIn(BaseModel):

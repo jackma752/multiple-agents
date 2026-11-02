@@ -145,7 +145,7 @@ def study_result(out, chunks):
             if not isinstance(ref,dict):raise FormatError("source location must be an object")
             c = source.get(ref.get("chunk_id"))
             if c is None or not isinstance(ref.get("quote"),str) or not quote_in(ref["quote"], c.text):
-                raise FormatError("source span not found in the supplied chunk")
+                raise FormatError(f"source span not found: unit {uid}, chunk {ref.get('chunk_id')}; copy an exact supplied span")
             ref["pdf_page"]=c.page
         kinds.append(kind); seen.add(uid)
     if out.get("math_state")=="complete" and (set(KINDS)-set(kinds) or kinds.count("step")<2):

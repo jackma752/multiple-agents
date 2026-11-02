@@ -31,6 +31,14 @@ def test_structure_requires_math_chain_and_verifiable_source():
         with pytest.raises(FormatError):study_result(bad,[c])
 
 
+def test_source_repair_identifies_unit_and_chunk_without_relaxing_quote_matching():
+    c,out=sample()
+    out['units'][0]['sources'][0]['quote']='This invented quotation is absent.'
+    with pytest.raises(FormatError) as exc:
+        study_result(out,[c])
+    assert out['units'][0]['id'] in str(exc.value) and c.id in str(exc.value)
+
+
 def test_targeted_patch_cannot_silently_change_other_units():
     c,out=sample();u=copy.deepcopy(out["units"][8]);u["text"]+=" Corrected."
     patch={"replacements":[u],"math_state":"complete","missing":[]}
@@ -190,7 +198,7 @@ def test_guided_pause_restart_reuses_finished_reading(hub):
 
 
 def test_guided_budget_refusal_has_no_model_start(hub):
-    hub.prove();data=body(hub);data["token_budget_total"]=5
+    hub.prove();data=body(hub);data.update(token_budget_total=5,token_budget_per_call=5)
     before=hub.model_calls()
     r=hub.api("POST","/api/papers",json=data);assert r.status_code==200,r.text
     view=hub.run(r.json()["task_id"])

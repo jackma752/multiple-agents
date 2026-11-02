@@ -180,3 +180,25 @@ def test_title_dedup_does_not_merge_distinct_known_dois_and_recalls_source_alias
         task=session.get(ResearchTaskRow,task_id)
         assert _upsert_papers(session,task,[{**alias,'doi':None,'title':'Changed metadata','authors':[]}],1)['new']==0
         assert len(list(session.scalars(select(PaperRow).where(PaperRow.task_id==task_id))))==2
+
+
+def test_empty_exact_arxiv_queries_get_one_audited_broader_query(tmp_path):
+    original=FixtureWeb();requests=[]
+    def web(url):
+        if urlsplit(url).hostname=='export.arxiv.org':
+            query=parse_qs(urlsplit(url).query).get('search_query',[''])[0]
+            requests.append(query)
+            if query.count('all:')>1:
+                return 200,'application/atom+xml',b'<feed xmlns="http://www.w3.org/2005/Atom"/>'
+        return original(url)
+    h=Hub(tmp_path,web=web).open()
+    try:
+        h.prove();task=h.create(target=1);view=h.run(task)
+        assert view['status']=='completed',view
+        broad=[r for r in view['outcome']['search_sources'] if r['query'].endswith(':broader')]
+        assert len(broad)==1 and broad[0]['counts']['new']>0
+        assert len([q for q in requests if q.count('all:')==1])==1
+        calls=h.model_calls();fetches=len(h.fetcher.calls)
+        h.restart();assert h.view(task)['phase']=='done'
+        assert h.model_calls()==calls and len(h.fetcher.calls)==fetches
+    finally:h.close()

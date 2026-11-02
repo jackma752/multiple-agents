@@ -56,7 +56,7 @@ def test_stop_mid_pipeline_starts_no_new_call_or_tool(hub):
 def test_budget_refusal_blocks_with_zero_launches(hub):
     hub.prove()
     launched, calls = hub.launched(), hub.model_calls()
-    task = hub.create(token_budget_total=5)
+    task = hub.create(token_budget_total=5, token_budget_per_call=5)
     view = hub.run(task)
     assert view["status"] == "blocked"
     assert view["stage"]["summary"]["reason"] == "start_refused"

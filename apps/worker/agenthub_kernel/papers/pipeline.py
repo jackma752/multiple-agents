@@ -274,6 +274,23 @@ def phase_search(ctx: Ctx) -> Optional[str]:
             rows.append(ctx.tool("search", target, _h(url), payload))
     if any(r.status in ("pending", "running") for r in rows):
         return None
+    # Exact multi-term arXiv queries can miss even the named framework. Only
+    # after every successful query is empty, make ONE bounded broader query;
+    # keep years/source/result limit, and screen results against the full topic.
+    arxiv_rows = [r for r in rows if r.target in {f"q{i}" for i in range(len(plan["queries"]))}]
+    if (arxiv_rows and all(r.status == "succeeded" and (r.result or {}).get("entries") == 0 for r in arxiv_rows)
+            and not any(r.status == "succeeded" and (r.result or {}).get("entries", 0) > 0 for r in rows)):
+        broad = next(((i, q) for i, q in enumerate(plan["queries"]) if len(q["terms"]) > 1), None)
+        if broad:
+            index, query = broad
+            terms = query["terms"][:1]
+            url = sources.query_url("arxiv", terms, year_from=req.year_from, year_to=req.year_to,
+                                    max_results=req.candidates_per_query)
+            fallback = ctx.tool("search", f"q{index}:broader", _h(url),
+                {"url": url, "terms": terms, "index": index, "strategy": "first_term_after_all_empty"})
+            rows.append(fallback)
+            if fallback.status in ("pending", "running"):
+                return None
     ctx.outcome(search_sources=[{"query": r.target, "status": r.status, "error": r.error,
                                 "counts": r.result} for r in rows])
     total = len(ctx.session.scalars(select(PaperRow.id).where(PaperRow.task_id == ctx.task.id)).all())

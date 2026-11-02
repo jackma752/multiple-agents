@@ -1,5 +1,19 @@
 # 真实运行证据清单
 
+## P6 0.8.0 真实在线验收（2026-11-02，部分通过）
+
+结论与授权见 [在线验收](p6-online-080.md)。路径相对于 `.worktrees/`；不提交原始论文、模型输出、数据库或凭据。9 次真实调用，52,866 Token；多源筛选与核心引文校验未通过，未继续追加模型请求。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `p6-online-080/var/online-080/sources.json` | 1467 | `f5340855ffd1fbe549b96c6c91930c1f44a089bc56cc89df2a8b9953b72b382f` |
+| `p6-online-080/var/online-080/pre-fix-task-view.json` | 4040 | `d68e3a670c2c00e9b7f449459f220a5f1100bc7f92b63fa9ea621834ecac26bd` |
+| `p6-online-080/var/online-080/research-result.json` | 20110 | `9c8aabaa090e9908553d019b2ecdb56c68a25e416c2df488306fb851b9c1abb7` |
+| `p6-online-080/var/online-080/small-study-result.json` | 784 | `914e6e08aa2a2ad3f392370b5b6fbea42efdba86d47c7eb4d8556703f771522f` |
+| `p6-online-080/var/online-080/small-study-fallback-result.json` | 644 | `f46cd67e2524c5eb13f36b7a1a5b1c36c4feabc9484429a206c0e4245ad6148f` |
+| `p6-online-080/var/online-080/quote-audit.json` | 1309 | `801cafe2b0caf0a6f7956b309cbf36686d1caa76e6271e92c55fc2cfbd63da53` |
+| `p6-online-080/var/online-080/online-summary.json` | 3975 | `4f7314353b14c4fbacc5a2b6098c917534019caaa27ec09970103aa887d91770` |
+
 ## DeepSeek 用户批准的真实单次回复（2026-10-26）
 
 `inv-630801980461` 由用户在页面批准执行；模型 `deepseek-flash`，provider 结束标记 `stop`，

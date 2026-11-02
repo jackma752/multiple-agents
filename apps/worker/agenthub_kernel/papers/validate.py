@@ -78,7 +78,10 @@ def screen(out: dict[str, Any], ids: Iterable[str]) -> dict[str, dict]:
         seen[d["paper_id"]] = {"decision": d["decision"], "reason": str(d.get("reason") or "")[:400]}
     missing = expected - set(seen)
     if missing:
-        raise FormatError(f"no decision for {len(missing)} candidate(s)")
+        # Recovery receives this reason; a count alone repeated the same omission
+        # in the real 20-candidate test. Keep specific IDs within its 200-char cap.
+        named = ", ".join(sorted(missing)[:5])
+        raise FormatError(f"no decision for {len(missing)} candidate(s): {named}")
     return seen
 
 

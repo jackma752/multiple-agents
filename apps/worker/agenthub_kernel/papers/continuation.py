@@ -94,10 +94,13 @@ def continue_task(session: Session, adapter: Any, user_id: str, task_id: str, bo
     if missing:
         raise QuotaError("stage_not_proven", f"先手动跑通这些 Agent 各一次：{missing}")
     left = _remaining(session, old, stage)
+    old_policy = _old_policy(session, old)
     # 0 means unlimited only when the old limit was unlimited; a finite limit used up stays used up.
     used_up = ((stage is not None and (stage.rules or {}).get("max_calls") and left["max_calls"] < 1)
                or (_old_policy(session, old).max_agent_invocations and left["max_agent_invocations"] < 1)
-               or (left["token_budget_total"] is not None and left["token_budget_total"] < 1))
+               or (left["token_budget_total"] is not None and left["token_budget_total"] < 1)
+               or (left["token_budget_total"] is not None and old_policy.token_budget_per_call is not None
+                   and left["token_budget_total"] < old_policy.token_budget_per_call))
     if used_up:
         raise QuotaError("allowance_used_up", "原研究的调用次数或 Token 预算已用完，不能接续；如需继续请新建研究并重新设定上限")
 
@@ -106,7 +109,8 @@ def continue_task(session: Session, adapter: Any, user_id: str, task_id: str, bo
     session.add(conversation)
     session.flush()
     root = PolicyService(session, default_policy=Policy(
-        max_agent_invocations=left["max_agent_invocations"], token_budget_total=left["token_budget_total"])
+        max_agent_invocations=left["max_agent_invocations"], token_budget_total=left["token_budget_total"],
+        token_budget_per_call=old_policy.token_budget_per_call)
     ).create_task(agent_id=old.roles["main_agent"], goal="论文研究（接续）：" + old.request["topic"])
     conversation.root_task_id = root.id
     new = ResearchTaskRow(

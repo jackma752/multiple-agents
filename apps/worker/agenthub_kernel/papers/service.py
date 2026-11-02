@@ -109,6 +109,13 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
     except (TypeError, ValueError) as exc:
         return {"ok": False, "blockers": [{"code": "invalid_roles", "message": str(exc)}], "agents": list(served)}
     estimate = estimate_calls(req, review=bool(roles["review_agent"]))
+    total, per_call = body.get("token_budget_total"), body.get("token_budget_per_call")
+    try:
+        Policy(token_budget_total=total, token_budget_per_call=per_call)
+    except ValueError as exc:
+        blockers.append({"code": "invalid_budget", "message": str(exc)})
+    if total is not None and per_call is None:
+        blockers.append({"code": "budget_needs_per_call", "message": "设置总 Token 预算时，请同时填写单次调用预留量"})
     mode = body.get("execution_mode") or "strict"
     proven = proven_modes(session, adapter, user_id)
     for agent in roles["agents"]:
@@ -143,6 +150,7 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
         "ok": not blockers, "blockers": blockers, "warnings": warnings, "request": req.as_dict(),
         "roles": roles, "execution_mode": mode, "estimate": estimate, "max_calls": max_calls,
         "token_budget_total": body.get("token_budget_total"),
+        "token_budget_per_call": per_call,
         "resources": {**resources.as_dict(), "hosts": list(resources.hosts()),
                       "sent": f"论文题名、摘要和选中的全文片段会发送给：{', '.join(roles['agents'])}",
                       "downloads": ("允许访问来源返回的公网开放全文地址（逐次检查）" if resources.allow_public_fulltext else
@@ -172,7 +180,7 @@ def create_task(session: Session, adapter: Any, user_id: str, body: dict, *, sto
         return existing
     if not check["ok"]:
         first = check["blockers"][0]
-        if first["code"] in ("invalid_request", "invalid_roles", "max_calls_low", "too_many_calls"):
+        if first["code"] in ("invalid_request", "invalid_roles", "max_calls_low", "too_many_calls", "invalid_budget", "budget_needs_per_call"):
             raise ValueError(first["message"])
         raise QuotaError(first["code"], first["message"])
     mode = check["execution_mode"]
@@ -188,7 +196,8 @@ def create_task(session: Session, adapter: Any, user_id: str, body: dict, *, sto
     if type(max_calls) is not int or not 0 <= max_calls <= MAX_STAGE_CALLS:
         raise ValueError(f"max_calls must be 0..{MAX_STAGE_CALLS} (0 = unlimited, chosen by you)")
     budget = body.get("token_budget_total")
-    policy = Policy(max_agent_invocations=max_calls, token_budget_total=budget if budget else None)
+    policy = Policy(max_agent_invocations=max_calls, token_budget_total=budget if budget else None,
+                    token_budget_per_call=body.get("token_budget_per_call"))
 
     conversation = ConversationRow(id=new_id("conv"), user_id=user_id, title=("论文·" + req.topic)[:40])
     session.add(conversation)

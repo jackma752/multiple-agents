@@ -170,8 +170,10 @@
       <div class="grid" style="margin-top:8px">
         <div class="field"><label for="f_calls">本研究最多模型调用次数</label><input id="f_calls" type="number" min="0" max="50" placeholder="空 = 按预检建议；0 = 不限" /></div>
         <div class="field"><label for="f_budget">Token 总预算（可空）</label><input id="f_budget" type="number" min="1" placeholder="不设" /></div>
+        <div class="field"><label for="f_percall">单次调用预留量（设总预算时必填）</label><input id="f_percall" type="number" min="1" placeholder="例如 15000" /></div>
         <div class="field"><label for="f_mb">单个文件上限（MB）</label><input id="f_mb" type="number" min="1" max="40" value="20" /></div>
       </div>
+      <p class="small dim">每次启动前预留这部分 Token，用实际用量结算；不足则停止新调用。预留量不是模型服务端的硬性输出上限，单次超出会记录并计入总用量。</p>
       <div class="row">
         <label><input id="f_dl" type="checkbox" checked /> 下载已批准来源的开放 PDF</label>
         <label><input id="f_pubpdf" type="checkbox" /> 允许下载检索来源返回的公网全文地址（出版商/机构库）</label>
@@ -372,7 +374,7 @@ function formBody() {
                  max_download_mb: num("f_mb") || 20, local_roots: $("f_roots").value.split("\n").map((s) => s.trim()).filter(Boolean),
                  export_dir: $("f_export").value.trim() },
     execution_mode: $("f_mode").value, supervised_consent: $("f_consent").checked,
-    max_calls: num("f_calls"), token_budget_total: num("f_budget"),
+    max_calls: num("f_calls"), token_budget_total: num("f_budget"), token_budget_per_call: num("f_percall"),
   };
 }
 
@@ -393,7 +395,7 @@ async function runPreflight() {
         <tr><th>数据发送</th><td>${esc(p.resources.sent)}</td></tr>
         <tr><th>补充资料</th><td>上传${p.resources.allow_upload ? "允许" : "不允许"}；网络地址${p.resources.url_supplement === "public_http" ? "允许（仅公网 http/https）" : "不允许"}；本地目录：${esc((p.resources.local_roots || []).join("；") || "无")}</td></tr>
         <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（${esc(Object.entries(e.parts).map(([k,n])=>k+": "+n).join("，"))}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
-        <tr><th>Token 预算</th><td>${p.token_budget_total ? esc(p.token_budget_total) : "不设（仍记录用量）"}</td></tr>
+        <tr><th>Token 预算</th><td>总预算：${p.token_budget_total ? esc(p.token_budget_total) : "不设（仍记录用量）"}；单次预留：${p.token_budget_per_call ? esc(p.token_budget_per_call) : "不设"}</td></tr>
         <tr><th>输出</th><td class="mono">${esc(p.output.files.join(", "))}<br>保存在 ${esc(p.output.location)}${p.output.copy_to ? `<br>并复制到你选的目录 ${esc(p.output.copy_to)}\\v&lt;版本&gt;` : ""}</td></tr>
         <tr><th>完成条件</th><td>导出综述与证据；执行完成与质量通过分别记录，审阅不可用或检查失败不会标为通过</td></tr>
       </tbody></table>`;
