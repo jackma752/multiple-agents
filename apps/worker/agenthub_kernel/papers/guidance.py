@@ -173,7 +173,7 @@ def review_result(out, ids):
     return {"issues":issues}
 
 
-def patch_result(out, study, chunks, editable, allow_additions=False):
+def patch_result(out, study, chunks, editable, allow_additions=False, *, preserve_material_gaps=False):
     replacements=out.get("replacements")
     additions=out.get("additions",[])
     if not isinstance(additions,list) or len(additions)>60 or additions and not allow_additions:
@@ -190,6 +190,12 @@ def patch_result(out, study, chunks, editable, allow_additions=False):
         raise FormatError("patch changed a unit kind")
     candidate={"units":[updates.get(u["id"],u) for u in study["units"]]+additions,
                "math_state":out.get("math_state"),"missing":out.get("missing",[])}
+    if preserve_material_gaps:
+        # No additional material was supplied. The model may fix named errors,
+        # but cannot resolve missing evidence just by omitting its old gaps.
+        candidate['missing'] = study['missing']
+        if study['math_state'] == 'incomplete' or study['missing']:
+            candidate['math_state'] = 'incomplete'
     checked = study_result(candidate,chunks)
     checked['citation_audit'] = merge_audit(study.get('citation_audit', []), checked['citation_audit'])
     return checked
@@ -245,6 +251,13 @@ def payload(chunks):
     return [{"chunk_id":c.id,"source_id":aliases[c.id],"pdf_page":c.page,"text":c.text} for c in chunks]
 
 
+def unit_payload(units):
+    """Send teaching and exact quotations; backend hashes/offsets stay in storage."""
+    return [{**{k:v for k,v in unit.items() if k!='display_markdown'},
+             'sources':[{k:v for k,v in ref.items() if k!='source_location'} for ref in unit.get('sources',[])]}
+            for unit in units]
+
+
 def phase_read(ctx):
     from agenthub_kernel.papers.pipeline import _included, _h
     papers=_included(ctx)
@@ -281,7 +294,7 @@ def phase_read(ctx):
                     if u["id"] in relevant:relevant.update(u.get("depends_on",[]))
                 ref_ids={r["chunk_id"] for u in study["units"] if u["id"] in relevant for r in u.get("sources",[])}
                 check_chunks=seen if round_no==0 else [c for c in seen if c.id in ref_ids or c in fresh]
-                data={"paper_id":paper.id,"units":[u for u in study["units"] if u["id"] in relevant],
+                data={"paper_id":paper.id,"units":unit_payload([u for u in study["units"] if u["id"] in relevant]),
                       "changed_ids":sorted(changed),"chunks":payload(check_chunks),"previous_issues":issues}
                 state,review=ctx.model(f"study_review:{paper.id}:r{round_no}",paper.id,CHECK,data,
                     _h([data,CHECK.sha256]),lambda out:review_result(out,relevant),agent=ctx.rules.review_agent,soft=True)
@@ -296,21 +309,34 @@ def phase_read(ctx):
             if not requests and not substantive:break
             if round_no>=ctx.request.repair_rounds:break
             fresh=pick(chunks,requests,exclude={c.id for c in seen}) if requests else []
-            # No new source available: don't pay for another paraphrase of a missing proof.
-            if requests and not fresh:break
-            editable={i["unit_id"] for i in substantive}
+            preserve_gaps = bool(requests) and not fresh
+            repair_issues = substantive
+            if preserve_gaps:
+                # Missing material cannot block independent corrections using
+                # already-seen sources, nor authorize embellishing a missing proof.
+                repair_issues = [i for i in substantive if i['kind'] in ('math', 'citation')]
+                if not repair_issues:break
+            editable={i["unit_id"] for i in repair_issues}
             if requests and not editable:
                 editable={u["id"] for u in study["units"] if u["kind"] in ("setting","assumption","result","step","example")}
             repair_ids=set(editable)
             for u in reversed(study["units"]):
                 if u["id"] in repair_ids:repair_ids.update(u.get("depends_on",[]))
-            data={"topic":ctx.request.topic,"issues":substantive,"missing":study["missing"],
-                  "editable_ids":sorted(editable),"units":[u for u in study["units"] if u["id"] in repair_ids],
-                  "allow_additions":bool(requests),
-                  "chunks":payload(fresh)}
+            repair_chunks = fresh
+            if preserve_gaps:
+                ref_ids={r['chunk_id'] for u in study['units'] if u['id'] in repair_ids for r in u.get('sources',[])}
+                repair_chunks = [c for c in seen if c.id in ref_ids]
+            data={"topic":ctx.request.topic,"issues":repair_issues,"missing":study["missing"],
+                  "editable_ids":sorted(editable),"units":unit_payload([u for u in study["units"] if u["id"] in repair_ids]),
+                  "allow_additions":bool(fresh),
+                  "chunks":payload(repair_chunks)}
+            if preserve_gaps:
+                data['material_constraint'] = ('No new material. Only correct the listed math/citation issues from supplied sources. '
+                    'Keep every missing item and math_state=incomplete. Do not invent an author convention or missing proof.')
             all_seen=seen+fresh
             state,patched=ctx.model(f"study_patch:{paper.id}:r{round_no}",paper.id,PATCH,data,
-                _h([data,PATCH.sha256]),lambda out:patch_result(out,study,all_seen,editable,bool(requests)),soft=True)
+                _h([data,PATCH.sha256]),lambda out:patch_result(out,study,all_seen,editable,bool(fresh),
+                    preserve_material_gaps=preserve_gaps),soft=True)
             if state=="wait":return None
             if state=="failed":status="needs_review";break
             added_ids={u['id'] for u in patched['units']}-{u['id'] for u in study['units']}
@@ -335,7 +361,8 @@ def phase_directions(ctx):
         ctx.outcome(directions={"comparison":"缺少可用的核心论文讲解，先补材料。","candidates":[]});return "export"
     # Send the structured mathematics, not the full PDFs again.
     related=[{"paper_id":e.paper_id,"statement":e.statement,"level":e.level} for e in _evidence(ctx)][:60]
-    data={"topic":ctx.request.topic,"studies":valid,"related":related}
+    model_studies=[{**{k:v for k,v in s.items() if k!='citation_audit'},'units':unit_payload(s['units'])} for s in valid]
+    data={"topic":ctx.request.topic,"studies":model_studies,"related":related}
     ids={s["paper_id"] for s in valid}|{e["paper_id"] for e in related}
     state,result=ctx.model("directions",None,IDEAS,data,_h([data,IDEAS.sha256]),lambda out:ideas_result(out,ids),soft=True)
     if state=="wait":return None

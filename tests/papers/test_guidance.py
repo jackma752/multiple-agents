@@ -198,12 +198,72 @@ def test_material_issue_fetches_new_proof_chunks_before_patch(monkeypatch):
     assert ctx.task.outcome["studies"]["paper1"]["depth"]=="method_read"
 
 
-def test_missing_proof_does_not_pay_to_paraphrase_same_material(hub):
+def test_missing_proof_does_not_pay_to_paraphrase_same_material(hub, monkeypatch):
+    from tools.demo import guidance_stub
+    original = guidance_stub.respond
+    def response(template, data):
+        # Pure missing material: no independent math/citation defect to repair.
+        return {'issues': []} if template=='research.study-review.v1' else original(template, data)
+    monkeypatch.setattr(guidance_stub, 'respond', response)
     tid,v=complete(hub,"study","SIM_STUDY_GAP")
     s=next(iter(v["outcome"]["studies"].values()))
     assert s["depth"]=="partial" and s["missing"]
     assert not any(st["name"]=="study_patch" for st in v["steps"])
     assert v["quality_status"]!="passed"
+
+
+def test_missing_material_does_not_skip_independent_math_repairs(hub, monkeypatch):
+    from tools.demo import guidance_stub
+    original = guidance_stub.respond
+    patch_requests = []
+    gap = {'reason': 'Authored unavailable appendix', 'pages': [999], 'terms': ['unavailable appendix']}
+    def response(template, data):
+        out = original(template, data)
+        if template == 'research.study.v2':
+            out.update(math_state='incomplete', missing=[copy.deepcopy(gap)])
+        if template == 'research.study-patch.v1':
+            patch_requests.append(copy.deepcopy(data))
+            # The fixture tries to erase the gap and upgrade completeness. The
+            # backend must retain the gap despite successful math corrections.
+            out.update(math_state='complete', missing=[])
+        return out
+    monkeypatch.setattr(guidance_stub, 'respond', response)
+    _, view = complete(hub, 'study')
+    study = next(iter(view['outcome']['studies'].values()))
+    assert len(patch_requests)==1
+    assert patch_requests[0]['editable_ids']==['step2']
+    assert patch_requests[0]['chunks'] and not patch_requests[0]['allow_additions']
+    assert 'No new material' in patch_requests[0]['material_constraint']
+    assert '修复后' in study['units'][8]['text']
+    assert study['math_state']=='incomplete' and study['missing']==[gap]
+    assert study['depth']=='partial' and view['quality_status']=='needs_review'
+
+
+def test_preserving_gaps_cannot_authorize_new_units_or_edit_other_units():
+    c, out = sample()
+    out.update(math_state='incomplete', missing=[{'reason':'Missing authored proof', 'pages':[99], 'terms':[]}])
+    study = study_result(out, [c])
+    patch = {'replacements':[copy.deepcopy(study['units'][8])], 'math_state':'complete', 'missing':[]}
+    fixed = patch_result(patch, study, [c], {'step2'}, preserve_material_gaps=True)
+    assert fixed['missing']==study['missing'] and fixed['math_state']=='incomplete'
+    bad = copy.deepcopy(patch); bad['replacements'][0]['id']='step1'
+    with pytest.raises(FormatError):
+        patch_result(bad, study, [c], {'step2'}, preserve_material_gaps=True)
+    bad = copy.deepcopy(patch); bad['additions']=[copy.deepcopy(study['units'][9])]
+    with pytest.raises(FormatError):
+        patch_result(bad, study, [c], {'step2'}, preserve_material_gaps=True)
+
+
+def test_model_payload_preserves_teaching_and_quotes_without_copying_backend_audits():
+    from agenthub_kernel.papers.guidance import unit_payload
+    c,out=sample();study=study_result(out,[c])
+    original=copy.deepcopy(study)
+    model_units=unit_payload(study['units'])
+    assert len(json.dumps(model_units))<len(json.dumps(study['units']))
+    for before,after in zip(study['units'],model_units):
+        assert {k:v for k,v in before.items() if k!='sources'}=={k:v for k,v in after.items() if k!='sources'}
+        assert [{k:v for k,v in r.items() if k!='source_location'} for r in before['sources']]==after['sources']
+    assert study==original and study['units'][0]['sources'][0]['source_location']
 
 
 def test_legacy_hash_and_new_budget_estimate():

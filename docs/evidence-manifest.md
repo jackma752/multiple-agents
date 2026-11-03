@@ -163,3 +163,39 @@
 | `citation-codex-083/var/release_smoke_083_v1.py` | 6641 | `ca36d55c0554225153e7f0ce514787999b984962607e7117c452cbefcb747969` |
 | `citation-codex-083/var/release_smoke_083_v2.py` | 6758 | `0770f58eb1571822c18f2711656f22e3149839f545c55d23d2f7bb7a3d8b4374` |
 | `citation-codex-083/var/release_smoke_083.py` | 6751 | `9c76e3b965ad8bf3762c51eaed340e88ed4b64cd8c44a58e4cab5eacc84682c0` |
+
+## 0.8.3 在线项目执行与局部修复（2026-11-03）
+
+用户明确授权通过后合并 main 并更新 GitHub，并追加 40,000 Token 作局部复核。结果见 [在线实录](online-release-0.8.3.md)：原项目 97,683 Token、33/33 引文，质量 needs_review，原 passed=false 保留；局部修订/复核另用 37,685 Token，46/46 引文、0 个实质未决问题，局部 passed=true。源缺口仍保留，不能称论文内容全部通过。路径相对于 `.worktrees/`；仅登记已知测试文件，不哈希任何 profile 或凭据目录。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `online-release-083/var/project-online-083/project-started.json` | 243 | `ee115bf7ef18f1d048f61194dcdda7ea50d06cbbf322d9ff903b930462e67f61` |
+| `online-release-083/var/project-online-083/original-driver-result.json` | 189 | `8a8397beb6b98c6c8f102714def855c5dfeaebda7b48d43f1890233bb170ca55` |
+| `online-release-083/var/project-online-083/original-driver-view.json` | 49007 | `fe42b3e985d55f24cb656aa89c8246563b8e2652f100a283a2ffddb8ea635285` |
+| `online-release-083/var/project-online-083/original-driver.py` | 15224 | `a418113566feed085329bb0cd436db89eaa112a7355bd069e27c4b5cb41fc268` |
+| `online-release-083/var/project-online-083/resume-1-started.json` | 107 | `740a16276ec86cdb30b5b084639804f562de4b9001075dfac1e7b3d740e0014f` |
+| `online-release-083/var/project-online-083/resume-2-started.json` | 128 | `8f0c62d6b9c6b0d4cd9ffc75a5e6c2ea3b91e3acc4e4d7b7bb756e2e203402fe` |
+| `online-release-083/var/project-online-083/before-fulltext-supplement.json` | 6275 | `ca0a897794161f14bbde66fa5e23e3e7bde0412563a56de112ff621d43d3a5e2` |
+| `online-release-083/var/project-online-083/before-fulltext-supplement-view.json` | 57611 | `a07e15a81ec7ff709c31d1b3b76119ecf9e980e8f83d16dbc6861b22da64c25e` |
+| `online-release-083/var/project-online-083/pdf-retry.json` | 199 | `13ec3f40ac5ea01a0cb7a97a9e3f1efaa141f90e1f3ee78164c6425407ab77f8` |
+| `online-release-083/var/project-online-083/fresh-public-ragas.pdf` | 231984 | `6c24762a3f277fd120ed1adf34b01420ecf92f18ff6d1b5435fa0a09cb804ecb` |
+| `online-release-083/var/project-online-083/preflight.json` | 4584 | `fabae028ab3e69890d5921ff39312736ef5ec017a70a07a8b2ffb6c1892e08f9` |
+| `online-release-083/var/project-online-083/result.json` | 6533 | `0a5acfd985d5c1efe3673b4e9264d64a8f7d0fc4bbe8a1d56fa5f0eebb8f6529` |
+| `online-release-083/var/project-online-083/task-view.json` | 154921 | `5771e29b97c2123f21b4073215b5b436e988cea7cbfbf1cfc17d6c514a46d243` |
+| `online-release-083/var/project-online-083/hub.db` | 2129920 | `72483b688b5402decccdf37189968e564e08c6689b5fe278120ea16afe305aae` |
+| `online-release-083/var/project-online-083/executions.db` | 167936 | `aea83ecd280fe1b7a3c446ce0e58f20ac8c89ddcba3e6e39fa72fa1560ee7102` |
+| `online-release-083/var/project-online-083/downloads/research-bundle.zip` | 167657 | `bc689f1cea1b00fb8c06ef41930067eb28962aa2286cd2a7843293d8ba2b9c36` |
+| `online-release-083/var/project-repair-083/call-0-started.json` | 226 | `8a73de37a5ac99a54a1d3ed6659f261cda2485622c26206a5e6e38634a7dcb4b` |
+| `online-release-083/var/project-repair-083/call-1-started.json` | 227 | `adec9c0622144e8ffb18b701c8ff868c1828efbaf51fe94fedbca67806745ba0` |
+| `online-release-083/var/project-repair-083/corrected-study.json` | 56487 | `acdedbd2b650bbcbc1cb4fbd601f3a1aeb49a2b43bc8c5272888df56c726277c` |
+| `online-release-083/var/project-repair-083/review.json` | 20 | `2d15e095185b0e0de330b31cffab7e1011a72a489d3520d2522636b82f73ade7` |
+| `online-release-083/var/project-repair-083/result.json` | 1130 | `bc59fa6917b048b580d77c235a59b4064a1f204656ac7b36831bdc65b734a042` |
+| `online-release-083/var/project-repair-083/hub.db` | 884736 | `3d5cf288134ae5000a9c66841444acee14b4e930bede638b4bec9b4a6d776f3f` |
+| `online-release-083/var/project-repair-083/executions.db` | 61440 | `22eff9aeb02fb779e108d25488424e1778e9e5f78260e6cdf659241d34dd7f4d` |
+| `online-release-083/var/material-repair-regression.xml` | 10921 | `73c45000e6b0bff35ccfc2612295c50bafd62f33f297fcfedd76c0f107f4429f` |
+| `online-release-083/var/material-repair-final.xml` | 38293 | `8e2b9ba1258e5f8222e75b5abd4a5b61d2baf60544527b29931555bea7e53959` |
+| `online-release-083/var/final-guidance-payload.xml` | 5660 | `e504ae55ea7abda400da613c96bc40a528b1166c60e148a5fe927c61578a0e27` |
+| `online-release-083/var/release-083-checks.xml` | 10828 | `f3e9db50fdc55d39f928ec573fc4caa43221da73fa3f4bcaf38658bc79757bf1` |
+| `online-release-083/var/release-final-regression.xml` | 38444 | `55de4ca2c31d1630ef26f838bb050d89d5407ad3fda804437d848aea27bc1034` |
+| `online-release-083/var/publication-source-audit.json` | 132 | `c5db106095b8b1d784eff6eb5388b74ef03839cb91b58b4a79bf16aa157b8caf` |
