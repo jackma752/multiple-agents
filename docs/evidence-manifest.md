@@ -199,3 +199,18 @@
 | `online-release-083/var/release-083-checks.xml` | 10828 | `f3e9db50fdc55d39f928ec573fc4caa43221da73fa3f4bcaf38658bc79757bf1` |
 | `online-release-083/var/release-final-regression.xml` | 38444 | `55de4ca2c31d1630ef26f838bb050d89d5407ad3fda804437d848aea27bc1034` |
 | `online-release-083/var/publication-source-audit.json` | 132 | `c5db106095b8b1d784eff6eb5388b74ef03839cb91b58b4a79bf16aa157b8caf` |
+
+### 0.8.3 实际发布构建与冻结程序检查
+
+构建源码 d5b937e，真实冻结程序新空目录检查通过。下表不含任何用户配置或登录文件。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `online-release-083/var/release-smoke.json` | 702 | `965ee90397af8edd95cb720ab1e08705cc289fb6bbae0e515aad7c24a8e501e8` |
+| `online-release-083/var/release_smoke_083.py` | 6879 | `15f9320c5da135489a2a0ce506192a3a5725ca1e5efc94cb1b8999ea36858c23` |
+| `online-release-083/var/publication-source-audit-final.json` | 132 | `c2be3c6a6e7b8c8391ba806740efa6197f2539876033f346823e95d8a646f2ef` |
+| `online-release-083/dist/p6-release-0.8.3/AgentHub-0.8.3-windows-x64-setup.exe` | 22909141 | `32813bf44067387cecf209ecad2ce71872cbf683486d710e50fb12e0c5feba4a` |
+| `online-release-083/dist/p6-release-0.8.3/AgentHub-0.8.3-windows-x64-portable.zip` | 22608854 | `768afcd0400cee644e6145dc3a3562690d4af6e6a8817d0549c24ef56af5ab89` |
+| `online-release-083/dist/p6-release-0.8.3/SHA256SUMS.txt` | 211 | `c41549b0253f68d215a49b9fb0c926ccc627d6e3f8b427c94f39374cad513beb` |
+| `online-release-083/dist/p6-release-0.8.3/payload/AgentHub/MANIFEST.json` | 40300 | `2f780ea5296d2a4a44aa27fd224266bec0e87e54dd28b0172f118c155d66fb9a` |
+| `online-release-083/dist/p6-release-0.8.3/payload/AgentHub/PACKAGE_AUDIT.json` | 383 | `8645170b4a225880460fc8f6559eca1f9184eb4a28511fe6e9765f93e9ff39bd` |
