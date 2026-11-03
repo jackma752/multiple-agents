@@ -145,3 +145,21 @@
 | `citation-codex-083/var/codex-hooks-083/timeout/guard.py` | 259 | `8f76c9ca91a22cc2c1649c0e09358addcf059440572f0638e5d88cc104807c21` |
 | `citation-codex-083/var/codex-hooks-083/timeout/guard-events.jsonl` | 611 | `d771ba940cf0c779b823de8141acbf6f1349732162d93f3724984ec5ddaa6c27` |
 | `citation-codex-083/var/codex-hooks-083/timeout/notifications.json` | 14094 | `0bee5c00a74201ff52dd0519a6e53c39018710829cdc08622a035af686a26d24` |
+
+### 0.8.3 本地候选及冻结程序检查
+
+源码 `2774aeb`，仅本地构建，未安装或发布。最终冻结程序检查通过；两次检查脚本误判的报告与脚本保留。路径相对于 `.worktrees/`，未哈希任何 profile/账号目录。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `citation-codex-083/dist/p6-release-0.8.3/AgentHub-0.8.3-windows-x64-setup.exe` | 22908705 | `a1659bba6e415d65fec2c324560100498f98713af538293440ab14aa0e8ad005` |
+| `citation-codex-083/dist/p6-release-0.8.3/AgentHub-0.8.3-windows-x64-portable.zip` | 22607378 | `9762d5e90cf786f6a916b9ccc24777d5b96f82cb25c8bc3489af072571cbd542` |
+| `citation-codex-083/dist/p6-release-0.8.3/SHA256SUMS.txt` | 211 | `84031983ef07f2ffd56130ee32bad1a6d9a31355544e8057971ee6103b042a88` |
+| `citation-codex-083/dist/p6-release-0.8.3/payload/AgentHub/MANIFEST.json` | 40300 | `5fc85d9178357ad3c56a9ddceb6ce55ad083ad5b80950cd7c55b6ebf829fe9bc` |
+| `citation-codex-083/dist/p6-release-0.8.3/payload/AgentHub/PACKAGE_AUDIT.json` | 383 | `8645170b4a225880460fc8f6559eca1f9184eb4a28511fe6e9765f93e9ff39bd` |
+| `citation-codex-083/var/citation-083/release-smoke-original-driver.json` | 507 | `e5dd5ed5bb4c276e9f7566698ea1d364144114dee2a6d4a85aff1cd1d843e638` |
+| `citation-codex-083/var/citation-083/release-smoke-driver-assets.json` | 567 | `20dabb019178e908d5a40fd62d7868cf97fc7cb95405632464c7f9b7fa3626e0` |
+| `citation-codex-083/var/citation-083/release-smoke.json` | 702 | `44b7ed2dbe0026ab85e3ed7b41b99624f99b0fcb8852288b344400c9d49c340c` |
+| `citation-codex-083/var/release_smoke_083_v1.py` | 6641 | `ca36d55c0554225153e7f0ce514787999b984962607e7117c452cbefcb747969` |
+| `citation-codex-083/var/release_smoke_083_v2.py` | 6758 | `0770f58eb1571822c18f2711656f22e3149839f545c55d23d2f7bb7a3d8b4374` |
+| `citation-codex-083/var/release_smoke_083.py` | 6751 | `9c76e3b965ad8bf3762c51eaed340e88ed4b64cd8c44a58e4cab5eacc84682c0` |

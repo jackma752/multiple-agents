@@ -51,6 +51,6 @@ python -m pytest -o addopts= tests/papers tests/policy tests/adapters tests/http
 python -m pytest -o addopts= tests/papers/test_citation_resolution.py tests/papers/test_guidance.py tests/papers/test_paper_budget.py tests/papers/test_paper_gates.py -q --junitxml=var/citation-083/final-citation-tests-v2.xml
 ```
 
-本地候选构建在源码提交后进行，结果另登记；不安装或发布。原始证据留忽略目录 `var/`，仅登记哈希。
+源码提交 `2774aeb` 后构建 0.8.3 本地候选。208 份清单文件、209 份 ZIP 文件、1032 个内嵌模块及实际冻结程序的独立启动/配对/科研页面/数学资源/SSE/新表/退出检查通过，见 [本地候选与校验值](p6-release-0.8.3.md)。初次检查脚本的认证端点和资源路径误判及原报告均保留。未安装或发布。原始证据留忽略目录 `var/`，仅登记哈希。
 
 参考实现与官方依据：[Codex Hooks](https://learn.chatgpt.com/docs/hooks)、[工具注册与 Agent 别名](https://github.com/openai/codex/blob/3b5483307d70da48ece3da8cefcaae9a19888651/codex-rs/core/src/tools/registry.rs)、[Instructor 精确引文校验](https://github.com/567-labs/instructor/blob/main/docs/examples/exact_citations.md)、[LlamaIndex 引用编号](https://github.com/run-llama/llama_index/blob/619d74664e8404612038bc15a1a40c686037277c/llama-index-core/llama_index/core/query_engine/citation_query_engine.py)。仅借鉴机制，不宣称这些框架已经在本项目运行。
