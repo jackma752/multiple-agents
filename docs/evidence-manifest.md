@@ -87,6 +87,31 @@
 
 两个 `.db-shm` 文件是 SQLite 共享内存索引，最后修改时间为 2026-10-15 00:40，晚于探测本身，说明探测之后被再次打开过，因此不作为证据登记。
 
+## 0.8.2 真实在线严格模式与科研定点复测（2026-11-03）
+
+用户“在线模型测试做一下”并回复“继续”。结果见 [在线实录](online-strict-0.8.2.md)。Claude 两次顶层 CLI 调用（含一个原生子任务）与文件审批通过；DeepSeek 20/20 筛选通过，24/28 引文匹配，科研仍未通过。本轮 DeepSeek 17,505 Token；CLI 返回费用估算 $0.0710005，不以 CLI 统计声称原生子任务独立用量已验证。路径相对于 `.worktrees/`；仅哈希本轮已知测试证据文件，不读取/哈希凭据或用户配置目录。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `online-strict-082/var/online-082/environment.json` | 847 | `afa9d9b6c4bfa7247aa97d9853a5fdb2ab3020b4f4ae7dc94886c69782fb90c4` |
+| `online-strict-082/var/online-082/claude-original-driver-verdict.json` | 1466 | `8400d0a387952edf5f4f1a364ceed619e9f4b044c4adcbe3faac918b649b53fc` |
+| `online-strict-082/var/online-082/claude-files-started.json` | 468 | `d48bbbe8dd422e5934d89f3bce7214052298b80b5defd229f6077b8ef51662b4` |
+| `online-strict-082/var/online-082/claude-child-started.json` | 468 | `fdf9267cb8cee3273af10a5ef84ef172d880a2bd3443ab8abfef7b43da9ba3e2` |
+| `online-strict-082/var/online-082/claude-result.json` | 2796 | `1cba343889cb3b1f04d431225d9f3c756e7663750e0116496820c339bb52f885` |
+| `online-strict-082/var/online-082/claude-hub.db` | 684032 | `227ef5a721b8adc4688d4271732cab5748714c0bd7307b6485cc126d51d2abdc` |
+| `online-strict-082/var/online-082/claude-executions.db` | 20480 | `f0867ddd74f807c5875574c4470b9b44d175be3bbf848700b4b37da362888caf` |
+| `online-strict-082/var/online-082/paper-screen-started.json` | 544 | `1155fd65ff808154fa606a832294843f2377d8f53023c3b1b1a88d2cabde97b0` |
+| `online-strict-082/var/online-082/paper-study-started.json` | 582 | `0e2c837a470ba127d3de2f6e9c994af04247c7e4858aec0154e8dedda6e6e41b` |
+| `online-strict-082/var/online-082/paper-result.json` | 1855 | `e29396d0314a045fa0e94e20097949b0747a54418a8b1cf3b8d943a015bf8dfd` |
+| `online-strict-082/var/online-082/paper-hub.db` | 753664 | `cdbf50a86c265b35196ce6616e02d41615b453ec5d1434e6ae4c0877b5c9994b` |
+| `online-strict-082/var/online-082/paper-executions.db` | 57344 | `eedf3130b96fdd0b1fa08c539bdb37b3b15c9221bea288f40e0954f6b7f04bf7` |
+| `online-strict-082/var/online-082/quote-audit.json` | 1188 | `710aae88ead76100c75dc68f6ed5db0e4b42e4363aa7fff878d4fba17a1f5b2d` |
+| `online-strict-082/var/online-082/online-summary.json` | 850 | `c52eb91528ccb41ac30b0db3dd026463d9907248c4f308414125ba00aac80fb8` |
+| `online-strict-082/var/online-082/fixtures/claude-child-child.txt` | 24 | `cf995dd902b9923175a8a94712f4a22ed8b51b88e99b510dcc91197142b9c49e` |
+| `online-strict-082/var/online-082/fixtures/claude-child-fixture.txt` | 27 | `9940abbcf8d21832bacc1d25a872e8d604b1abc2b7dfeb93d5a05abf7f2f200e` |
+| `online-strict-082/var/online-082/fixtures/claude-files-allowed.txt` | 26 | `8e9a5f36d683716ea2abb35a255b088c85997bb7c67f0a538b68dd9bd10dc176` |
+| `online-strict-082/var/online-082/fixtures/claude-files-fixture.txt` | 27 | `9940abbcf8d21832bacc1d25a872e8d604b1abc2b7dfeb93d5a05abf7f2f200e` |
+
 ## 尚未登记
 
 - 2026-10-14 经批准的真实 Codex 调用（[记录](p3-codex-real-run-2026-10-14.md)，标签 `evidence/p3-real-codex-run`，`f7b2291`）：证据很可能在主目录 `var/codex-verify` 或 `var/codex-runs`。这两个目录里混有其他运行，本轮没有逐一甄别，所以暂未登记。
