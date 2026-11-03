@@ -45,12 +45,13 @@ from agenthub_kernel.autopilot import _Blocked, _event
 from agenthub_kernel.db import ChatMessageRow, InvocationRow, StageGrantRow, StageRunRow
 from agenthub_kernel.papers import arxiv, sources, supplement, validate
 from agenthub_kernel.papers.db import (
-    EvidenceRow, MissingItemRow, PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow, ResearchTaskRow,
+    EvidenceRow, MissingItemRow, PaperChunkRow, PaperDocumentRow, PaperParseAuditRow, PaperRow, PaperStepRow, ResearchTaskRow,
     SectionRow, SupplementBatchRow, SupplementFileRow, SupplementRequestRow,
 )
 from agenthub_kernel.papers.parse import chunk, parse_bytes, quote_in
 from agenthub_kernel.papers.templates import ABSTRACT, EXTRACT, OUTLINE, PLAN, REVIEW, SCREEN, SECTION, SYNTHESIZE, render
 from agenthub_kernel.papers.validate import FormatError, parse_json
+from agenthub_kernel.papers.citations import CitationError, apply_source_patch, merge_audit
 from agenthub_kernel.service import new_id
 
 SCREEN_BATCH = 20
@@ -164,14 +165,23 @@ class Ctx:
         ok, why = resource_decision(self.resource, ACTION_SEND, agent)
         if not ok:
             raise _Blocked(name, "plan_outside_rules", f"paper material may not be sent to {agent}: {why}")
-        row.template = template.meta()
+        repair = (row.result or {}).get('_citation_repair') if isinstance(row.result, dict) else None
+        active_template, active_data = template, data
+        if repair:
+            from agenthub_kernel.papers.guidance import SOURCE_REPAIR
+            active_template = SOURCE_REPAIR
+            failed = {i['unit_id'] for i in repair['issues']}
+            active_data = {'issues': repair['issues'], 'chunks': data['chunks'],
+                'units': [{k: u[k] for k in ('id', 'title', 'text', 'sources')}
+                          for u in repair['seed']['units'] if u['id'] in failed]}
+        row.template = active_template.meta()
         stage_step = "p:" + name
         reused = self._reuse_previous_stage(row, validator, stage_step)
         if reused is not None:
             return reused
         try:
             inv, state, reply = self.ap._ensure(self.session, self.stage, stage_step, agent,
-                                                render(template, data, language=self.request.language),
+                                                render(active_template, active_data, language=self.request.language),
                                                 self.to_start)
         except _Blocked as blocked:
             if soft and blocked.reason in SOFT_REASONS:
@@ -185,8 +195,18 @@ class Ctx:
         if state != "done":
             return "wait", None
         try:
-            result = validator(parse_json(reply.text))
+            result = self._checked_reply(row, validator, reply.text)
         except FormatError as exc:
+            if isinstance(exc, CitationError):
+                state = dict(row.result or {})
+                history = state.get('_citation_history', []) + exc.candidate.get('citation_audit', [])
+                state['_citation_history'] = history
+                state['_citation_issues'] = exc.issues
+                # The seed is a validated teaching structure with unresolved
+                # references, never a model-authorized plan or a finished result.
+                if name.startswith('study:'):
+                    state['_citation_repair'] = {'seed': exc.candidate, 'issues': exc.issues}
+                row.result = state
             try:
                 self.ap._retry(self.session, self.stage, stage_step, inv, f"format_invalid: {str(exc)[:200]}")
             except _Blocked as blocked:
@@ -196,6 +216,18 @@ class Ctx:
             _event(self.session, self.stage, "paper_format_repair", invocation_id=inv.id, step=name)
             return "wait", None
         return self._succeed(row, result, inv.id)
+
+    @staticmethod
+    def _checked_reply(row, validator, text):
+        out = parse_json(text)
+        state = row.result if isinstance(row.result, dict) else {}
+        repair = state.get('_citation_repair')
+        if repair:
+            out = apply_source_patch(out, repair['seed'], repair['issues'])
+        result = validator(out)
+        if isinstance(result, dict) and state.get('_citation_history'):
+            result['citation_audit'] = merge_audit(state['_citation_history'], result.get('citation_audit', []))
+        return result
 
     def _succeed(self, row: PaperStepRow, result: Any, invocation_id: str) -> tuple[str, Any]:
         row.status, row.result, row.finished_at, row.error = "succeeded", result, self.now, None
@@ -225,7 +257,7 @@ class Ctx:
                                                                      ChatMessageRow.role == "assistant"))
             if inv.status == "succeeded" and reply is not None:
                 try:
-                    result = validator(parse_json(reply.text))
+                    result = self._checked_reply(row, validator, reply.text)
                 except FormatError:
                     return None
                 _event(self.session, self.stage, "paper_reply_reused", invocation_id=inv_id, step=stage_step)
@@ -775,6 +807,8 @@ def _parsed(runtime: PaperRuntime, task_id: str, data: bytes, *, name: str, cont
     out = {"rel_path": rel, "sha256": sha, "size": size, "parse_status": result.status,
            "parse_error": result.error, "extractor": result.extractor, "pages": len(result.pages),
            "chars": len(result.text), "content_type": content_type[:80]}
+    if result.provenance:
+        out['parse_provenance'] = {'extractor': result.extractor, 'pdf_sha256': sha, 'pages': result.provenance}
     if result.status == "ok":
         out["chunks"] = [{"seq": c.seq, "page": c.page, "char_start": c.char_start, "char_end": c.char_end,
                           "text": c.text, "sha256": c.sha256} for c in chunk(result)]
@@ -839,6 +873,8 @@ def _store_document(session: Session, task: ResearchTaskRow, paper_id: Optional[
                            pages=doc.get("pages"), chars=doc.get("chars"))
     session.add(row)
     session.flush()
+    if doc.get('parse_provenance'):
+        session.add(PaperParseAuditRow(document_id=row.id, details=doc['parse_provenance']))
     for c in doc.get("chunks") or []:
         session.add(PaperChunkRow(id=f"chk-{row.id[4:]}-{c['seq']}", document_id=row.id, paper_id=paper_id,
                                   seq=c["seq"], page=c["page"], char_start=c["char_start"], char_end=c["char_end"],

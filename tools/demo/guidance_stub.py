@@ -32,7 +32,11 @@ def teaching(data):
 
 
 def respond(template,data):
-    if template=="research.study.v1":return teaching(data)
+    if template in ("research.study.v1", "research.study.v2"):return teaching(data)
+    if template == 'research.source-repair.v1':
+        c = data['chunks'][0]
+        return {'replacements': [{'unit_id': i['unit_id'], 'source_index': i['source_index'],
+            'source': {'source_id': c['source_id'], 'quote': c['text'][:150]}} for i in data['issues']]}
     if template=="research.study-review.v1":
         last=next((u for u in data["units"] if u["id"]=="step2"),None)
         return {"issues":[{"id":"math-1","unit_id":"step2","severity":"major","kind":"math",

@@ -44,7 +44,7 @@ def respond(prompt: str) -> str:
     template, data = m.group(1), _data(prompt)
     repair = "Repair attempt" in prompt
     topic = data.get("topic", "")
-    if template.startswith(("research.study", "research.directions")):
+    if template.startswith(("research.study", "research.directions", "research.source-repair")):
         from tools.demo.guidance_stub import respond as guidance_response
         return json.dumps(guidance_response(template,data),ensure_ascii=False)
     if template == "research.plan.v1":

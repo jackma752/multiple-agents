@@ -39,8 +39,42 @@ def test_source_repair_identifies_unit_and_chunk_without_relaxing_quote_matching
     assert out['units'][0]['id'] in str(exc.value) and c.id in str(exc.value)
 
 
+def test_citation_repair_preserves_teaching_units_and_reuses_the_stage_gate(hub, monkeypatch):
+    from tools.demo import guidance_stub
+    from agenthub_kernel.db import ApprovalRow, InvocationRow
+    from agenthub_kernel.papers.db import PaperStepRow
+    original = guidance_stub.respond
+    observed = []
+    seed = {}
+    def response(template, data):
+        result = original(template, data)
+        if template == 'research.study.v2':
+            for index in (0, 4):
+                result['units'][index]['sources'][0]['quote'] = f'Absent authored quotation number {index}.'
+            seed.update(copy.deepcopy(result))
+        if template == 'research.source-repair.v1':
+            observed.append(copy.deepcopy(data))
+        return result
+    monkeypatch.setattr(guidance_stub, 'respond', response)
+    tid, view = complete(hub, 'study')
+    assert len(observed) == 1
+    assert {i['unit_id'] for i in observed[0]['issues']} == {'problem1', 'setting1'}
+    study = next(iter(view['outcome']['studies'].values()))
+    for before, after in zip(seed['units'], study['units']):
+        assert before['id'] == after['id'] and before['latex'] == after['latex']
+        assert before['depends_on'] == after['depends_on']
+        if before['id'] != 'step2':  # the separate authored math-review fixture edits this unit
+            assert before['text'] == after['text']
+    with hub.client.app.state.db.session() as session:
+        steps = list(session.scalars(select(PaperStepRow).where(PaperStepRow.task_id == tid, PaperStepRow.name == 'study')))
+        assert len(steps) == 1 and len(steps[0].invocation_ids) == 2
+        for iid in steps[0].invocation_ids:
+            assert session.get(InvocationRow, iid).status == 'succeeded'
+            assert session.scalar(select(ApprovalRow).where(ApprovalRow.invocation_id == iid)).status == 'consumed'
+
+
 def test_targeted_patch_cannot_silently_change_other_units():
-    c,out=sample();u=copy.deepcopy(out["units"][8]);u["text"]+=" Corrected."
+    c,out=sample();out=study_result(out,[c]);u=copy.deepcopy(out["units"][8]);u["text"]+=" Corrected."
     patch={"replacements":[u],"math_state":"complete","missing":[]}
     fixed=patch_result(patch,out,[c],{"step2"})
     assert fixed["units"][:8]==out["units"][:8] and fixed["units"][9:]==out["units"][9:]

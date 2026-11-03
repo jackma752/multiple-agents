@@ -35,7 +35,7 @@ from agenthub_kernel.db import ConversationRow, InvocationRow, StageRunRow, Task
 from agenthub_kernel.papers import supplement
 from agenthub_kernel.papers.export import usage_of
 from agenthub_kernel.papers.db import (
-    ArtifactRow, EvidenceRow, PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow, ResearchTaskRow, SectionRow,
+    ArtifactRow, EvidenceRow, PaperChunkRow, PaperDocumentRow, PaperParseAuditRow, PaperRow, PaperStepRow, ResearchTaskRow, SectionRow,
     ensure_schema,
 )
 from agenthub_kernel.papers.parse import extractor_version
@@ -391,6 +391,9 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         stage_info = {k: stage_info[k] for k in ("stage_id", "status", "summary", "calls_used", "rules_hash",
                                                  "execution_mode")} | {"max_calls": stage.rules.get("max_calls")}
     docs = {d.id: d for d in session.scalars(select(PaperDocumentRow).where(PaperDocumentRow.task_id == task.id))}
+    parse_audits = {d.document_id: d.details for d in session.scalars(select(PaperParseAuditRow)
+        .join(PaperDocumentRow, PaperParseAuditRow.document_id == PaperDocumentRow.id)
+        .where(PaperDocumentRow.task_id == task.id))}
     outcome = {k:v for k,v in (task.outcome or {}).items() if k in (
         "plan", "screening", "insufficient", "supplement", "synthesis", "outline", "abstract", "quality_reasons",
         "sample", "missing_citations", "export_copy", "reexported_at", "studies", "directions", "quality_dimensions", "search_sources")}
@@ -413,7 +416,8 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
                     "fulltext_status": p.fulltext_status, "fulltext_reason": p.fulltext_reason,
                     "fulltext_reason_text": MISSING_REASONS.get(p.fulltext_reason or "", p.fulltext_reason),
                     "document": ({"origin": docs[p.document_id].origin, "pages": docs[p.document_id].pages,
-                                  "extractor": docs[p.document_id].extractor}
+                                  "extractor": docs[p.document_id].extractor,
+                                  "parse_provenance": parse_audits.get(p.document_id)}
                                  if p.document_id in docs else None),
                     "read_depth": p.read_depth, "read_status": p.read_status, "merged": p.merged,
                     "evidence": evidence_counts.get(p.id, 0)} for p in papers],

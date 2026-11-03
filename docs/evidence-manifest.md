@@ -116,3 +116,32 @@
 
 - 2026-10-14 经批准的真实 Codex 调用（[记录](p3-codex-real-run-2026-10-14.md)，标签 `evidence/p3-real-codex-run`，`f7b2291`）：证据很可能在主目录 `var/codex-verify` 或 `var/codex-runs`。这两个目录里混有其他运行，本轮没有逐一甄别，所以暂未登记。
 - 主目录 `var/codex-home-dbg` 可能含凭据，按规则不计算哈希。
+
+## 0.8.3 引用与 Codex 钩子修复（2026-11-03）
+
+用户要求“按照这份调研结果，拟定好方案后去执行修好bug”。结论见 [修复记录](citation-codex-0.8.3.md)。真实 DeepSeek 新调用一次，12,741 Token，38/38 引文通过；Codex 为真实固定 CLI + 本机合成模型，在线调用 0。正常拒绝钩子通过，损坏返回与超时放行的失败证据保留，严格入口仍阻止。首次大回归用量迟到项失败，修复后另存最终回归；不覆盖旧证据。下表路径相对于 `.worktrees/`；仅登记已知测试文件，不读取或哈希任何登录目录。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `citation-codex-083/var/citation-083/offline-regression.json` | 1645 | `2d93d9b2f790a065d8209a807012879296e419827b12941bd9180bd467e7f915` |
+| `citation-codex-083/var/citation-083/online-result.json` | 957 | `bbe1cfd3b83bfadb63404fae675707623391f5f12681abbc8dcc40b4c181823c` |
+| `citation-codex-083/var/citation-083/online-0-started.json` | 431 | `4f11fd289fe55828c792f69a32734f099f97fda665552b4bd548be2df0bc36d6` |
+| `citation-codex-083/var/citation-083/validated-study.json` | 41726 | `4b207a3d1dd3fb97bc268cd9f65ef279501899c947827e3a4859d9a8d37739d7` |
+| `citation-codex-083/var/citation-083/online-hub.db` | 741376 | `26cce4bf9f83bf2a3ca92a404870d4726cf12e267c7c9084f11fea16cd647f9c` |
+| `citation-codex-083/var/citation-083/online-executions.db` | 53248 | `428950b082eeede1d4e864a9d8802eaafce9d950dea21f4f2828bdbca01cc95e` |
+| `citation-codex-083/var/citation-083/regression.xml` | 200408 | `ba15be32b6f93e4b772f202d46cf3f295007c49ef5a98127ad5b1f67c0640deb` |
+| `citation-codex-083/var/citation-083/regression-final.xml` | 199477 | `bd6940f99ba46324c7f38cf3b63b9ebf8de51375ffede7c98f58c5c9dfdba6e1` |
+| `citation-codex-083/var/citation-083/final-citation-tests-v2.xml` | 6960 | `db40f4142111c56cebc60f0346362223f5120ba9192ce5c8fc3c7543347f6cbb` |
+| `citation-codex-083/var/codex-hooks-083/trusted-deny.json` | 1602 | `d94002199f6b630ce5a98e69ceaf7bf7ee85934fba7225d3c9978089a09b3d12` |
+| `citation-codex-083/var/codex-hooks-083/trusted-deny-v2.json` | 2843 | `17703995ba1b093238cf8f5f7927906f154fde6c37421f48d1793e0d282cbaf5` |
+| `citation-codex-083/var/codex-hooks-083/invalid-json.json` | 2852 | `ec1e8066e03cea92c5d4b72d39cce926dafc7c74037aa1bd660b51eca6b0d518` |
+| `citation-codex-083/var/codex-hooks-083/timeout.json` | 2847 | `f358768d07fe24dc7081d62e3b1a8122467b72e55b85dcc080e4e94154c8544c` |
+| `citation-codex-083/var/codex-hooks-083/trusted-deny-v2/guard.py` | 403 | `8d9f3ca585e34f90d8e26feb0924add9adb60b9d5f02690a87ec77c6a2a0fd1c` |
+| `citation-codex-083/var/codex-hooks-083/trusted-deny-v2/guard-events.jsonl` | 611 | `24aa3ddcb9bf17e2180c87b61134ba6b13554d76349bc6336ddaecb334393b25` |
+| `citation-codex-083/var/codex-hooks-083/trusted-deny-v2/notifications.json` | 9542 | `69f1118f67e1ebe87471180afcf1ead71370972cafe61e8b62e00eb81b44e4b7` |
+| `citation-codex-083/var/codex-hooks-083/invalid-json/guard.py` | 250 | `490e49c702af88bf803f5736d354cc444c3479f2f9f96977c5eea4264794d81b` |
+| `citation-codex-083/var/codex-hooks-083/invalid-json/guard-events.jsonl` | 611 | `5bbb96ba06d2e9ecefede3383bab1c3b6a7a0b84ec36a92495738d2e36a19f22` |
+| `citation-codex-083/var/codex-hooks-083/invalid-json/notifications.json` | 13983 | `dc68e21da55786e8efc0adc5eef3dbc20a744077aeae0746a8db6c245fd40a9c` |
+| `citation-codex-083/var/codex-hooks-083/timeout/guard.py` | 259 | `8f76c9ca91a22cc2c1649c0e09358addcf059440572f0638e5d88cc104807c21` |
+| `citation-codex-083/var/codex-hooks-083/timeout/guard-events.jsonl` | 611 | `d771ba940cf0c779b823de8141acbf6f1349732162d93f3724984ec5ddaa6c27` |
+| `citation-codex-083/var/codex-hooks-083/timeout/notifications.json` | 14094 | `0bee5c00a74201ff52dd0519a6e53c39018710829cdc08622a035af686a26d24` |

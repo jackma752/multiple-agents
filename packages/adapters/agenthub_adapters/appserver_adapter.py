@@ -105,6 +105,7 @@ from agenthub_adapters.store import CANCELLED, FAILED, FINISHED, RUNNING, Execut
 
 TRANSPORT = "app-server"
 TOKEN_USAGE_UPDATED = "thread/tokenUsage/updated"
+LATE_EVENT_GRACE_SECONDS = 0.1
 
 #: The reviewed app-server identity (D7). Not shared with exec and never read
 #: from the environment; a change here is a code review decision and changes
@@ -157,7 +158,9 @@ NO_TURN_USAGE = {"inputTokens": 0, "cachedInputTokens": 0, "cacheWriteInputToken
 DECLINE_ONLY = ["decline"]
 
 REAL_APPSERVER_BLOCK_REASON = (
-    "当前 Codex 通道对内部子 Agent 和工具操作的严格控制仍未验证，严格模式暂不可用。"
+    "当前 Codex 严格模式尚未满足故障拒绝要求，暂不可用。"
+    "已测固定版本在钩子受信任且正常返回拒绝时可拦截子 Agent，"
+    "但钩子超时或返回损坏数据时会放行；不能仅凭配置了钩子宣称严格控制通过。"
     "请选用严格模式可用的通道，或明确选择用户监督模式。"
 )
 SUPERVISED_REASON = (
@@ -991,8 +994,7 @@ class AppServerCodexAdapter(AdapterContract):
                                        "resumed": bool(resume_id)})
             timed_out = not self._pump(client, turn, emit, gate)
             if turn.terminal_seen:
-                # Bound events after this turn's terminal are anomalies (§4.8).
-                turn.count_late(client.notifications())
+                self._drain_late(client, turn)
         except _Refused as exc:
             failure = f"refused before any turn: {exc}"
         except AppServerResponseError as exc:
@@ -1048,6 +1050,25 @@ class AppServerCodexAdapter(AdapterContract):
             if self._observe(note, turn, emit):
                 return True
         return False
+
+    @staticmethod
+    def _drain_late(client: AppServerClient, turn: _Turn) -> None:
+        """Allow the reader a bounded interval for trailing accounting events.
+
+        An empty queue immediately after terminal does not mean the producer or
+        reader finished. Never route approvals or reset the deadline here. Late
+        usage remains partial; missing usage remains unknown after this window.
+        """
+        deadline = time.monotonic() + LATE_EVENT_GRACE_SECONDS
+        turn.count_late(client.notifications())
+        while not client.disconnected:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            note = client.wait_for(lambda _n: True, timeout=min(remaining, 0.05))
+            if note is not None:
+                turn.count_late([note])
+        turn.count_late(client.notifications())
 
     def _observe_batch(self, batch: list, turn: _Turn, emit: Emit) -> bool:
         """Observe a drained batch in order. True once this turn's terminal is seen.

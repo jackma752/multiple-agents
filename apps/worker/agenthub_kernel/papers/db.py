@@ -141,6 +141,13 @@ class PaperDocumentRow(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class PaperParseAuditRow(Base):
+    """Additive provenance; old document/chunk rows are never rewritten."""
+    __tablename__ = "paper_parse_audit"
+    document_id = Column(ForeignKey("paper_documents.id"), primary_key=True)
+    details = Column(JSON, nullable=False)
+
+
 class PaperChunkRow(Base):
     __tablename__ = "paper_chunks"
     __table_args__ = (UniqueConstraint("document_id", "seq"),)

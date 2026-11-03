@@ -11,6 +11,7 @@ import hashlib
 import io
 import logging
 import re
+import statistics
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -27,6 +28,7 @@ class ParseResult:
     pages: list = field(default_factory=list)  # text per page; one entry for plain text
     paged: bool = True
     error: str = ""
+    provenance: list = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -82,7 +84,9 @@ def _parse_pdf(data: bytes) -> ParseResult:
             except Exception:  # noqa: BLE001
                 return ParseResult("encrypted", extractor=version, error="password required")
         count = len(reader.pages)
-        pages = [_clean(reader.pages[i].extract_text() or "") for i in range(min(count, MAX_PAGES))]
+        extracted = [_page_text(reader.pages[i], i+1) for i in range(min(count, MAX_PAGES))]
+        pages = [p[0] for p in extracted]
+        provenance = [p[1] for p in extracted if p[1]]
     except (PdfReadError, ValueError, KeyError, TypeError, AttributeError, IndexError, OSError) as exc:
         return ParseResult("corrupt", extractor=version, error=type(exc).__name__)
     except Exception as exc:  # noqa: BLE001 - a malformed file must not stop the pipeline
@@ -93,7 +97,79 @@ def _parse_pdf(data: bytes) -> ParseResult:
     if total < MIN_TEXT_CHARS or total / len(pages) < SCANNED_CHARS_PER_PAGE:
         return ParseResult("scanned", extractor=version, pages=pages,
                            error="very little text per page; OCR is not supported in this version")
-    return ParseResult("ok", extractor=version, pages=pages)
+    return ParseResult("ok", extractor=version + "/footnote-order-v1", pages=pages, provenance=provenance)
+
+
+def _page_text(page, page_number):
+    """Conservatively move numbered small-font footnote blocks to page end.
+
+    Do not remove text. Inline mathematical subscripts are not footnote anchors.
+    Complex transforms or an unmatched visitor stream fall back to raw order.
+    """
+    fragments = []
+    def visit(text, cm, tm, font, size):
+        fragments.append({'text': text, 'x': tm[4]*cm[0]+tm[5]*cm[2]+cm[4],
+            'y': tm[4]*cm[1]+tm[5]*cm[3]+cm[5], 'size': size,
+            'simple': abs(cm[1])+abs(cm[2])+abs(tm[1])+abs(tm[2]) < 0.00001})
+    raw = page.extract_text(visitor_text=visit) or ''
+    if ''.join(f['text'] for f in fragments) != raw or any(not f['simple'] for f in fragments if f['text'].strip()):
+        return _clean(raw), None
+    weighted = [f['size'] for f in fragments if f['size'] > 0
+                for _ in range(min(200, sum(ch.isalpha() for ch in f['text'])))]
+    if not weighted:
+        return _clean(raw), None
+    body_size = statistics.median(weighted)
+    bottom = float(page.mediabox.bottom)
+    height = float(page.mediabox.height)
+    middle = float(page.mediabox.left) + float(page.mediabox.width)/2
+    ranges = []
+    i = 0
+    while i < len(fragments)-1:
+        f = fragments[i]
+        if not (re.fullmatch(r'\s*\d{1,3}\s*', f['text']) and f['size'] < body_size*.66
+                and bottom <= f['y'] <= bottom+height*.16):
+            i += 1; continue
+        j = i+1
+        while j < len(fragments) and not fragments[j]['text'].strip():
+            j += 1
+        if j >= len(fragments):
+            break
+        first = fragments[j]
+        if not (first['size'] <= body_size*.86 and abs(first['y']-f['y']) <= 8
+                and (sum(ch.isalpha() for ch in first['text']) >= 12 or 'https://' in first['text'])):
+            i += 1; continue
+        end = j+1
+        while end < len(fragments):
+            nxt = fragments[end]
+            if nxt['text'].strip() and not (nxt['size'] <= body_size*.86 and bottom <= nxt['y'] <= f['y']+2
+                    and (nxt['x'] < middle) == (f['x'] < middle)):
+                break
+            end += 1
+        ranges.append((i, end))
+        i = end
+    if not ranges:
+        return _clean(raw), None
+    marked = {i for start, end in ranges for i in range(start, end)}
+    body, footnotes = [], []
+    previous_note = False
+    for i, f in enumerate(fragments):
+        if i in marked:
+            footnotes.append(f['text']); previous_note = True
+        else:
+            if previous_note:
+                body.append('\n')
+            body.append(f['text']); previous_note = False
+    ordered = _clean(''.join(body) + '\n\n[Footnotes]\n' + ''.join(footnotes))
+    starts, count = [], 0
+    for f in fragments:
+        starts.append(count); count += len(f['text'])
+    details = {'page': page_number, 'method': 'numbered-small-font-footnotes-v1',
+        'raw_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+        'ordered_sha256': hashlib.sha256(ordered.encode()).hexdigest(),
+        'moved_ranges': [{'raw_start': starts[a], 'raw_end': starts[b] if b < len(starts) else len(raw),
+            'anchor_x': fragments[a]['x'], 'anchor_y': fragments[a]['y'], 'anchor_font_size': fragments[a]['size']}
+            for a, b in ranges]}
+    return ordered, details
 
 
 @dataclass

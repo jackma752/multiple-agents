@@ -6,6 +6,7 @@ Claude Code: the in-process fake runner with documented result shapes.
 """
 
 import json
+import threading
 
 import pytest
 
@@ -82,6 +83,45 @@ def test_a_late_update_is_kept_and_still_counted_late(tmp_path):
     assert run(adapter).ok
     p = payload(adapter)
     assert p["late_events"] >= 1 and p["usage"] == stub_turn_usage(1)
+
+
+def test_usage_written_after_the_terminal_queue_is_drained_is_not_lost(tmp_path, monkeypatch):
+    from agenthub_adapters.appserver import AppServerClient
+    from agenthub_adapters.appserver_adapter import TOKEN_USAGE_UPDATED
+
+    terminal_observed = threading.Event()
+    drain_waiting = threading.Event()
+    original_pump = AppServerCodexAdapter._pump
+    original_wait = AppServerClient.wait_for
+    original_notify = stub.ScriptedAppServer.notify
+
+    def pump(self, *args, **kwargs):
+        result = original_pump(self, *args, **kwargs)
+        terminal_observed.set()
+        return result
+
+    def wait(self, *args, **kwargs):
+        if terminal_observed.is_set():
+            drain_waiting.set()
+        return original_wait(self, *args, **kwargs)
+
+    def notify(self, method, params):
+        if self.scenario == 'usage-late' and method == TOKEN_USAGE_UPDATED:
+            # Hold the producer until after terminal was consumed and the
+            # adapter explicitly waits for trailing events. No timing sleeps.
+            if not drain_waiting.wait(1):
+                return
+        return original_notify(self, method, params)
+
+    monkeypatch.setattr(AppServerCodexAdapter, '_pump', pump)
+    monkeypatch.setattr(AppServerClient, 'wait_for', wait)
+    monkeypatch.setattr(stub.ScriptedAppServer, 'notify', notify)
+    adapter = appserver(tmp_path, 'usage-late')
+    assert run(adapter).ok
+    assert drain_waiting.is_set()
+    assert payload(adapter)['usage'] == stub_turn_usage(1)
+    assert record(adapter).completeness == PARTIAL
+    assert 'late_usage' in record(adapter).notes
 
 
 def test_a_duplicate_update_counts_once(tmp_path):

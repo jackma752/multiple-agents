@@ -10,9 +10,9 @@ import re
 from sqlalchemy import select
 
 from agenthub_kernel.papers.db import PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow
-from agenthub_kernel.papers.parse import quote_in
 from agenthub_kernel.papers.templates import Template, _register
 from agenthub_kernel.papers.validate import FormatError
+from agenthub_kernel.papers.citations import merge_audit, resolve_units, source_aliases
 
 KINDS = ("problem", "intuition", "prerequisites", "symbols", "setting", "assumption", "result", "step", "example", "next")
 UNIT_SCHEMA = ('{"id":"stable unique id","kind":"problem|intuition|prerequisites|symbols|setting|assumption|result|step|example|next",'
@@ -22,8 +22,9 @@ UNIT_SCHEMA = ('{"id":"stable unique id","kind":"problem|intuition|prerequisites
                '"origin":"source|reconstruction","sources":[{"chunk_id":"given id","quote":"exact source span"}]}')
 MISSING_SCHEMA = '{"reason":"specific missing proof/definition or damaged formula","pages":[1],"terms":["Theorem 2"]}'
 STUDY = _register(Template(
-    "research.study.v1", 1, "read", ("paper", "chunks", "coverage"),
-    '{"units":[' + UNIT_SCHEMA + '],"math_state":"complete|incomplete","missing":[' + MISSING_SCHEMA + ']}',
+    "research.study.v2", 2, "read", ("paper", "chunks", "coverage"),
+    '{"units":[' + UNIT_SCHEMA.replace('"chunk_id":"given id"', '"source_id":"given short id"') + '],"math_state":"complete|incomplete","missing":[' + MISSING_SCHEMA + ']}',
+    "Use each supplied source_id (S01, S02, ...) to identify its chunk; quote must be one exact span. "
     "Original claims and equations require source spans from given chunks. Problem, setting, assumptions and result "
     "must each link to source spans even when paraphrased. Reconstruction is your teaching derivation, "
     "not an author's quotation: label it reconstruction, state assumptions and dependencies. Never guess broken PDF formulas.",
@@ -34,6 +35,14 @@ STUDY = _register(Template(
     "example with calculation, and next learning task. For theory explain axioms/operators/theorems; for empirical work "
     "explain objectives/constraints/updates/validation. Prefer one complete core argument over many shallow summaries. "
     "Every kind in the schema must have a unit. Use LaTeX. Reconstruct omitted elementary steps explicitly; do not invent proof.",
+))
+SOURCE_REPAIR = _register(Template(
+    "research.source-repair.v1", 1, "read", ("issues", "units", "chunks"),
+    '{"replacements":[{"unit_id":"given id","source_index":0,"source":{"source_id":"S01","quote":"one exact supplied span"}}]}',
+    "Only replace reference slots named by issues. The backend retains all explanations, equations, dependencies "
+    "and valid references. Use the short source_id from chunks; never fabricate an id or splice a quotation.",
+    "If a source cannot support the statement, do not invent evidence. An unverifiable replacement remains blocked.",
+    "Fix every listed citation error. Return replacements only; do not regenerate teaching units or edit prose.",
 ))
 CHECK = _register(Template(
     "research.study-review.v1", 1, "review", ("units", "chunks", "previous_issues"),
@@ -110,7 +119,6 @@ def study_result(out, chunks):
     if not isinstance(units, list) or not 1 <= len(units) <= 60:
         raise FormatError("study needs all teaching units and at least two derivation steps")
     seen, kinds = set(), []
-    source = {c.id: c for c in chunks}
     for unit in units:
         uid = _text(unit, "id")
         if uid in seen or len(uid)>80 or not re.fullmatch(r"[A-Za-z0-9_-]+", uid):
@@ -141,17 +149,12 @@ def study_result(out, chunks):
         refs = unit.get("sources", [])
         if not isinstance(refs,list) or len(refs)>12 or (unit["origin"]=="source" or kind in ("problem","setting","assumption","result")) and not refs:
             raise FormatError("source units require locations")
-        for ref in refs:
-            if not isinstance(ref,dict):raise FormatError("source location must be an object")
-            c = source.get(ref.get("chunk_id"))
-            if c is None or not isinstance(ref.get("quote"),str) or not quote_in(ref["quote"], c.text):
-                raise FormatError(f"source span not found: unit {uid}, chunk {ref.get('chunk_id')}; copy an exact supplied span")
-            ref["pdf_page"]=c.page
         kinds.append(kind); seen.add(uid)
     if out.get("math_state")=="complete" and (set(KINDS)-set(kinds) or kinds.count("step")<2):
         raise FormatError("missing teaching components")
     missing=missing_items(out)
-    return {"units":units,"math_state":out["math_state"],"missing":missing}
+    checked = resolve_units({"units":units,"math_state":out["math_state"],"missing":missing}, chunks)
+    return checked
 
 
 def review_result(out, ids):
@@ -187,7 +190,9 @@ def patch_result(out, study, chunks, editable, allow_additions=False):
         raise FormatError("patch changed a unit kind")
     candidate={"units":[updates.get(u["id"],u) for u in study["units"]]+additions,
                "math_state":out.get("math_state"),"missing":out.get("missing",[])}
-    return study_result(candidate,chunks)
+    checked = study_result(candidate,chunks)
+    checked['citation_audit'] = merge_audit(study.get('citation_audit', []), checked['citation_audit'])
+    return checked
 
 
 def ideas_result(out, papers):
@@ -236,7 +241,8 @@ def pick(chunks, requests=(), *, exclude=(), budget=24000):
 
 
 def payload(chunks):
-    return [{"chunk_id":c.id,"pdf_page":c.page,"text":c.text} for c in chunks]
+    aliases = {cid: short for short, cid in source_aliases(chunks).items()}
+    return [{"chunk_id":c.id,"source_id":aliases[c.id],"pdf_page":c.page,"text":c.text} for c in chunks]
 
 
 def phase_read(ctx):
