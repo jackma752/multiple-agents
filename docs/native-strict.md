@@ -18,6 +18,8 @@ Claude 2.1.308（SHA-256 `c9796ba22a9221586b36371b36f5b66198d66eb4badf6a4cf4a5f7
 
 `POST /api/conversations/{cid}/invocations` 新增 `native_subagents: "disabled" | "approved"`，默认 disabled。只有 Claude strict 接受 approved。选择参与请求去重哈希和 snapshot.permissions；默认值不改变旧哈希。切换通道/模式和发送完成后，界面复位为关闭。调用卡显示选项，子任务卡显示实际生命周期。
 
+0.8.5 起，创建原生调用时即复用启动预检，要求已开启根任务协作、允许的并发/深度及兼容的预算；失败返回原有 409 错误且整个请求回滚，不保存无法执行的审批卡。界面依已保存策略禁用不满足条件的原生选项并提示修复方法，普通严格消息保持可用。执行前仍重复预检，策略变更不能借旧审批通过。默认累计数量 0 表示不限，保留现有策略语义。
+
 NativeAgentRow 是新增表，不修改旧表结构。`native_agent.status` SSE 只含 invocation_id、native_agent_id、tool_approval_id、state、depth；用于刷新卡片和全树计数，不携带提示词或工具结果。卡片正文只通过现有用户认证/会话所有者端点读取。
 
 CLI 在新的空工作目录运行，普通配置来源关闭，命令/技能入口关闭，只加载本次 --settings 与固定 --agents 定义。批准工作区通过 --add-dir 告知 CLI，额外目录的记忆文件加载显式关闭；文件访问仍由内核检查。工作区与执行配置目录重叠时拒绝。每次随机 HTTP 凭据只写工作区外的临时设置，绑定 127.0.0.1、会话和 cwd；回调服务没有批准接口。内容限长、重放拒绝、错误默认 deny，所有 HTTP hook 配置 `onFailure: block`。结束仅删除本次确切设置文件及空目录。

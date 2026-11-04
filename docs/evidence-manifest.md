@@ -255,3 +255,12 @@
 | `claude-path-recovery/var/github-finish-assets.jsonl` | 492 | `7fd779b07e69616b88cf863704a696385112889c727217a32da1ea50cb163264` |
 | `claude-path-recovery/var/github-publish.json` | 227 | `817e8b85e212c750f1dfd376267bff3f4fc279bf2228bd182bfb2f2b72f0bece` |
 | `claude-path-recovery/var/github-verify.json` | 227 | `817e8b85e212c750f1dfd376267bff3f4fc279bf2228bd182bfb2f2b72f0bece` |
+
+### 0.8.5 原生子任务前置检查（2026-11-04）
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `native-preflight-085/var/native-preflight-first.xml` | 9893 | `459965068ab84c244c6186afa97f1238221129a7e69167db42aa289c0d540f19` |
+| `native-preflight-085/var/native-preflight-final.xml` | 22501 | `47e42293b1612c1c016ee24c6862be3e1a022328dcc4d5bfbd4aefa937ebf7ab` |
+| `native-preflight-085/var/native-preflight-last.xml` | 7697 | `f1a0db3144a3a2df6d63eaa5edc65d1a744c1393f0d1717ee61cd03ab939bd4e` |
+| `native-preflight-085/var/composer-check.json` | 66 | `e00bf96269e20686e4550574e713617eb9fd301905fc187a822cb2494bcc0c5b` |

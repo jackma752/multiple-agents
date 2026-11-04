@@ -202,6 +202,7 @@
         <span class="grow dim" id="composerNote"></span>
         <button type="submit" id="sendBtn" class="primary">发送（生成待审批调用）</button>
       </div>
+      <div id="nativeHint" class="note" hidden></div>
     </form>
   </main>
   <aside class="side" id="sidePanel">
@@ -364,7 +365,7 @@ function absorbMessage(m) {
     patch(call(inv.invocation_id), {
       status: inv.status, error: inv.error, approval_id: inv.approval_id, approval_status: inv.approval_status,
       agent_id: inv.agent_id, execution_mode: inv.execution_mode, model:inv.model, reasoning_effort:inv.reasoning_effort,
-      native_subagents: inv.native_subagents,
+      native_subagents: inv.native_subagents, depth: inv.depth,
       context_mode: inv.context_mode, resume_thread_id: inv.resume_thread_id,
       handoff: inv.handoff, sent_text: inv.sent_text, usage: inv.usage, budget: inv.budget,
       context_preview: inv.context_preview, plan_item: inv.plan_item, authorized_by: inv.authorized_by,
@@ -1007,6 +1008,8 @@ async function guarded(key, fn) {
 }
 
 function approveAndRun(c) {
+  const nativeProblem = nativeCallProblem(c);
+  if (nativeProblem) { toast(nativeProblem); return; }
   return guarded("run:" + c.id, async () => {
     try {
       if (c.approval_status === "pending") {
@@ -1025,9 +1028,18 @@ function approveAndRun(c) {
 }
 
 function runApproved(c) {
+  const nativeProblem = nativeCallProblem(c);
+  if (nativeProblem) { toast(nativeProblem); return; }
   return guarded("run:" + c.id, async () => {
     const res = await api("POST", `/api/invocations/${enc(c.id)}/run`);
     patch(c, { status: res.status });
+  });
+}
+
+function revokeCall(c) {
+  return guarded("run:" + c.id, async () => {
+    await api("POST", `/api/approvals/${enc(c.approval_id)}/revoke`);
+    patch(c, { approval_status: "revoked", status: "draft" });
   });
 }
 
@@ -1078,6 +1090,9 @@ async function send(event) {
   const mode = $("mode").value;
   if (!text.trim()) return;
   if (mode !== "strict" && mode !== "supervised") { toast("请先选择执行模式（严格或用户监督）"); return; }
+  if ($("nativeAgents").value === "approved" && nativeChoiceProblem()) {
+    toast(nativeChoiceProblem()); renderComposer(); return;
+  }
   await guarded("send", async () => {
     // A creation already in flight (e.g. "+ 新会话" just clicked) is the one
     // this message goes to; otherwise create one. Never a second conversation.
@@ -1473,13 +1488,15 @@ function renderCall(c) {
   const supervised = c.execution_mode === "supervised";
   const awaiting = c.status === "awaiting_approval" && c.approval_status === "pending";
   const consented = S.consent.get(c.id) === true;
+  const nativeProblem = nativeCallProblem(c);
   if (awaiting) {
-    actions.push(el("button", { class: "primary", disabled: busyRun || (supervised && !consented),
+    actions.push(el("button", { class: "primary", disabled: busyRun || !!nativeProblem || (supervised && !consented),
                                 title: supervised && !consented ? "先勾选本次调用的监督边界同意" : null,
                                 onclick: () => approveAndRun(c) }, "启动本次调用"),
                  el("button", { disabled: busyRun, onclick: () => rejectCall(c) }, "不启动"));
   } else if (c.status === "queued" && c.approval_status === "approved") {
-    actions.push(el("button", { class: "primary", disabled: busyRun, onclick: () => runApproved(c) }, "执行"));
+    actions.push(el("button", { class: "primary", disabled: busyRun || !!nativeProblem, onclick: () => runApproved(c) }, "执行"),
+                 el("button", { disabled: busyRun, onclick: () => revokeCall(c) }, "撤销此调用"));
   } else if (c.status === "starting" || c.status === "running") {
     actions.push(el("button", { disabled: S.busy.has("interrupt:" + c.id) || !c.turn,
                                 title: c.turn ? "请求 provider 中断本轮；以 provider 报告的终态为准" : "模型回合尚未开始",
@@ -1490,6 +1507,8 @@ function renderCall(c) {
     actions.push(el("button", { disabled: S.busy.has("settle:" + c.id), onclick: () => settleEnded(c) }, "登记超时调用已结束"));
   }
   const notes = [];
+  if (nativeProblem && (awaiting || c.status === "queued"))
+    notes.push("此调用暂不可执行：" + nativeProblem + " 若修改协作设置，请重新提交并审批调用；原审批不会获得新增权限。");
   if(c.workspace) {
     notes.push(`工作区：${c.workspace} · ${c.workspace_access === 'workspace-write' ? '允许写入' : '只读（不能修改文件）'}`);
     notes.push(c.agent_id === 'codex' ? 'Codex 可在此工作区读取；允许写入时可修改。需要审批的工具仍由本次工具卡或阶段规则决定，原生直接操作不保证逐项拦截。'
@@ -2161,10 +2180,38 @@ function lastNativeThread(agent) {
   return null;
 }
 
+function nativeCallProblem(c) {
+  return c.native_subagents === "approved" ? nativeChoiceProblem(c.agent_id, c.execution_mode, c.depth || 0) : "";
+}
+
+function nativeChoiceProblem(agent = $("agent").value, mode = $("mode").value, depth = 0) {
+  if (agent !== "claude-code" || mode !== "strict")
+    return "原生子 Agent 逐次审批仅用于 Claude 严格模式。";
+  const u = S.usageConv;
+  const policy = u && u.budget && u.budget.policy;
+  if (!u || !u.root_task || !u.root_task.root_task_id || !policy)
+    return "先保持原生子 Agent 关闭，发送普通消息建立会话任务，再到右侧开启协作。";
+  if (!policy.collaboration_enabled)
+    return "本会话协作未开启；可保持原生子 Agent 关闭发送普通严格消息，或先到右侧开启协作。";
+  if (policy.max_subagents_concurrent < 1 || policy.max_depth <= depth)
+    return "原生子 Agent 需要协作的并发和深度至少为 1；请先保存限制，再选择逐次审批。";
+  if (policy.token_budget_total != null || Object.keys(policy.model_budgets || {}).length)
+    return "当前 Token 预算不支持原生子 Agent；可关闭原生子 Agent，或改用 Hub 子任务。";
+  return "";
+}
+
+function renderNativeChoice() {
+  const nativeMode = $("agent").value === "claude-code" && $("mode").value === "strict";
+  const nativeProblem = nativeChoiceProblem();
+  $("nativeAgents").disabled = !nativeMode;
+  $("nativeAgents").querySelector('option[value="approved"]').disabled = !!nativeProblem;
+  if (nativeProblem) $("nativeAgents").value = "disabled";
+  $("nativeHint").hidden = !nativeMode || !nativeProblem;
+  $("nativeHint").textContent = nativeMode ? nativeProblem : "";
+}
+
 function renderComposer() {
-  const nativeAllowed = $("agent").value === "claude-code" && $("mode").value === "strict";
-  $("nativeAgents").disabled = !nativeAllowed;
-  if (!nativeAllowed) $("nativeAgents").value = "disabled";
+  renderNativeChoice();
   const agent = $("agent").value;
   const thread = lastNativeThread(agent);
   const active = [...S.calls.values()].some((c) => ["starting", "running", "unknown"].includes(c.status));

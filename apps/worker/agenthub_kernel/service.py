@@ -188,6 +188,14 @@ class PolicyService:
             snapshot=snapshot.to_dict(),
             status=InvocationStatus.DRAFT.value,
         )
+        if snapshot.permissions.get("native_subagents") == "approved":
+            # The same live-policy check also runs immediately before launch.
+            # Reject impossible drafts before creating a message or approval;
+            # never silently enable collaboration or change the chosen scope.
+            from agenthub_kernel.native_tools import launch_preflight
+            problem = launch_preflight(self.session, inv)
+            if problem:
+                raise QuotaError(*problem)
         self.session.add(inv)
         self.session.flush()
         return inv
