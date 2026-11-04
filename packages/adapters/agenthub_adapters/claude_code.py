@@ -47,6 +47,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -280,13 +281,25 @@ class ClaudeCodeLauncher:
         return f"claude-code@{self.version};sha256={ident.get('sha256', '')};size={ident.get('size', '')}"
 
     def identity_matches(self) -> tuple[bool, str]:
-        if not self.path or not os.path.isfile(self.path):
+        try:
+            info = os.stat(self.path) if self.path else None
+        except FileNotFoundError:
+            return False, "executable missing"
+        except OSError:
+            return False, "executable unreadable"
+        if info is None or not stat.S_ISREG(info.st_mode):
             return False, "executable missing"
         if not self.expected_identity:
             return False, "no expected identity recorded (not pinned)"
-        if os.path.getsize(self.path) != self.expected_identity.get("size"):
+        if info.st_size != self.expected_identity.get("size"):
             return False, "size mismatch"
-        if _sha256_file(self.path) != self.expected_identity.get("sha256"):
+        try:
+            actual = _sha256_file(self.path)
+        except FileNotFoundError:
+            return False, "executable missing"
+        except OSError:
+            return False, "executable unreadable"
+        if actual != self.expected_identity.get("sha256"):
             return False, "sha256 mismatch"
         return True, "identity matches"
 
@@ -300,10 +313,16 @@ class ClaudeCodeLauncher:
             problems.append("identity_not_pinned_constant")
         if not ZERO_MODEL_IDENTITY_REPORT and not self._adopted_identity:
             problems.append("identity_unconfirmed")  # real-test Step A not recorded
-        if not self.path or not os.path.isfile(self.path):
+        try:
+            info = os.stat(self.path) if self.path else None
+            if info is None or not stat.S_ISREG(info.st_mode):
+                problems.append("executable_missing")
+            elif info.st_size != (self.expected_identity or {}).get("size"):
+                problems.append("size_mismatch")
+        except FileNotFoundError:
             problems.append("executable_missing")
-        elif os.path.getsize(self.path) != (self.expected_identity or {}).get("size"):
-            problems.append("size_mismatch")
+        except OSError:
+            problems.append("executable_unreadable")
         if self.argv != [self.path, *CLAUDE_ARGV_TAIL]:
             problems.append("argv_changed")
         if not self.config_dir or not os.path.isabs(self.config_dir) or _inside(self.config_dir, REPO_ROOT):
@@ -753,11 +772,20 @@ class ClaudeCodeAdapter(AdapterContract):
         if _inside(self.workdir_root, REPO_ROOT):
             problems.append("workdir_inside_repository")
         if problems:
+            reason = (
+                "用户监督模式要求已确认的程序身份、固定启动参数、仓库外的配置目录与工作目录、"
+                "有效执行时限；显式设置的代理与 CA 也须有效。未满足："
+                if adopted else
+                "用户监督模式要求代码常量中的固定身份并已记录零模型身份核验、固定启动参数、"
+                "仓库外的配置目录与工作目录、代理和可读的 CA、有效执行时限。未满足："
+            ) + ", ".join(problems)
+            if "executable_missing" in problems:
+                reason += "。已采用的 Claude Code 程序不存在，可能已被更新移除；请在本机设置重新扫描或填写现有 exe 路径，确认保存后重新创建并审批调用。"
+            if "executable_unreadable" in problems:
+                reason += "。Hub 无法读取 Claude Code 程序；请检查当前用户的读取权限。"
             return ExecutionAdmission(
                 False, "blocked", "claude_code_supervised_conditions",
-                "用户监督模式要求代码常量中的固定身份并已记录零模型身份核验、固定启动参数、"
-                "仓库外的配置目录与工作目录、代理和可读的 CA、有效执行时限（安装版可不限时）。未满足："
-                + ", ".join(problems))
+                reason)
         return ExecutionAdmission(True, "supervised", "user_supervised_boundary", SUPERVISED_REASON)
 
     def health(self) -> bool:

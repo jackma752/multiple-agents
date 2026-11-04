@@ -68,29 +68,39 @@ def discover() -> list[dict]:
                   appdata / "npm/node_modules/@openai/codex*/vendor/*/codex/codex.exe",
                   local / "Programs/codex/codex.exe"],
         "claude-code": [Path.home() / ".local/bin/claude.exe",
+                        local / "Packages/Claude_*/LocalCache/Roaming/Claude/claude-code/*/*/claude.exe",
+                        appdata / "Claude/claude-code/*/*/claude.exe",
                         local / "Microsoft/WindowsApps/*Claude*/app/resources/*/claude.exe",
                         appdata / "npm/node_modules/@anthropic-ai/claude-code*/vendor/*/claude.exe"],
     }
     found = []
     seen = set()
+    profile = load()
     for channel, globs in patterns.items():
         paths = []
         for name in (channel if channel == "codex" else "claude",):
             p = shutil.which(name)
             if p:
                 paths.append(Path(p))
-        if load().get("agents", {}).get(channel, {}).get("path"):
-            paths.append(Path(load()["agents"][channel]["path"]))
+        if profile.get("agents", {}).get(channel, {}).get("path"):
+            paths.append(Path(profile["agents"][channel]["path"]))
         for pattern in globs:
             import glob
             paths.extend(Path(p) for p in glob.iglob(str(pattern)))
             paths = paths[:128]
         for p in paths[:128]:
-            key = os.path.normcase(str(p.resolve()))
-            if key in seen or not p.is_file() or (os.name == "nt" and p.suffix.lower() != ".exe"):
+            try:
+                resolved = p.resolve()
+                key = os.path.normcase(str(resolved))
+                if key in seen or not resolved.is_file() or (os.name == "nt" and resolved.suffix.lower() != ".exe"):
+                    continue
+                size = resolved.stat().st_size
+            except OSError:
+                # Updates may remove a candidate between glob/stat; one stale
+                # or inaccessible file must not hide other installed versions.
                 continue
             seen.add(key)
-            found.append({"agent": channel, "path": str(p.resolve()), "size": p.stat().st_size})
+            found.append({"agent": channel, "path": str(resolved), "size": size})
     return found
 
 

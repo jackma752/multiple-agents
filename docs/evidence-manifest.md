@@ -214,3 +214,10 @@
 | `online-release-083/dist/p6-release-0.8.3/SHA256SUMS.txt` | 211 | `c41549b0253f68d215a49b9fb0c926ccc627d6e3f8b427c94f39374cad513beb` |
 | `online-release-083/dist/p6-release-0.8.3/payload/AgentHub/MANIFEST.json` | 40300 | `2f780ea5296d2a4a44aa27fd224266bec0e87e54dd28b0172f118c155d66fb9a` |
 | `online-release-083/dist/p6-release-0.8.3/payload/AgentHub/PACKAGE_AUDIT.json` | 383 | `8645170b4a225880460fc8f6559eca1f9184eb4a28511fe6e9765f93e9ff39bd` |
+
+### 0.8.4 Claude 更新后路径修复（2026-11-04）
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `claude-path-recovery/var/path-recovery-tests.xml` | 21140 | `caabcd49a4bdf6ecdb41af60136a609eeeff829b1a12e716bc543f6af0a42679` |
+| `claude-path-recovery/var/path-recovery-final.xml` | 26591 | `c245039f9128f0ab6fbd99e958b80eddca8300d4cfa007dcd46ad2fcf80135ba` |

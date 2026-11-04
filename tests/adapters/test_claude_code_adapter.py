@@ -413,6 +413,43 @@ def test_replaced_file_is_never_launched(tmp_path, pinned_file, confirmed, no_la
     assert no_launch == [] and adapter.start_count == 0
 
 
+def test_adopted_missing_program_has_actionable_desktop_diagnostic(tmp_path, pinned_file, confirmed):
+    exe, ca = pinned_file
+    adapter = real_adapter(tmp_path, ca)
+    adapter.launcher._adopted_identity = dict(PINNED_CLAUDE_CODE)
+    adapter.launcher.proxy = None
+    adapter.launcher.ca_bundle = None
+    exe.unlink()
+    admission = adapter.supervised_execution_admission()
+    assert not admission.allowed and 'executable_missing' in admission.reason
+    assert '本机设置重新扫描' in admission.reason and '重新创建并审批' in admission.reason
+    assert '代码常量' not in admission.reason and '代理和可读的 CA' not in admission.reason
+
+
+def test_program_access_denied_is_distinct_from_missing_and_still_blocks(tmp_path, pinned_file, confirmed, monkeypatch):
+    exe, ca = pinned_file
+    adapter = real_adapter(tmp_path, ca)
+    original = os.stat
+    def denied(path, *args, **kwargs):
+        if str(path) == str(exe):
+            raise PermissionError('synthetic access denied')
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(os, 'stat', denied)
+    assert adapter.identity_matches() == (False, 'executable unreadable')
+    admission = adapter.supervised_execution_admission()
+    assert not admission.allowed and 'executable_unreadable' in admission.reason
+    assert '读取权限' in admission.reason
+
+
+def test_program_disappearing_during_hash_is_fail_closed(tmp_path, pinned_file, confirmed, monkeypatch):
+    _, ca = pinned_file
+    adapter = real_adapter(tmp_path, ca)
+    def gone(path):
+        raise FileNotFoundError('synthetic update during identity check')
+    monkeypatch.setattr(cc, '_sha256_file', gone)
+    assert adapter.identity_matches() == (False, 'executable missing')
+
+
 def test_matching_file_reaches_the_launch_with_the_fixed_argv(tmp_path, pinned_file, confirmed, no_launch):
     exe, ca = pinned_file
     adapter = real_adapter(tmp_path, ca)
