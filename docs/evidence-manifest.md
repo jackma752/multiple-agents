@@ -237,3 +237,21 @@
 | `online-release-083/var/github-publish.json` | 227 | `9b87c8da5daa272fdc266d6529f9c8383949a81d2a9f9e31708c5aac67893d4d` |
 | `online-release-083/var/github-verify.json` | 227 | `9b87c8da5daa272fdc266d6529f9c8383949a81d2a9f9e31708c5aac67893d4d` |
 | `online-release-083/var/github-finish-assets.jsonl` | 422 | `8d6b1709cbeca055d0ceef4b7d387ae59ec1db7903dc07c3a98e7fa652e63760` |
+
+### 0.8.4 最终发行构建与本机升级
+
+源码 `0a35deb`，与早期 `4eca7a3` 本地候选区分；本机程序升级的报告不含配置正文或凭证。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `claude-path-recovery/var/release-smoke.json` | 702 | `163ac2d6db7658004d4c553c20a98f73e7dec2b7482e5a3b7cda6ade47311638` |
+| `claude-path-recovery/var/local-upgrade-084.json` | 389 | `cab6b5b2e8691ccd40c4e7e0dab6341c1e621963bbcaf4d4b60343fa77f3e5df` |
+| `claude-path-recovery/dist/p6-release-0.8.4/AgentHub-0.8.4-windows-x64-setup.exe` | 22912106 | `a5357d9264ba00aaf3b01dc77110d8448acf3b47837ec77dff29b96ca0f5d38c` |
+| `claude-path-recovery/dist/p6-release-0.8.4/AgentHub-0.8.4-windows-x64-portable.zip` | 22610726 | `3e74cefb2fc864951a1146260002100cb2f06cc299623e70e83f914f6ae2a710` |
+| `claude-path-recovery/dist/p6-release-0.8.4/SHA256SUMS.txt` | 211 | `b81dff99fc1399006958144516764f16b4b1d9e803d91f58ebffc653202af9cb` |
+| `claude-path-recovery/dist/p6-release-0.8.4/payload/AgentHub/MANIFEST.json` | 40300 | `9fabe77811c6602d3198e03e5a095414933e022a524216e9f62f2a8265e0b9a3` |
+| `claude-path-recovery/var/release_smoke_084_final.py` | 6878 | `30cfe0c78332884252ae42fbe31d5c00523217cf8ab202a0307e2ba3ddc2339a` |
+| `claude-path-recovery/var/build-0.8.4.log` | 11713 | `7bdc2809351da718571a143de57ea9f6a442708f5155c91b4ef3b6dadf0ec05d` |
+| `claude-path-recovery/var/github-finish-assets.jsonl` | 492 | `7fd779b07e69616b88cf863704a696385112889c727217a32da1ea50cb163264` |
+| `claude-path-recovery/var/github-publish.json` | 227 | `817e8b85e212c750f1dfd376267bff3f4fc279bf2228bd182bfb2f2b72f0bece` |
+| `claude-path-recovery/var/github-verify.json` | 227 | `817e8b85e212c750f1dfd376267bff3f4fc279bf2228bd182bfb2f2b72f0bece` |
