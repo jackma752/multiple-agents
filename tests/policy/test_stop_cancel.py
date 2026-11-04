@@ -98,6 +98,51 @@ def test_stop_request_reports_running_and_persists_actor(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize('state', ['draft','awaiting_approval','queued'])
+def test_stop_settles_unstarted_calls_and_revokes_their_authorization(tmp_path, state):
+    h = KernelHarness(url=f'sqlite:///{tmp_path / "unstarted.db"}')
+    root = h.create_root()
+    inv = h.create_invocation(root.id)
+    approval = None
+    if state != 'draft':
+        approval = h.create_approval(inv.id)
+        if state == 'queued':
+            h.approve(approval.id)
+    h.worker.cancel_tree(root.id)
+    h.worker.cancel_tree(root.id)
+    with h.open_session() as session:
+        actual = session.get(InvocationRow, inv.id)
+        assert actual.status == 'canceled' and actual.started_at is None
+        assert actual.finished_at is not None
+        if approval:
+            assert session.get(ApprovalRow, approval.id).status == 'revoked'
+        assert session.scalar(select(func.count()).select_from(QuotaReservationRow)) == 0
+    h.drain()
+    assert h.adapter.start_count == 0
+
+
+def test_stop_queue_cleanup_preserves_unknown_and_live_reservations(tmp_path):
+    h = KernelHarness(url=f'sqlite:///{tmp_path / "unknown-preserved.db"}')
+    root = h.create_root()
+    old = h.create_invocation(root.id)
+    approval = h.create_approval(old.id)
+    h.approve(approval.id)
+    with h.open_session() as session:
+        service = PolicyService(session, h.policy)
+        service.consume(old.id)
+        service.mark_unknown(old.id, reason='synthetic unknown provider state')
+    queued = h.create_invocation(root.id)
+    pending = h.create_approval(queued.id)
+    h.approve(pending.id)
+    h.worker.cancel_tree(root.id)
+    with h.open_session() as session:
+        assert session.get(InvocationRow, old.id).status == 'unknown'
+        assert session.get(ApprovalRow, approval.id).status == 'consumed'
+        assert session.get(InvocationRow, queued.id).status == 'canceled'
+        assert session.scalar(select(func.count()).select_from(QuotaReservationRow).where(
+            QuotaReservationRow.released_at.is_(None))) == 1
+
+
 def test_cancel_tree_stops_in_flight_call_and_releases_slot(tmp_path):
     url = f"sqlite:///{(tmp_path / 'cancel.db').as_posix()}"
     h = KernelHarness(policy=Policy(collaboration_enabled=True, max_subagents_total=3, max_subagents_concurrent=2), url=url)

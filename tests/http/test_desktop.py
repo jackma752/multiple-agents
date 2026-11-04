@@ -157,6 +157,30 @@ def test_runtime_changes_refused_while_call_running(release):
     assert post(client, '/api/desktop/settings', settings(tmp)).status_code == 409
 
 
+def test_stop_queued_call_clears_configuration_block_without_starting_it(release):
+    client, tmp = release
+    pair(client)
+    body = settings(tmp)
+    assert post(client, '/api/desktop/settings', body).status_code == 200
+    with client.app.state.db.session() as session:
+        service = PolicyService(session)
+        task = service.create_task(agent_id='codex',goal='synthetic queued task')
+        inv = service.create_invocation(task_id=task.id,snapshot=InvocationSnapshot(
+            agent_id='codex',task_input='synthetic input',parent_task_id=None,depth=0))
+        approval = service.create_approval(invocation_id=inv.id)
+        service.approve(approval.id)
+        iid, aid, tid = inv.id, approval.id, task.id
+    assert post(client, '/api/desktop/settings', body).status_code == 409
+    stopped = post(client, f'/api/tasks/{tid}/stop', {}).json()
+    assert stopped['stopped'] and stopped['confirmed'] == 0
+    assert post(client, '/api/desktop/settings', body).status_code == 200
+    with client.app.state.db.session() as session:
+        assert session.get(InvocationRow,iid).status == 'canceled'
+        assert session.get(InvocationRow,iid).started_at is None
+        assert session.get(ApprovalRow,aid).status == 'revoked'
+    assert client.app.state.worker.inflight() == set()
+
+
 def test_codex_unlimited_is_approved_and_not_reaped_by_old_tree_limit(release):
     client,tmp=release; pair(client)
     body=settings(tmp,codex_timeout_seconds=600)

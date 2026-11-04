@@ -14,7 +14,7 @@
 <small>默认 0，不按总运行时长截断 Codex/Claude Code，仍可手动停止；可设 1～1440 分钟。设置只用于后续调用，不能接回已结束的旧调用。API 连接/空闲等待及工具审批等待保留独立超时。</small></section>
 <section><h2>2. 本机 Agent</h2><div id="localAgents"></div>
 <p>扫描不会登录或运行任务。保存时运行一次有超时的 <code>--version</code>，并记录程序哈希。若提示程序不存在，可能是桌面更新移除了旧版本；请重新扫描、选择现有 exe，再勾选确认并保存。CLI 必须先用它自己的登录流程完成账号配置，Hub 不复制登录凭据。</p>
-<small>采用本机程序不等于完成兼容性验收。Codex/Claude 使用用户监督模式：原生子 Agent 的审批、用量与停止不能由 Hub 完整控制。</small>
+<small>采用本机程序不等于完成兼容性验收。Claude 已核验版本可选严格文件工具模式，文件操作和一层前台子任务逐次审批；不开放命令工具或任意技能。其他版本及 Codex 的严格准入以当前检查结果为准。用户监督模式不保证原生子 Agent 的审批、用量与停止均受 Hub 控制。</small>
 <details><summary>尚未安装？查看官方安装说明</summary><p><a href="https://developers.openai.com/codex/cli/" target="_blank" rel="noreferrer">Codex CLI</a> · <a href="https://code.claude.com/docs/en/setup" target="_blank" rel="noreferrer">Claude Code</a>。安装并登录后，重新扫描或手动填写 exe 路径。</p></details></section>
 <section><h2>3. DeepSeek API（可选）</h2><label><input id="deepseek_enabled" type="checkbox"> 启用 DeepSeek</label>
 <label>API 地址<input id="deepseek_base_url" type="url" value="https://api.deepseek.com"></label>

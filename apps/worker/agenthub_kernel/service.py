@@ -898,6 +898,36 @@ class PolicyService:
         )
         self.session.flush()
 
+        # The stop event above holds the database writer lock before inspecting
+        # the queue. Claims commit STARTING + reservation atomically. Only calls
+        # with no live reservation are proven not handed to an adapter; cancel
+        # those locally without touching any started/unknown call or quota.
+        pending = self.session.scalars(
+            select(InvocationRow)
+            .join(TaskRow, TaskRow.id == InvocationRow.task_id)
+            .where(
+                TaskRow.root_task_id == root_task_id,
+                InvocationRow.status.in_([
+                    InvocationStatus.DRAFT.value,
+                    InvocationStatus.AWAITING_APPROVAL.value,
+                    InvocationStatus.QUEUED.value,
+                ]),
+                ~select(QuotaReservationRow.id).where(
+                    QuotaReservationRow.invocation_id == InvocationRow.id,
+                    QuotaReservationRow.released_at.is_(None),
+                ).exists(),
+            )
+        ).all()
+        for inv in pending:
+            for approval in self.session.scalars(select(ApprovalRow).where(
+                    ApprovalRow.invocation_id == inv.id,
+                    ApprovalRow.status.in_([ApprovalStatus.PENDING.value, ApprovalStatus.APPROVED.value]))):
+                approval.status = ApprovalStatus.REVOKED.value
+            self._set_invocation_status(inv, InvocationStatus.CANCELED)
+            inv.finished_at = now()
+            inv.error = "canceled before adapter launch by tree stop"
+        self.session.flush()
+
         running = self.session.scalars(
             select(InvocationRow)
             .join(TaskRow, TaskRow.id == InvocationRow.task_id)

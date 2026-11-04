@@ -20,4 +20,6 @@
 
 目标固定为已核对的公开仓库 `jackma752/multiple-agents`，main 工作区干净且远程仍为 `434e241`，v0.8.3 标签不存在。先快进本地 main，再普通推送 main；不强推，不推所有分支/标签。经审查的二进制只作为 v0.8.3 的三个附件上传（setup、portable ZIP、SHA256SUMS），先草稿上传核对大小与远程 SHA-256，再发布。
 
-当前安装、用户研究及真实配置不变。原始模型输出、研究导出、PDF、运行数据库及凭据不入 Git 或发行包。上传成功后的远程 SHA、附件校验与状态在本记录补充。
+2026-11-04 实际完成：main 快进并推送至 `12bd66a3fe6aee81e1b0409f0b860d430981b921`；[v0.8.3](https://github.com/jackma752/multiple-agents/releases/tag/v0.8.3) 已公开（draft=false）。三个附件大小及 GitHub 返回的 SHA-256 均匹配本地；远程标签指向构建源码 `d5b937eeffaa0769f9bae7640b4b105245fddecd`。上传的 TLS/408 失败保留记录，仅清理该次失败留下的非下载 starter 占位后恢复；没有覆盖已上传附件。
+
+本次 0.8.3 发布没有改变用户安装和资料；之后用户报告 Claude 更新导致旧路径失效，另由 [0.8.4 修复](issue-claude-path-recovery.md) 处理，不将该后续修复算入 0.8.3 发行包。原始模型输出、研究导出、PDF、运行数据库及凭据不入 Git 或发行包。

@@ -164,12 +164,12 @@ class SyntheticProvider:
         self.thread.join(2)
 
 
-def run_case(executable, root, scenario, *, through_adapter=False, through_worker=False):
+def run_case(executable, root, scenario, *, through_adapter=False, through_worker=False, identity=None):
     root.mkdir(parents=True)
     adapter = None
     if through_adapter:
         from agenthub_adapters.claude_code import ClaudeCodeAdapter, ClaudeCodeLauncher
-        identity = {**PINNED_CLAUDE_CODE, "path": executable}
+        identity = identity or {**PINNED_CLAUDE_CODE, "path": executable}
         launcher = ClaudeCodeLauncher(path=executable, expected_identity={k: identity[k] for k in ("sha256", "size")},
             version=identity["version"], config_dir=str(root / "empty-config"),
             proxy="http://127.0.0.1:1", adopted_identity=identity)
@@ -300,6 +300,9 @@ def main():
     parser.add_argument("--scenario", choices=SCENARIOS)
     parser.add_argument("--through-adapter", action="store_true")
     parser.add_argument("--through-worker", action="store_true")
+    parser.add_argument("--expected-sha256")
+    parser.add_argument("--expected-size", type=int)
+    parser.add_argument("--expected-version")
     args = parser.parse_args()
     if args.through_worker:
         args.through_adapter = True
@@ -307,17 +310,24 @@ def main():
         raise SystemExit("adapter test must select one supported positive scenario")
     executable = Path(args.claude).resolve(strict=True)
     digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-    if digest != PINNED_CLAUDE_CODE["sha256"]:
+    supplied = (args.expected_sha256, args.expected_size, args.expected_version)
+    identity = ({"path":str(executable), "sha256":args.expected_sha256,
+                 "size":args.expected_size,"version":args.expected_version}
+                if all(supplied) else {**PINNED_CLAUDE_CODE,"path":str(executable)})
+    if (any(x is not None for x in supplied) and not all(supplied)
+            or digest != identity["sha256"] or executable.stat().st_size != identity["size"]):
         raise SystemExit("unreviewed executable; nothing started")
     # Explicit workspace-owned scratch, outside the repository and user app.
     scratch = Path("E:/plug/.native-strict-probes") / uuid.uuid4().hex
     cases = [args.scenario] if args.scenario else SCENARIOS
     results = []
     for case in cases:
-        result = run_case(str(executable), scratch / case, case, through_adapter=args.through_adapter, through_worker=args.through_worker)
+        result = run_case(str(executable), scratch / case, case, through_adapter=args.through_adapter,
+                          through_worker=args.through_worker, identity=identity)
         results.append(result)
         print(json.dumps(result, ensure_ascii=False), flush=True)
-    report = {"binary_sha256": digest, "real_model_requests": 0, "synthetic_model": True,
+    report = {"binary_sha256": digest, "version":identity["version"],
+              "real_model_requests": 0, "synthetic_model": True,
               "scratch": str(scratch), "cases": results, "passed": all(r["passed"] for r in results)}
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

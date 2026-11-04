@@ -116,6 +116,8 @@ STRICT_PROFILE = "file-hooks-v1"
 # file or model output. Loopback synthetic-model evidence is labelled as such.
 STRICT_VERIFIED_SHA256: frozenset[str] = frozenset({
     "c9796ba22a9221586b36371b36f5b66198d66eb4badf6a4cf4a5f7b07becea53",
+    # 2.1.317: all 13 real-CLI/localhost-model scenarios rechecked 2026-11-04.
+    "26b01ec22df2c17ac7f5703aa547d36706e8d58412136ced0344a8ced4d86038",
 })
 
 #: What the context preview may say about this adapter (T-1d): the prompt is

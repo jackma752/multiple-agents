@@ -221,3 +221,19 @@
 |---|---:|---|
 | `claude-path-recovery/var/path-recovery-tests.xml` | 21140 | `caabcd49a4bdf6ecdb41af60136a609eeeff829b1a12e716bc543f6af0a42679` |
 | `claude-path-recovery/var/path-recovery-final.xml` | 26591 | `c245039f9128f0ab6fbd99e958b80eddca8300d4cfa007dcd46ad2fcf80135ba` |
+
+后续真实本机配置恢复、2.1.317 严格拦截与停止回归；原失败保留。各测试范围重叠，不累加。仅哈希登记，不上传原始记录或账号配置。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `claude-path-recovery/var/queued-stop-final.xml` | 31083 | `fed815691dcdf5583b7fe738283e7f31998367cfdd9cc3eaf15811fc15dc09f0` |
+| `claude-path-recovery/var/paper-budget-isolated.xml` | 932 | `cf2ce21ef7271544ddd6d5fc142c5d061c7929234665db4d54fd46463bd8e6e8` |
+| `claude-path-recovery/var/queued-stop-packaged-deps.xml` | 65432 | `18f267114dd2a4d62aac97eba8ce0bbb6921695ae4c529eb783d6981ebd71b6b` |
+| `claude-path-recovery/var/claude-2317-final.xml` | 26642 | `b701734eab6ad8fb4b30a25245184750998925f84d10eda14f5830f6c61a75c1` |
+| `claude-path-recovery/var/local-adoption.json` | 438 | `d10b0b4868e370ceae8e06c2389705a7cc6867c562e49c3dcaa9f68524a1d8b2` |
+| `claude-path-recovery/var/claude-2317-loopback.json` | 22066 | `29465c6fd1a88f5dcfcc955673f76dde6c6c63eea35bc250ac74ff6a5d86c9ba` |
+| `claude-path-recovery/var/claude-2317-worker-allow.json` | 2316 | `7fb75206936cf33e32e897bad432142f548b8b84cb96fffab4be7cd0340d1a73` |
+| `claude-path-recovery/var/claude-2317-worker-deny.json` | 2153 | `3024166acf9983df2820e74c67edd797a3fedbbaebd663951c531645544223b0` |
+| `online-release-083/var/github-publish.json` | 227 | `9b87c8da5daa272fdc266d6529f9c8383949a81d2a9f9e31708c5aac67893d4d` |
+| `online-release-083/var/github-verify.json` | 227 | `9b87c8da5daa272fdc266d6529f9c8383949a81d2a9f9e31708c5aac67893d4d` |
+| `online-release-083/var/github-finish-assets.jsonl` | 422 | `8d6b1709cbeca055d0ceef4b7d387ae59ec1db7903dc07c3a98e7fa652e63760` |
