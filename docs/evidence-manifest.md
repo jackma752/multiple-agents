@@ -264,3 +264,16 @@
 | `native-preflight-085/var/native-preflight-final.xml` | 22501 | `47e42293b1612c1c016ee24c6862be3e1a022328dcc4d5bfbd4aefa937ebf7ab` |
 | `native-preflight-085/var/native-preflight-last.xml` | 7697 | `f1a0db3144a3a2df6d63eaa5edc65d1a744c1393f0d1717ee61cd03ab939bd4e` |
 | `native-preflight-085/var/composer-check.json` | 66 | `e00bf96269e20686e4550574e713617eb9fd301905fc187a822cb2494bcc0c5b` |
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `native-preflight-085/var/release-smoke.json` | 739 | `1dc18c6f867c177c97848a84059d2459e8773836b5f4d30aaf2c1a8d09c3fb62` |
+| `native-preflight-085/var/release_smoke_085.py` | 7698 | `d651235e78108409a75249ff3b1081a88ed3d1f28a91cb52751ff07ec7ddd345` |
+| `native-preflight-085/var/build-0.8.5.log` | 11598 | `bc8c57b7c1113612960b3038e6961fc93301a4af553186182df31ef60ef811e9` |
+| `native-preflight-085/dist/p6-release-0.8.5/AgentHub-0.8.5-windows-x64-setup.exe` | 22911309 | `2ff944bec5c5c81f8c0c376a57b7e3a85a519670415dc1ca04eca75fa9340321` |
+| `native-preflight-085/dist/p6-release-0.8.5/AgentHub-0.8.5-windows-x64-portable.zip` | 22610165 | `3e6ac97ad82f4bb221e3af786263ccc733aa3d64921ec8719bce9fd9e2461338` |
+| `native-preflight-085/dist/p6-release-0.8.5/SHA256SUMS.txt` | 211 | `f5e55a080ae699763ce56f96633692798453e13f38b241dbd4563fd61f37e47f` |
+| `native-preflight-085/dist/p6-release-0.8.5/payload/AgentHub/MANIFEST.json` | 40300 | `255f33d5e9a2fce0f40ff0be8650679ea18309ee75163205f1611b113552fa7b` |
+| `native-preflight-085/var/github-finish-assets.jsonl` | 492 | `36e235f8fec54178bc1642cfbf99190ae1f09303f2cf631991dde252463c36d9` |
+| `native-preflight-085/var/github-publish.json` | 227 | `01e417c1b029c2677bd6bfd2cc10d2452649dc770f47c277d5a0e7e7f34c4f0f` |
+| `native-preflight-085/var/github-verify.json` | 227 | `01e417c1b029c2677bd6bfd2cc10d2452649dc770f47c277d5a0e7e7f34c4f0f` |
