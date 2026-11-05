@@ -359,3 +359,4 @@
 | `paper-repair-cost/dist/p6-release-0.8.8/AgentHub-0.8.8-windows-x64-portable.zip` | 22626617 | `61baec3d86bd7d4a4efc7cfa7c963d2d5f845c2db33431777ee90969ccfd8071` |
 | `paper-repair-cost/dist/p6-release-0.8.8/SHA256SUMS.txt` | 211 | `33acfbab9dd0910cb07694a45664aa5c75c53954efa39a68d7fa1373a4bffc09` |
 | `paper-repair-cost/dist/p6-release-0.8.8/payload/AgentHub/MANIFEST.json` | 40300 | `89eaf37e3dc3114a612953113b3d095b6f7736505dcef379b8a41ca68af4bea2` |
+| `paper-repair-cost/var/github-verify-088.json` | 807 | `64d8080e427efecff660132f66eea2f2ce76efdd8f8180cbecf7e68322ccb461` |

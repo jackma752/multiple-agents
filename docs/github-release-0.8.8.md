@@ -14,4 +14,4 @@
 
 本机已实际安装 0.8.8：208 文件逐一匹配、安装器退出 0。原设置、全部历史用量行和调用 ID/状态/快照哈希均完全一致，用户的阶段保持 paused、checkpoint/rules_hash 不变；旧两条未启动排队记录保留，未创建新研究或模型调用。程序文件回滚在 `E:\multiple-agent\AgentHub-backup-before-088-20261105`；没有复制用户登录材料或研究正文进包。
 
-本轮真实模型调用 **0**，未声明在线生成质量通过。全阶段恢复仍是分支 `fix/paper-all-checkpoints` 的未实现规划，本发行不包含该能力扩展。附件与证据哈希见 [清单](evidence-manifest.md)，远端发布验证完成后补充记录。
+本轮真实模型调用 **0**，未声明在线生成质量通过。全阶段恢复仍是分支 `fix/paper-all-checkpoints` 的未实现规划，本发行不包含该能力扩展。main 已快进普通推送，[0.8.8 已公开发布](https://github.com/jackma752/multiple-agents/releases/tag/v0.8.8)；远端三个附件的大小/哈希和版本标签来源 08a376d 均匹配。附件与证据哈希见 [清单](evidence-manifest.md)，未覆盖旧发布或改写历史。

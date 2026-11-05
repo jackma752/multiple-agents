@@ -8,6 +8,8 @@
 
 此前全阶段恢复需求保留在独立分支 `fix/paper-all-checkpoints`、工作树 `.worktrees/paper-all-checkpoints`，规划提交 `6daeb90`。它尚未实现/验证或发布；本候选不能宣称“任意阶段均可恢复”。用户本机的研究必须保持暂停，不启动付费复测。
 
+main 和 [0.8.8 安装包](https://github.com/jackma752/multiple-agents/releases/tag/v0.8.8) 已同步 GitHub，三附件摘要和版本标签均验证匹配。下一步不要直接重复大段修订：待用户明确确认并恢复 provider 可用额度后，再用保存的修订做引用定点处理。当前无权限擅自恢复已暂停阶段。
+
 ---
 
 # 之前交接：失败步骤断点接续，0.8.7 已装本机（2026-11-05）
