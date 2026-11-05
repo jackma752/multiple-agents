@@ -360,3 +360,19 @@
 | `paper-repair-cost/dist/p6-release-0.8.8/SHA256SUMS.txt` | 211 | `33acfbab9dd0910cb07694a45664aa5c75c53954efa39a68d7fa1373a4bffc09` |
 | `paper-repair-cost/dist/p6-release-0.8.8/payload/AgentHub/MANIFEST.json` | 40300 | `89eaf37e3dc3114a612953113b3d095b6f7736505dcef379b8a41ca68af4bea2` |
 | `paper-repair-cost/var/github-verify-088.json` | 807 | `64d8080e427efecff660132f66eea2f2ce76efdd8f8180cbecf7e68322ccb461` |
+
+## 2026-11-05：半途研究离线恢复
+
+来源 0fb6445；本轮新增 Hub 模型调用 0，原阶段仍 blocked，不改变审批、预算、研究或账本。不发布用户研究正文、实际回复、PDF 或私有恢复脚本，仅登记证据哈希。恢复文件独立于原调度器，数学复审与恢复入口未完成。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `paper-recover-paid/var/reference-recovery-preflight.json` | 939 | `5940f84d84013fbc5f2308fd6ef4a727b34619f355f9df96eb4224484548fb74` |
+| `paper-recover-paid/var/export-result.json` | 554 | `3f1e9303201132a7b905cdd2bc0cf0a3e1e7caeefe75ab2e6050a8b49c9732c9` |
+| `paper-recover-paid/var/export-verification.json` | 276 | `521d7c553fc00c292078b4d8bbf68f5f03151738b8184c6367dc00a56b247a3d` |
+| `paper-recover-paid/var/math-render-result.json` | 70 | `78d0cf56bf9c3cc2a76625bbfd4c6f1597a44986a132983bb7c46cba201b8691` |
+| `paper-recover-paid/var/recovery-final-tests.xml` | 7039 | `148a8d83590baa3e526e3e1e16526f913140f1569e9e44e23e5a8ab88de7d37a` |
+| `paper-recover-paid/var/export_recovery.py` | 21358 | `0ff738321b8379c0c7c7680616febb41657d8998808b92ed22e3679148027111` |
+| `paper-recover-paid/var/verify_export.py` | 3165 | `052e2bb23f2270915cc307c434497aaa68ec0e499ef55db54d47337136b48dc3` |
+| `paper-recover-paid/var/verify_math.cjs` | 756 | `26a556eacf54cdef3b044f8949e9f3559d931842ca5f33faedc32911e893a14b` |
+| `paper-recover-paid/var/final-state.json` | 128 | `adf60af647a9b0dd0b65eb29b090390df9138c3c43b90d26e254fbbe569f21c1` |
