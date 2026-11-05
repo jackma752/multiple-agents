@@ -406,3 +406,26 @@
 | `paper-recover-paid/var/final-local-089.json` | 168 | `229b020c437f6c99341642e3e6055da67664cf7151d6895d2368105526174d96` |
 | `paper-recover-paid/var/github-release-pending-089.json` | 456 | `8e57cf85869b31f5ec38bfa2c67929aa9487c698e7c53adf0b737fa75bdd5c70` |
 | `paper-recover-paid/var/finish_release_089.py` | 2085 | `65ee08185261b1141f9b2f981c5b1623363d7917a439621bc4994b2c9d45ca75` |
+
+## 2026-11-05：0.8.10 审阅启动输入尺寸修复
+
+来源 d5c010c4f434378424e7b77703110adbffbac70c。真实下一步r1请求120904→91484字符，全部17相关单元/37分块/76引文及其它字段可还原、逻辑断点不变。冻结模块、Codex协议桩及本机安装通过，模型调用0，原任务blocked/0次/上限3，19单元恢复稿保留。实际输入/数据库不入库，仅登记证据哈希；安装附件尚未上传。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `paper-review-start/var/review-start-final-tests.xml` | 58617 | `7161d084d2d463a457cea68e3b825a9b63fd06d4337e969d98395e45db5b3b5a` |
+| `paper-review-start/var/review-start-package-tests.xml` | 6458 | `826fd1a51e05137322da25216989d10fa1bba28b0f0e879044eeeb3b8e9537ec` |
+| `paper-review-start/var/review-transport-final.xml` | 1988 | `e2a3212160b00eb8c77626a78bab0c78308753c9a650a0019ea36147ef6750d7` |
+| `paper-review-start/var/review-roundtrip-proof.json` | 524 | `7642f088d5179a3d2f28ff4d51bcda433504e6a97a60d4d1cd5b07a3b66b7070` |
+| `paper-review-start/var/audit_review_roundtrip.py` | 3992 | `c5cf076c6b7cabb3974bc5c73cd1e243b0ca3e869bb38c761c80ed73f3c9e8e8` |
+| `paper-review-start/var/review-start-repro.json` | 468 | `0a2705184de266b16a2cb7470b85d9d6c6ae365569584a0a5ba1e09a16ecbb62` |
+| `paper-review-start/var/build-0.8.10.log` | 11577 | `a1778da410cc7473a87ced1e4f9ce9bc4770fbd599b0a459871ef994771c4b6c` |
+| `paper-review-start/var/release-smoke.json` | 1165 | `32b214b2d23055819a48371de85febdc46b9f9de3495714ad1eb3e8841b46bf0` |
+| `paper-review-start/var/local-upgrade-0810.json` | 862 | `90622caa49d52d2bec210adcc37e40557882beaf7e235b9452342b03453ef3e2` |
+| `paper-review-start/var/release_smoke_0810.py` | 11127 | `6c77cfd88ba7fe77e7931c0312f8157590371c2af989ff8439a30f4b3d26c26b` |
+| `paper-review-start/var/upgrade_local_0810.py` | 10724 | `ffee729f4f964e5fa75852e84d47a6ce6d25db4b32a9e3e943cfdff968f2dcf0` |
+| `paper-review-start/var/final-local-0810.json` | 217 | `6c0ed0c6e5e024b4d18dd7562049a4ff349d77ec09bcb25a881be4b56d952129` |
+| `paper-review-start/dist/p6-release-0.8.10/AgentHub-0.8.10-windows-x64-setup.exe` | 22959761 | `37dd0d755eacfdff04bbbf804f1c1642a2d6ec4885b4569746e050c32bec0f6e` |
+| `paper-review-start/dist/p6-release-0.8.10/AgentHub-0.8.10-windows-x64-portable.zip` | 22659003 | `74766a858e01e1deb5aa8d8922bcd7926132b0d60048cd8fb8059e3dabdaadb6` |
+| `paper-review-start/dist/p6-release-0.8.10/SHA256SUMS.txt` | 213 | `65fb2e49950eeb40931461a46cdde59898fee731b2dcb956fb6c70eb03076ea4` |
+| `paper-review-start/dist/p6-release-0.8.10/payload/AgentHub/MANIFEST.json` | 40301 | `69d2e8cf31fec37782452ffeb2fac67dcc7ecd2905c19aae80cb90b550f5a524` |
