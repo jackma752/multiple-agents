@@ -221,9 +221,18 @@ class Ctx:
         reused = self._reuse_previous_stage(row, validator, stage_step)
         if reused is not None:
             return reused
+        from agenthub_kernel.papers.review_transport import render_for_model, PaperInputTooLarge
+        try:
+            wire_template,prompt = render_for_model(name,active_template,active_data,language=self.request.language)
+        except PaperInputTooLarge as exc:
+            raise _Blocked(stage_step,'paper_input_too_large',str(exc)) from exc
+        except FormatError:
+            raise _Blocked(stage_step,'paper_input_invalid',
+                'Saved teaching retained; review source encoding could not be verified. No new invocation created.')
+        row.template = wire_template.meta()
         try:
             inv, state, reply = self.ap._ensure(self.session, self.stage, stage_step, agent,
-                                                render(active_template, active_data, language=self.request.language),
+                                                prompt,
                                                 self.to_start)
         except _Blocked as blocked:
             if (repair or selection or fields) and blocked.reason in SOFT_REASONS:

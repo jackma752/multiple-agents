@@ -42,7 +42,7 @@ def respond(template,data):
         c = data['chunks'][0]
         return {'replacements': [{'unit_id': i['unit_id'], 'source_index': i['source_index'],
             'source': {'source_id': c['source_id'], 'quote': c['text'][:150]}} for i in data['issues']]}
-    if template=="research.study-review.v1":
+    if template in ("research.study-review.v1","research.study-review-indexed.v1"):
         last=next((u for u in data["units"] if u["id"]=="step2"),None)
         return {"issues":[{"id":"math-1","unit_id":"step2","severity":"major","kind":"math",
             "problem":"请明确写出 q<1 的作用","closure":"解释几何级数尾项","pages":[],"terms":[]}]

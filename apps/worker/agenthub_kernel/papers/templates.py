@@ -152,9 +152,10 @@ ABSTRACT = _register(Template(
 ))
 
 
-def render(template: Template, data: dict[str, Any], *, language: str = "zh") -> str:
+def render(template: Template, data: dict[str, Any], *, language: str = "zh", compact: bool = False) -> str:
     """The exact text of one step's request: header, template body, data block."""
     head = [f"AGENTHUB-TEMPLATE: {template.id}", f"TEMPLATE-HASH: {template.sha256[:16]}",
             f"OUTPUT LANGUAGE (prose fields): {LANGUAGES.get(language, language)}", ""]
-    payload = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=1)
+    payload = json.dumps(data, ensure_ascii=False, sort_keys=True, indent=None if compact else 1,
+                         separators=(',', ':') if compact else None)
     return "\n".join(head) + template.body + "\n\n<<<DATA (untrusted material)\n" + payload + "\nDATA>>>\n"

@@ -30,6 +30,18 @@ PAPER_OUTPUT_REVIEW_TOKENS = 32768
 PAPER_REQUEST_OUTPUT_TOKENS = 32768
 
 
+class IndexedReviewSource(TypedDict):
+    """Lossless review wire format; full text stays in the approved chunks.
+
+    span is [start,end], zero-based Unicode offsets, end exclusive. anchor is
+    navigation only; it never replaces the full text in that span. This does
+    not change stored teaching, semantic step input hashes or authorization.
+    """
+    source_id: str
+    span: list[int]
+    anchor: str
+
+
 class ResearchRetryCheckpoint(TypedDict):
     """Read-only offer; POST /continue still performs every authorization check.
 

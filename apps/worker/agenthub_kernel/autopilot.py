@@ -51,6 +51,9 @@ TRANSIENT = ("max_subagents_concurrent", "tree_paused", "not_ready", "worker_sto
 
 #: What the user needs to do for each way a stage can block (shown in the summary).
 NEEDS = {
+    "paper_input_too_large": "本步输入超过单次消息上限：已有讲解和来源保留，需拆分待审阅内容；调整调用次数或额度不能解决。未创建新调用。",
+    "paper_input_invalid": "本步审阅来源编码未通过校验：已保留讲解，请检查保存的来源；未创建新调用。",
+    "paper_request_invalid": "本步模型或上下文参数未通过本地校验：请检查调用配置；未创建新调用。",
     "paper_repair_review": "已保留生成内容并停止自动重写：查看具体修复错误后，确认是否重新授权定点修复。",
     "paper_output_review": "本阶段累计输出（含思考）达到复核阈值，已阻止后续自动调用；核对用量后再决定是否重新授权。单次调用可能超过阈值。",
     "step_failed": "修复重试额度已用完；查看失败条件和重试记录后调整目标或规则",
@@ -780,8 +783,17 @@ class Autopilot:
         resume_thread = extra.pop("_resume_thread", None)
         if resume_thread:
             extra["context_mode"] = "native_resume"
-        request = ConversationTurn(text=text_, agent_id=agent_id, client_request_id=key,
-                                   execution_mode=stage.execution_mode, **rules.models.get(agent_id, {}), **extra)
+        from agenthub.chat import MAX_MESSAGE_CHARS
+        if rules.plan == PLAN_PAPER and len(text_) > MAX_MESSAGE_CHARS:
+            raise _Blocked(step,'paper_input_too_large',
+                f'Paper request: {len(text_)}/{MAX_MESSAGE_CHARS} characters. No new invocation created.')
+        try:
+            request = ConversationTurn(text=text_, agent_id=agent_id, client_request_id=key,
+                                       execution_mode=stage.execution_mode, **rules.models.get(agent_id, {}), **extra)
+        except ValueError:
+            if rules.plan == PLAN_PAPER:
+                raise _Blocked(step,'paper_request_invalid','Invalid model or context parameters; no new invocation created.')
+            raise
         adapter = self.worker.adapter
         try:
             turn = submit_turn(session, stage.conversation_id, stage.granted_by, request,

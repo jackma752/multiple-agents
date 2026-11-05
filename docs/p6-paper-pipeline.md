@@ -149,3 +149,7 @@ PDF 按不可执行资料处理，解析失败保留原因；扫描件显示暂�
 `GET /api/papers/{task}/recovery` 和 `POST /api/papers/{task}/recovery` 仅登录 approver 且任务归本人可用。预览绑定原已消费审批、发送材料和断点 fingerprint；恢复仅接受已存回复 id 和失败引用槽的精确原文修正，不能上传任意正文。重复请求幂等，过期 fingerprint、排队/活动/未知调用或未通过完整结构和来源校验均拒绝。写入单独审计并保留旧结果/全部调用及用量，原阶段和额度保持，不启动模型。恢复后的讲解仍需数学审阅。
 
 `research.reason-repair.v1` 只补命名的缺失 reason 字段（每字段 1..4000 字符），保留全部解释、公式、依赖、来源和材料缺口，并重新执行完整校验。旧接续任务中相同 PDF/分块及原审批材料验证通过的成功回复也可转为局部字段修复种子；新调用仍经用户明确阶段授权、consume 和原预算/输出复核门禁。见 [具体约束](issue-paper-recovery-runtime.md)。
+
+## 0.8.10：审阅传输尺寸
+
+普通请求保持原编码；超100000字符先用紧凑JSON，审阅仍超限则用 `research.study-review-indexed.v1`。`IndexedReviewSource` 中 source_id 指向完整已批准 chunk，span 是0基Unicode字符[start,end)精确位置，anchor仅用于导航；完整引用由 chunk.text[start:end] 还原，正文/公式/依赖/问题/完整材料均不得截断。后端在转换前验证精确唯一来源，原逻辑 input_hash 保持，因此已成功步骤不会因传输格式变化重跑。仍不能无损打包时安全阻塞且创建调用数为0，使用具体输入错误原因；不会放大上限或回退整篇重写。详见 [0.8.10 修复](issue-paper-review-start.md)。
