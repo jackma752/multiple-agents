@@ -1,5 +1,7 @@
 # 0.7.0 论文理解与研究指导：实现与边界
 
+2026-11-05 失败步骤接续：已结束而讲解/方案生成失败的研究可在论文页确认“从失败步骤继续”，复用成功步骤、资料与剩余额度。保存的结构有效引用修复断点只修改错误引用；不把离线恢复草稿直接用作成功正文。GET 的新增只读 `ResearchRetryCheckpoint` 不改变适配器接口或能力；所有真实调用仍经现有适配器的审批、资源与预算门禁。离线流程验证不代表真实模型生成质量通过，见 [问题记录](issue-paper-failed-checkpoint.md)。
+
 后续显示修复：0.7.1 统一网页和导出的公式界定符、符号表与裸 TeX 排版，既有结果不重新调用模型。见 [公式导出修复记录](issue-guidance-math-export.md)。
 
 2026-11-05 空正文导出修复：零可用讲解单元的指导任务使用现有 `quality_status=failed`，页面显示“已结束，正文生成失败”；存在正文但所请求的研究方案未生成则保留 `needs_review`。`agenthub.guidance/1` 报告增补可选 `quality_reasons`、`sample`，类型为 `GuidanceReport` / `GuidanceSample`。指导模式样本统计表示资料可用性，不表示全文已成功讲解。README 和正文说明失败原因，明确 ZIP 不含原论文 PDF。重新导出不重试模型，也不能恢复从未通过校验的正文。实现及本地验证见 [问题记录](issue-paper-empty-export.md)。此补丁现已随 0.8.6 构建并安装到用户本机，见 [发行记录](github-release-0.8.6.md)。

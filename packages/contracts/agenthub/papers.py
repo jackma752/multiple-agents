@@ -24,6 +24,19 @@ from urllib.parse import urlsplit
 PAPER_CONTRACT_VERSION = 1
 RESOURCE_RULES_VERSION = 1
 
+
+class ResearchRetryCheckpoint(TypedDict):
+    """Read-only offer; POST /continue still performs every authorization check.
+
+    None remaining_calls means both old call caps were unlimited. Zero means
+    a finite exhausted allowance, refused by POST /continue.
+    """
+
+    phase: str
+    paper_ids: list[str]
+    remaining_calls: Optional[int]
+    remaining_tokens: Optional[int]
+
 # --------------------------------------------------------------------------- #
 # request
 # --------------------------------------------------------------------------- #

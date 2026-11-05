@@ -1,4 +1,4 @@
-"""Continue a research task whose task tree was stopped (P6).
+"""Continue a stopped research tree or a finished task with failed generation (P6).
 
 A tree stop is final for that tree: nothing in it is scheduled again. To go on,
 the user starts a continuation: a new task tree and stage for the same approved
@@ -11,6 +11,11 @@ are run anew in the new tree; the old call stays recorded as it was.
 The continuation gets only what the stopped task had left: its call cap and
 token budget minus what the old tree used. It is a user action with the same
 preconditions as any stage authorization; it never widens the old limits.
+
+Finished guidance failures resume at reading/directions, retaining successful
+studies and using a saved citation-only repair when its exact input still
+matches. Missing full text and unresolved mathematical quality alone do not
+authorize a retry. The old failures, exports and their usage remain recorded.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from agenthub.contracts import Policy
+from agenthub.papers import ResearchRetryCheckpoint
 from agenthub.stage import STAGE_OPEN
 from agenthub_kernel.autopilot import _event, proven_modes
 from agenthub_kernel.db import (
@@ -62,6 +68,61 @@ def _remaining(session: Session, old: ResearchTaskRow, stage: StageRunRow) -> di
     }
 
 
+def _study_input(session: Session, task: ResearchTaskRow, paper: PaperRow) -> tuple:
+    """The exact bounded input used by phase_read; no download or model call."""
+    from agenthub_kernel.papers.guidance import STUDY, pick
+    from agenthub_kernel.papers.pipeline import _h
+
+    doc = session.get(PaperDocumentRow, paper.document_id) if paper.document_id else None
+    if doc is None or doc.parse_status != "ok":
+        return None, []
+    chunks = list(session.scalars(select(PaperChunkRow).where(PaperChunkRow.document_id == doc.id)
+                                  .order_by(PaperChunkRow.seq)))
+    selected = pick(chunks)
+    return _h([doc.sha256, [c.id for c in selected], STUDY.sha256]), selected
+
+
+def retry_checkpoint(session: Session, task: ResearchTaskRow) -> ResearchRetryCheckpoint | None:
+    """Offer only failed generation, not a rerun of successful or missing material."""
+    if task.phase != "done" or task.request.get("mode") not in ("study", "proposal", "project"):
+        return None
+    stage = session.get(StageRunRow, task.stage_id) if task.stage_id else None
+    if stage is None:
+        return None
+    studies = (task.outcome or {}).get("studies") or {}
+    targets = []
+    core = list(session.scalars(select(PaperRow).where(PaperRow.task_id == task.id, PaperRow.included.is_(True))
+                               .order_by(PaperRow.rank).limit(task.request.get("core_papers", 1))))
+    for paper in core:
+        if studies.get(paper.id, {}).get("units"):
+            continue
+        digest, _ = _study_input(session, task, paper)
+        if digest and session.scalar(select(PaperStepRow.id).where(
+            PaperStepRow.task_id == task.id, PaperStepRow.status == "failed", PaperStepRow.kind == "model",
+            PaperStepRow.name == "study", PaperStepRow.target == paper.id,
+            PaperStepRow.key == f"v{task.input_version}:study:{paper.id}:{digest[:16]}",
+            PaperStepRow.input_hash == digest)):
+            targets.append(paper.id)
+    phase = "read" if targets else "directions"
+    if not targets:
+        if (task.request.get("mode") == "study" or not any(s.get("units") for s in studies.values())
+                or ((task.outcome or {}).get("directions") or {}).get("candidates")):
+            return None
+        failed = session.scalar(select(PaperStepRow.id).where(
+            PaperStepRow.task_id == task.id, PaperStepRow.status == "failed", PaperStepRow.name == "directions",
+            PaperStepRow.key.startswith(f"v{task.input_version}:directions:")))
+        if not failed:
+            return None
+    left = _remaining(session, task, stage)
+    caps = []
+    if (stage.rules or {}).get("max_calls"):
+        caps.append(left["max_calls"])
+    if _old_policy(session, task).max_agent_invocations:
+        caps.append(left["max_agent_invocations"])
+    return {"phase": phase, "paper_ids": targets, "remaining_calls": max(0, min(caps)) if caps else None,
+            "remaining_tokens": left["token_budget_total"]}
+
+
 def continue_task(session: Session, adapter: Any, user_id: str, task_id: str, body: dict) -> ResearchTaskRow:
     from agenthub_kernel.papers.service import _new_stage, owned_task
 
@@ -70,17 +131,24 @@ def continue_task(session: Session, adapter: Any, user_id: str, task_id: str, bo
     existing = session.scalar(select(ResearchTaskRow).where(ResearchTaskRow.user_id == user_id,
                                                             ResearchTaskRow.client_request_id == key))
     if existing is not None:
-        return existing  # one continuation per stopped task; a repeated click returns it
-    if old.phase == "done":
+        return existing  # one continuation per source task; a repeated click returns it
+    checkpoint = retry_checkpoint(session, old)
+    if old.phase == "done" and checkpoint is None:
         raise QuotaError("task_completed", "研究任务已完成")
     svc = PolicyService(session)
-    if not svc._tree_stopped(old.root_task_id):
+    if checkpoint is None and not svc._tree_stopped(old.root_task_id):
         raise QuotaError("not_stopped", "这项研究还能在原任务里继续：停止阶段后用“重新授权继续”即可")
     busy = session.scalar(select(InvocationRow.id).join(TaskRow, TaskRow.id == InvocationRow.task_id).where(
         TaskRow.root_task_id == old.root_task_id, InvocationRow.status.in_(("starting", "running"))))
     if busy:
         raise QuotaError("call_in_flight", f"原任务的调用 {busy} 仍在执行，先等它结束")
+    unknown = session.scalar(select(InvocationRow.id).join(TaskRow, TaskRow.id == InvocationRow.task_id).where(
+        TaskRow.root_task_id == old.root_task_id, InvocationRow.status == "unknown"))
+    if checkpoint is not None and unknown:
+        raise QuotaError("status_unknown", f"调用 {unknown} 状态未知：先人工核对，不会自动重放")
     stage = session.get(StageRunRow, old.stage_id)
+    if checkpoint is not None and stage is not None and stage.status in STAGE_OPEN:
+        raise QuotaError("stage_in_progress", "原阶段仍在进行，不能开启失败步骤接续")
     if stage is not None and stage.status in STAGE_OPEN:
         from agenthub_kernel.autopilot import set_status
 
@@ -117,13 +185,26 @@ def continue_task(session: Session, adapter: Any, user_id: str, task_id: str, bo
         id=new_id("rt"), user_id=user_id, client_request_id=key, conversation_id=conversation.id,
         root_task_id=root.id, request=old.request, request_hash=old.request_hash, input_version=old.input_version,
         roles=old.roles, resource_rules=old.resource_rules, resource_rules_hash=old.resource_rules_hash,
-        phase=old.phase, execution_status="running", quality_status="pending", outcome={})
+        phase=checkpoint["phase"] if checkpoint else old.phase,
+        execution_status="running", quality_status="pending", outcome={})
     session.add(new)
     session.flush()
     ids = _copy_material(session, old, new)
     new.outcome = {**(_remap(old.outcome, ids) or {}),
                    "continued_from": {"task_id": old.id, "used_calls": left["used_calls"],
                                       "used_tokens": left["used_tokens"]}}
+    # These describe the old exports, not the continuation's pending result.
+    for field in ("export_copy", "reexported_at", "quality_reasons", "quality_dimensions", "sample", "continued_to"):
+        new.outcome.pop(field, None)
+    if checkpoint:
+        new.outcome.pop("directions", None)
+        studies = dict(new.outcome.get("studies") or {})
+        for pid in checkpoint["paper_ids"]:
+            studies.pop(ids[pid], None)
+            session.get(PaperRow, ids[pid]).read_status = "pending"
+            _carry_study_repair(session, old, new, session.get(PaperRow, pid), session.get(PaperRow, ids[pid]), ids)
+        new.outcome = {**new.outcome, "studies": studies,
+                       "retry_from": {"phase": checkpoint["phase"], "paper_ids": checkpoint["paper_ids"]}}
     old.outcome = {**(old.outcome or {}), "continued_to": new.id}
     stage_new = _new_stage(session, adapter, new, user_id, mode=mode, consent=consent, max_calls=left["max_calls"])
     new.stage_id = stage_new.id
@@ -177,9 +258,11 @@ def _copy_material(session: Session, old: ResearchTaskRow, new: ResearchTaskRow)
         session.add(clone(s, id=ids[s.id], task_id=new.id, evidence_ids=_remap(s.evidence_ids, ids),
                           claims=_remap(s.claims, ids), issues=_remap(s.issues, ids), review=_remap(s.review, ids)))
     for st in session.scalars(select(PaperStepRow).where(PaperStepRow.task_id == old.id,
-                                                         PaperStepRow.status == "succeeded")):
-        # Finished steps keep their keys, results and the calls that produced them (audit).
-        session.add(PaperStepRow(task_id=new.id, key=st.key, kind=st.kind, name=st.name,
+                                                         PaperStepRow.status.in_(("succeeded", "failed")))):
+        # Failed steps retain calls for cumulative usage, but cannot masquerade
+        # as a new runnable checkpoint. Original rows and approvals stay intact.
+        session.add(PaperStepRow(task_id=new.id, key=st.key if st.status == "succeeded" else f"history:{old.id}:{st.id}",
+                                 kind=st.kind, name=st.name,
                                  target=ids.get(st.target, st.target), input_hash=st.input_hash, status=st.status,
                                  attempts=st.attempts, invocation_ids=list(st.invocation_ids or []),
                                  template=st.template, result=_remap(st.result, ids), error=st.error,
@@ -206,3 +289,33 @@ def _copy_material(session: Session, old: ResearchTaskRow, new: ResearchTaskRow)
                 session.add(SupplementFileRow(**data))
     session.flush()
     return ids
+
+
+def _carry_study_repair(session: Session, old: ResearchTaskRow, new: ResearchTaskRow,
+                       old_paper: PaperRow, paper: PaperRow, ids: dict) -> None:
+    """Reuse a bounded citation repair seed; it still must pass the full validator."""
+    from agenthub_kernel.papers.citations import CitationError
+    from agenthub_kernel.papers.guidance import STUDY, study_result
+    from agenthub_kernel.papers.validate import FormatError
+
+    old_hash, _ = _study_input(session, old, old_paper)
+    row = session.scalar(select(PaperStepRow).where(
+        PaperStepRow.task_id == old.id, PaperStepRow.kind == "model", PaperStepRow.name == "study",
+        PaperStepRow.target == old_paper.id, PaperStepRow.input_hash == old_hash,
+        PaperStepRow.key == f"v{old.input_version}:study:{old_paper.id}:{old_hash[:16]}"))
+    state = _remap(row.result, ids) if row and isinstance(row.result, dict) else {}
+    repair = state.get("_citation_repair") or {}
+    if not repair.get("seed"):
+        return
+    digest, selected = _study_input(session, new, paper)
+    try:
+        study_result(repair["seed"], selected)
+    except CitationError as exc:
+        state["_citation_repair"] = {"seed": exc.candidate, "issues": exc.issues}
+    except FormatError:
+        return  # Unusable structure needs a new failed-step generation, not an invented repair.
+    else:
+        return
+    session.add(PaperStepRow(task_id=new.id, key=f"v{new.input_version}:study:{paper.id}:{digest[:16]}",
+        kind="model", name="study", target=paper.id, input_hash=digest, status="pending", attempts=0,
+        invocation_ids=[], template=STUDY.meta(), result=state))

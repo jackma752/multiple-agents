@@ -472,7 +472,7 @@ function render(force) {
 function renderHead(v) {
   // Rebuild only on change: replacing the buttons every poll can swallow a click.
   const sig = JSON.stringify([v.status, v.phase, v.quality_status, v.usage, v.stage, v.unknown_calls, v.tree_stopped,
-                              v.continued_to, v.continued_from, v.archived]);
+                              v.continued_to, v.continued_from, v.retry_checkpoint, v.archived]);
   if ($("taskHead").dataset.sig === sig) return;
   $("taskHead").dataset.sig = sig;
   const phaseIndex = v.phases.indexOf(v.phase);
@@ -487,6 +487,10 @@ function renderHead(v) {
       <button id="reauthBtn" class="primary">确认后重新授权继续</button> <span class="dim small">已完成的检索、阅读与写作会复用，不重复计费</span>`;
   if (ended && v.tree_stopped && !v.continued_to) ctl = `<button id="continueBtn" class="primary">接续这项研究</button>
       <span class="dim small">新建一个接续任务：已完成的检索、筛选、全文、证据与写作原样带过去，只从未完成的步骤往后跑；额度为原研究剩余的部分</span>`;
+  const retry = v.retry_checkpoint;
+  if (retry && !v.continued_to) ctl = `<button id="continueBtn" class="primary">从失败步骤继续</button>
+      <span class="dim small">${retry.phase === "read" ? `重试 ${esc(retry.paper_ids.length)} 篇失败讲解${v.request.mode === "study" ? "" : "及后续方案"}` : "只重试失败的研究方案"}；复用检索、筛选、全文和已成功结果。
+      剩余调用 ${retry.remaining_calls == null ? "不限（原设置）" : `${esc(retry.remaining_calls)} 次`}；Token ${retry.remaining_tokens == null ? "未设总上限" : esc(retry.remaining_tokens)}。新调用会计费用量。</span>`;
   let block = "";
   if (ended) {
     block = `<div class="badbox">${esc(summary.needs || "阶段已结束")}${summary.message ? `<div class="small mono">${esc(summary.message)}</div>` : ""}</div>`;
@@ -523,7 +527,8 @@ function renderHead(v) {
     catch (e) { toast(e.message); }
   });
   on("continueBtn", async () => {
-    if (!confirm("新建接续任务，复用这项研究已完成的资料与步骤，只运行未完成的部分。调用次数与 Token 预算为原研究剩余的部分；原研究保留不变。确认？" + boundary)) return;
+    const detail = retry ? `\n从${retry.phase === "read" ? "失败讲解" : "失败方案"}开始；剩余调用 ${retry.remaining_calls == null ? "不限（原设置）" : retry.remaining_calls + " 次"}，Token ${retry.remaining_tokens == null ? "未设总上限" : retry.remaining_tokens}。新调用会计费用量。` : "";
+    if (!confirm("新建接续任务，复用这项研究已完成的资料与步骤，只运行未完成的部分。调用次数与 Token 预算为原研究剩余的部分；原研究记录与成果保留。" + detail + "\n确认开始？" + boundary)) return;
     try {
       const nv = await api("POST", `/api/papers/${v.task_id}/continue`, { supervised_consent: supervised });
       await loadTasks(); openTask(nv.task_id);

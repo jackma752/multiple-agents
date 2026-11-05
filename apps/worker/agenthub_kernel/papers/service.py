@@ -376,6 +376,8 @@ def task_list(session: Session, user_id: str, *, archived: bool = False) -> list
 
 
 def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict:
+    from agenthub_kernel.papers.continuation import retry_checkpoint
+
     stage = session.get(StageRunRow, task.stage_id) if task.stage_id else None
     papers = list(session.scalars(select(PaperRow).where(PaperRow.task_id == task.id).order_by(PaperRow.rank)))
     evidence_counts = dict(session.execute(select(EvidenceRow.paper_id, func.count()).where(
@@ -438,6 +440,7 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
         "tree_stopped": PolicyService(session)._tree_stopped(task.root_task_id),
         "continued_from": ((task.outcome or {}).get("continued_from") or {}).get("task_id"),
         "continued_to": (task.outcome or {}).get("continued_to"),
+        "retry_checkpoint": retry_checkpoint(session, task),
         "archived": task.id in archived_ids(session, task.user_id, "research"),
     }
 

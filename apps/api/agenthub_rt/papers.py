@@ -362,7 +362,7 @@ def register_papers(app, db) -> None:
 
     @app.post("/api/papers/{task_id}/continue")
     def continue_research(task_id: str, body: ContinueIn, principal: Principal = Depends(authenticate)):
-        """After a tree stop: a new task and stage that reuse everything already finished."""
+        """After a stop or failed generation: new authorization reusing finished work."""
         from agenthub_kernel.papers.continuation import continue_task
 
         require_approver(principal)
