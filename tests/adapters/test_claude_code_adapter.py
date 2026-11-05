@@ -456,7 +456,19 @@ def test_matching_file_reaches_the_launch_with_the_fixed_argv(tmp_path, pinned_f
     result = adapter.start("inv-1", snap(adapter, execution_mode="supervised"), gate_token="t")
     assert not result.ok and result.terminal  # the sentinel refused: provably nothing started
     assert no_launch == [[str(exe), *CLAUDE_ARGV_TAIL]]
+    assert "--max-budget-usd" not in no_launch[0]
     assert adapter.store.get("inv-1")["status"] == "failed"
+
+
+def test_legacy_spend_profile_cannot_reuse_old_approval(tmp_path, pinned_file, confirmed, no_launch):
+    from dataclasses import replace
+    adapter = real_adapter(tmp_path, pinned_file[1])
+    assert adapter.binding_identity().endswith(';spend-profile=usd-cap-off-v1')
+    legacy = adapter.binding_identity().split(';spend-profile=')[0]
+    snapshot = replace(snap(adapter, execution_mode='supervised'), adapter_version=legacy)
+    result = adapter.start('old-dollar-cap', snapshot, gate_token='t')
+    assert not result.ok and result.terminal and 'another adapter identity' in result.detail
+    assert no_launch == []
 
 
 def test_shipped_pin_and_argv():

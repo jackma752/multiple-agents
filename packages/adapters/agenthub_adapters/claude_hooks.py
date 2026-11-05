@@ -84,7 +84,7 @@ class ClaudeHookBridge:
                 "--settings", self.settings_path, "--tools", ",".join(tools),
                 "--strict-mcp-config", "--disable-slash-commands",
                 "--permission-mode", "dontAsk", "--session-id", self.session_id,
-                "--max-turns", "20", "--max-budget-usd", "1.00", "--no-session-persistence"]
+                "--max-turns", "20", "--no-session-persistence"]
 
     def _handler(self):
         bridge = self

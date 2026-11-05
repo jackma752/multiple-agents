@@ -50,7 +50,7 @@ IDENTITY_TIMEOUT_SECONDS = 30
 CA_BUNDLE_SHA256 = "50f79f98dac192b20dbf73f35c56f0b0c557ab267ff5199d1117cc1180b70785"
 #: Flags of the fixed argv that --help is expected to list.
 HELP_FLAGS = ("--output-format", "--safe-mode", "--tools", "--strict-mcp-config", "--disable-slash-commands",
-              "--permission-mode", "--max-turns", "--max-budget-usd", "--no-session-persistence")
+              "--permission-mode", "--max-turns", "--no-session-persistence")
 
 
 class Refused(Exception):

@@ -206,6 +206,8 @@ def test_http_auth_session_cwd_and_failure_closed(tmp_path):
         for groups in bridge.settings()["hooks"].values():
             assert groups[0]["hooks"][0]["onFailure"] == "block"
         assert "--safe-mode" not in bridge.argv()
+        assert "--max-budget-usd" not in bridge.argv()
+        assert bridge.argv()[bridge.argv().index('--max-turns')+1] == '20'
         settings_path = bridge.settings_path
     import os
     assert not os.path.exists(settings_path)

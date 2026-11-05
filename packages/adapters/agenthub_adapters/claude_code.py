@@ -107,11 +107,12 @@ CLAUDE_ARGV_TAIL = (
     "--disable-slash-commands",  # a leading "/" in the prompt is not a command
     "--permission-mode", "dontAsk",
     "--max-turns", "1",
-    "--max-budget-usd", "1.00",  # client-side estimate; spend can pass it
+    # No implicit CLI dollar cap. Hub budgets and approvals remain separate.
     "--no-session-persistence",  # no transcript on disk; no resume
 )
 
 STRICT_PROFILE = "file-hooks-v1"
+SPEND_PROFILE = "usd-cap-off-v1"
 # Populated only by acceptance against the exact binary, never from a profile
 # file or model output. Loopback synthetic-model evidence is labelled as such.
 STRICT_VERIFIED_SHA256: frozenset[str] = frozenset({
@@ -691,7 +692,7 @@ class ClaudeCodeAdapter(AdapterContract):
             return "unavailable"
         if not isinstance(value, str) or not value or value == "unknown":
             return "unavailable"
-        return value if self._simulated() else value + ";strict-profile=" + STRICT_PROFILE
+        return value if self._simulated() else value + ";strict-profile=" + STRICT_PROFILE + ";spend-profile=" + SPEND_PROFILE
 
     def capabilities(self) -> dict[str, Any]:
         """Scoped runtime evidence; no claim about untested binaries or tools."""
