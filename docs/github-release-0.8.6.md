@@ -16,4 +16,4 @@
 
 ## 发布文件
 
-最终产物只取 `dist/p6-release-0.8.6`，不使用 initial-env 目录。大小、SHA-256、构建/冻结程序/安装检查证据见 [证据清单](evidence-manifest.md)。GitHub 发布结果完成后补记。
+最终产物只取 `dist/p6-release-0.8.6`，不使用 initial-env 目录。大小、SHA-256、构建/冻结程序/安装检查证据见 [证据清单](evidence-manifest.md)。main 已快进合入并普通推送；[0.8.6 已公开](https://github.com/jackma752/multiple-agents/releases/tag/v0.8.6)。远端三个附件的大小和 SHA-256 与最终包一致，版本标签准确指向构建来源 1432ab2；旧标签、旧附件与历史保留。

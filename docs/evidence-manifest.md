@@ -320,3 +320,4 @@
 | `claude-usd-default-off/dist/p6-release-0.8.6/AgentHub-0.8.6-windows-x64-portable.zip` | 22614733 | `79c432cbec159572a9d7e2494aba6802a37e0a720a21f3512818d5729a9666f1` |
 | `claude-usd-default-off/dist/p6-release-0.8.6/SHA256SUMS.txt` | 211 | `29a50f5c24981aafe325266a138f5f998e14a8134f118467c09c10686a4a2d2e` |
 | `claude-usd-default-off/dist/p6-release-0.8.6/payload/AgentHub/MANIFEST.json` | 40300 | `0afb61bf51a83ff5789a1e973ea26eda69fd29b2685d6864400a4e0d199704cf` |
+| `claude-usd-default-off/var/github-verify-086.json` | 783 | `91620b7a62bdf0e3a54f5d3bf25afa7dad2093022d2e38e78edeca14734b4035` |
