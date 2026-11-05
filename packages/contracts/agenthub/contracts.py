@@ -148,6 +148,8 @@ class InvocationSnapshot:
     parent_task_id: Optional[str]
     depth: int
     permissions: dict[str, Any] = field(default_factory=dict)
+    #: Optional ``max_output_tokens`` is an approved Claude Code model-request
+    #: ceiling (thinking included), not a whole-CLI invocation token budget.
     resources: dict[str, Any] = field(default_factory=dict)
     adapter_version: str = "unknown"
     policy_version: int = 0
@@ -178,6 +180,10 @@ class InvocationSnapshot:
     def __post_init__(self) -> None:
         from agenthub.native import native_profile
         native_profile(self.permissions)
+        if 'max_output_tokens' in self.resources:
+            limit = self.resources['max_output_tokens']
+            if self.agent_id != 'claude-code' or type(limit) is not int or not 1 <= limit <= 128000:
+                raise ValueError('max_output_tokens requires Claude Code and an integer in 1..128000')
         from agenthub.workspace import execution_timeout
         execution_timeout(self, None)
         from agenthub.models import validate_selection

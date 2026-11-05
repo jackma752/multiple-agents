@@ -228,6 +228,37 @@ def test_claude_code_total_input_includes_the_cache(tmp_path):
     assert "OK" not in json.dumps(rec.raw)
 
 
+def test_claude_thinking_is_an_output_subset_and_is_not_counted_twice(tmp_path):
+    usage = {**TWO_AGENT_USAGE, 'output_tokens': 106876, 'output_tokens_details': {'thinking_tokens': 77406}}
+    adapter = claude(tmp_path, scripted(result_object(usage=usage)))
+    assert adapter.start('thinking', snap(adapter, agent='claude-code'), gate_token='t').ok
+    rec = record(adapter, 'thinking')
+    assert rec.mapping_version == 2 and rec.output_total == 106876 and rec.reasoning == 77406
+    assert rec.raw['output_tokens_details']['thinking_tokens'] == 77406
+
+
+@pytest.mark.parametrize('mode', ['strict', 'supervised'])
+def test_claude_approved_request_limit_is_forwarded_in_both_modes(tmp_path, mode):
+    seen = []
+    callback = scripted(result_object())
+    def script(argv, env, prompt):
+        seen.append(dict(env))
+        return callback(argv, env, prompt)
+    adapter = claude(tmp_path, script)
+    snapshot = snap(adapter, agent='claude-code', execution_mode=mode, resources={'max_output_tokens': 32768})
+    assert adapter.start('limited', snapshot, gate_token='t').ok
+    assert seen[0]['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] == '32768'
+    assert snapshot.payload_hash() != snap(adapter, agent='claude-code', execution_mode=mode).payload_hash()
+
+
+@pytest.mark.parametrize('bad', [-1, True, 16])
+def test_claude_invalid_thinking_does_not_inflate_output(bad):
+    from agenthub.usage import MAPPING_CLAUDE_CODE
+    usage = {**TWO_AGENT_USAGE, 'output_tokens_details': {'thinking_tokens': bad}}
+    rec = normalize_usage({'mapping': MAPPING_CLAUDE_CODE, 'usage': usage, 'source': 'cli_result'})
+    assert rec.output_total == 15 and rec.reasoning is None and rec.completeness == PARTIAL
+
+
 def test_claude_code_without_usage_is_unknown(tmp_path):
     adapter = claude(tmp_path, scripted(result_object(with_usage=False)))
     assert adapter.start("inv-1", snap(adapter, agent="claude-code"), gate_token="t").ok

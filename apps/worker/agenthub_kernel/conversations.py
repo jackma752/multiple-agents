@@ -315,6 +315,7 @@ def submit_turn(
     *, adapter_version: str = "unknown", context_profile: Optional[dict] = None,
     files_root: Optional[str] = None, stage_dispatch_limit: Optional[int] = None,
     stage_resume_thread_id: Optional[str] = None,
+    stage_output_limit: Optional[int] = None,
 ) -> dict[str, Any]:
     """Caller holds SQLite's writer lock; message/draft/approval commit together.
 
@@ -387,6 +388,7 @@ def submit_turn(
         model=request.model, reasoning_effort=request.reasoning_effort,
         model_provider=provider_of(request.agent_id) if request.model else None,
         permissions=({"native_subagents": "approved"} if request.native_subagents == "approved" else {}),
+        resources=({'max_output_tokens': stage_output_limit} if stage_output_limit is not None else {}),
     )
     inv = svc.create_invocation(task_id=task.id, snapshot=snapshot)
     svc.create_approval(invocation_id=inv.id, user_id=user_id)

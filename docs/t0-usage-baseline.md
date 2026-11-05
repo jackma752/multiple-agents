@@ -1,5 +1,7 @@
 # T-0：能力与用量基线（2026-10-24，离线盘点）
 
+2026-11-05 映射版本 2：Claude Code 若返回 `usage.output_tokens_details.thinking_tokens`，保存为 reasoning 子计数；它已包含在 output_total，不能再相加。无该字段仍为未知，负数/bool/大于 output 的字段不采纳并标 mapping_mismatch。仅影响新记录，历史版本 1 账本不重写；论文聚合按调用 ID 去重，显示思考已知部分和未拆分次数。实际本机旧回复已观测到该原始字段，未来请求转发/归一化仅做离线回归，未新增真实模型请求。官方语义见 [Thinking](https://platform.claude.com/docs/en/build-with-claude/thinking)。
+
 - **依据**：`E:\plug\AGENT_HUB_TOKEN_SAVING_REQUIREMENTS.md` 第 5 节 T-0。完成标准是：能力表写明“支持 / 仅观测 / 未知”，并保存基线。
 - **基于**：`feat/p3-two-agent` @ `44a5dcd`，即达到阶段 T 启动节点的提交。本轮分支为 `feat/t0-usage-baseline`。
 - **授权**（用户原话）：“继续 T-0：能力与用量基线……本轮只做离线盘点，不追加真实调用。完成后提交能力表、用量基线和 T-1 的实施拆分；已收口的 S5 保持原样。”

@@ -19,6 +19,40 @@ class CitationError(FormatError):
         super().__init__(f"source span not found: {len(issues)} source error(s): {names}")
 
 
+class ReferenceLimitError(FormatError):
+    """Keep a structurally valid draft; only its source lists need selection."""
+
+    def __init__(self, issues, candidate):
+        self.issues, self.candidate = issues, candidate
+        detail = ", ".join(f"{i['unit_id']}: {i['count']} > {i['limit']}" for i in issues)
+        super().__init__("too many sources per unit (limit 12): " + detail)
+
+
+def apply_source_selection(out, seed, issues):
+    """Select existing references only. Never edit prose, math or dependencies."""
+    if not isinstance(out, dict) or set(out) != {'selections'} or not isinstance(out['selections'], list):
+        raise FormatError('source selection must contain selections only')
+    limits = {i['unit_id']: i['limit'] for i in issues}
+    fixed, seen = copy.deepcopy(seed), set()
+    units = {u['id']: u for u in fixed['units']}
+    for selection in out['selections']:
+        if not isinstance(selection, dict) or set(selection) != {'unit_id', 'source_indices'}:
+            raise FormatError('source selection may name existing source indices only')
+        uid, indices = selection['unit_id'], selection['source_indices']
+        if not isinstance(uid, str) or uid not in limits or uid in seen:
+            raise FormatError('source selection changed an unapproved or repeated unit')
+        refs = units[uid]['sources']
+        if (not isinstance(indices, list) or not 1 <= len(indices) <= limits[uid]
+                or any(type(i) is not int or not 0 <= i < len(refs) for i in indices)
+                or len(set(indices)) != len(indices)):
+            raise FormatError('source selection needs 1..12 distinct in-range indices')
+        units[uid]['sources'] = [refs[i] for i in sorted(indices)]
+        seen.add(uid)
+    if seen != set(limits):
+        raise FormatError('source selection must address every over-limit unit')
+    return fixed
+
+
 def merge_audit(*histories):
     """Merge backend-generated histories, never a field supplied by the model."""
     return list({json.dumps(x, sort_keys=True): x for entries in histories for x in entries}.values())

@@ -55,6 +55,19 @@ def failed(hub, monkeypatch, *, kind="study", target=2, core=1, citation=False, 
     if v["status"] == "waiting_input":
         assert hub.choose(tid, "continue").status_code == 200
         v = hub.run(tid)
+    if citation and v['status'] == 'blocked' and v['stage']['summary']['reason'] == 'paper_repair_review':
+        # Compatibility fixture: 0.8.7 ended this failed repair as done. The
+        # new runtime blocks it instead; preserve a genuine paid seed/calls
+        # while reproducing the legacy ended task for /continue coverage.
+        with hub.client.app.state.db.session() as s:
+            task = s.get(ResearchTaskRow, tid)
+            step = s.scalar(select(PaperStepRow).where(PaperStepRow.task_id == tid, PaperStepRow.name == 'study'))
+            step.status, step.error = 'failed', 'legacy citation repair exhausted'
+            task.phase, task.execution_status, task.quality_status = 'done', 'completed', 'failed'
+            task.outcome = {**task.outcome, 'studies': {step.target: {'paper_id': step.target,
+                'finished': True, 'units': [], 'depth': 'partial'}}}
+            s.get(StageRunRow, task.stage_id).status = 'completed'
+        v = hub.view(tid)
     assert v["phase"] == "done" and v["retry_checkpoint"]
     active[0] = False
     return tid, v, seen

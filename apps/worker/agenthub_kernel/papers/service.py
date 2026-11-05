@@ -22,7 +22,7 @@ from agenthub.models import validate_selection
 from agenthub.papers import (
     LANGUAGES, MISSING_REASONS, PHASES, ResearchRequest, ResourceRules, SOURCE_HOSTS, SUP_OPEN, SUP_VALIDATING,
     TASK_BLOCKED, TASK_COMPLETED, TASK_PAUSED, TASK_RUNNING, TASK_STOPPED, TASK_WAITING_INPUT, URL_SUPPLEMENT_OFF,
-    URL_SUPPLEMENT_PUBLIC, estimate_calls,
+    URL_SUPPLEMENT_PUBLIC, estimate_calls, PAPER_OUTPUT_REVIEW_TOKENS, PAPER_REQUEST_OUTPUT_TOKENS,
 )
 from agenthub.stage import (
     MAX_STAGE_CALLS, PLAN_PAPER, STAGE_ACTIVE, STAGE_BLOCKED, STAGE_COMPLETED, STAGE_ENDED, STAGE_PAUSED,
@@ -158,6 +158,8 @@ def preflight(session: Session, adapter: Any, user_id: str, body: dict, *, store
         "roles": roles, "execution_mode": mode, "estimate": estimate, "max_calls": max_calls,
         "token_budget_total": body.get("token_budget_total"),
         "token_budget_per_call": per_call,
+        "output_review_tokens": PAPER_OUTPUT_REVIEW_TOKENS,
+        "claude_request_output_tokens": PAPER_REQUEST_OUTPUT_TOKENS,
         "resources": {**resources.as_dict(), "hosts": list(resources.hosts()),
                       "sent": f"论文题名、摘要和选中的全文片段会发送给：{', '.join(roles['agents'])}",
                       "downloads": ("允许访问来源返回的公网开放全文地址（逐次检查）" if resources.allow_public_fulltext else
@@ -238,7 +240,9 @@ def _new_stage(session: Session, adapter: Any, task: ResearchTaskRow, user_id: s
                        tool=ToolRules(), retry_limit=RETRY_LIMIT, auto_resume=True, quota_retry_seconds=300,
                        models=roles.get("models") or {},
                        paper={"task_id": task.id, "request_hash": task.request_hash,
-                              "resource_rules": task.resource_rules, "resource_rules_hash": task.resource_rules_hash})
+                              "resource_rules": task.resource_rules, "resource_rules_hash": task.resource_rules_hash,
+                              "output_review_tokens": PAPER_OUTPUT_REVIEW_TOKENS,
+                              "max_output_tokens": PAPER_REQUEST_OUTPUT_TOKENS})
     stage = StageRunRow(
         id=new_id("stage"), conversation_id=task.conversation_id, root_task_id=task.root_task_id,
         status=STAGE_ACTIVE, execution_mode=mode, goal=("论文研究：" + task.request["topic"])[:4000],
@@ -391,7 +395,9 @@ def task_view(session: Session, task: ResearchTaskRow, now: dt.datetime) -> dict
     stage_info = stage_view(session, stage) if stage is not None else None
     if stage_info is not None:
         stage_info = {k: stage_info[k] for k in ("stage_id", "status", "summary", "calls_used", "rules_hash",
-                                                 "execution_mode")} | {"max_calls": stage.rules.get("max_calls")}
+                                                 "execution_mode")} | {"max_calls": stage.rules.get("max_calls"),
+            "output_review_tokens": (stage.rules.get('paper') or {}).get('output_review_tokens', PAPER_OUTPUT_REVIEW_TOKENS),
+            "claude_request_output_tokens": (stage.rules.get('paper') or {}).get('max_output_tokens', PAPER_REQUEST_OUTPUT_TOKENS)}
     docs = {d.id: d for d in session.scalars(select(PaperDocumentRow).where(PaperDocumentRow.task_id == task.id))}
     parse_audits = {d.document_id: d.details for d in session.scalars(select(PaperParseAuditRow)
         .join(PaperDocumentRow, PaperParseAuditRow.document_id == PaperDocumentRow.id)

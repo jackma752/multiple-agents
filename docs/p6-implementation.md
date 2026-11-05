@@ -1,5 +1,9 @@
 # P6 论文研究：实现与验证记录
 
+2026-11-05 修订耗量保护：论文预检和阶段视图增加 `output_review_tokens=32768`、`claude_request_output_tokens=32768`（字段为正整数，模型请求上限仅 Claude Code 声明支持传递）。新阶段将两者写入 paper 规则并哈希绑定；旧阶段缺省采用限制，旧无上限论文审批在 consume 阶段拒绝，要求用户重新授权，不修改原快照。请求上限进入 `InvocationSnapshot.resources.max_output_tokens`，仅 Claude Code 支持 1..128000 整数，普通旧快照资源为空时哈希保持。CLI 环境变量传递已离线验证，服务端执行未实测；阶段输出累计达复核阈值后，在创建后续调用之前阻塞，不自动提高 Token/次数额度或改为暂停。用户再次授权新阶段只重置阶段复核，整树预算不重置。
+
+论文 usage 聚合新增 reasoning（可空）、reasoning_unknown（未拆分调用数）；输出总数已经包含思考，不重复累加，历史账本不重写。引用超限修复只选择现有引用索引，保留正文/公式/依赖/修订包，完成后仍逐字核验选中引用；定点修复失败或其他修订结构错误阻塞并要求用户复核，禁止全量重写回退。原工作阶段暂停状态保持，本轮真实模型调用 0。见 [问题与验证](issue-paper-repair-cost.md)。
+
 分支 `feat/p6-paper-pipeline`，工作树 `.worktrees/p6-impl`，基于规划提交 `172eb64`（`5efabbc`、`517c133`、`172eb64` 为规划；main `98d515b` 是三者的父提交）。授权来源：用户 2026-10-30 在对话中下达“开始 P6 论文自动化功能开发”指令。
 
 规划与约束见 [总方案](p6-paper-pipeline.md)、[全文补充](p6-fulltext-supplementation.md)、[模板设计](p6-academic-prompts.md)、[上游调研](p6-upstream-research.md)。本文记录实际实现。**所有验证均为离线模拟**：模型回复来自 `tools/demo/paper_stub_model.py`，arXiv 与 PDF 来自 `tools/demo/paper_fixtures.py` 的合成语料；没有真实检索、下载或付费模型回合。

@@ -23,6 +23,11 @@ from urllib.parse import urlsplit
 
 PAPER_CONTRACT_VERSION = 1
 RESOURCE_RULES_VERSION = 1
+# A review gate between automatic calls, not a provider-side per-call limit.
+PAPER_OUTPUT_REVIEW_TOKENS = 32768
+# User-selected Claude Code per-model-request output ceiling, including thinking.
+# CLI aggregate output may span requests; this is not a per-invocation hard cap.
+PAPER_REQUEST_OUTPUT_TOKENS = 32768
 
 
 class ResearchRetryCheckpoint(TypedDict):

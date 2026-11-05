@@ -13,7 +13,7 @@ from sqlalchemy import select
 from agenthub_kernel.papers.db import PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow
 from agenthub_kernel.papers.templates import Template, _register
 from agenthub_kernel.papers.validate import FormatError
-from agenthub_kernel.papers.citations import CitationError, merge_audit, resolve_units, source_aliases
+from agenthub_kernel.papers.citations import CitationError, ReferenceLimitError, merge_audit, resolve_units, source_aliases
 
 KINDS = ("problem", "intuition", "prerequisites", "symbols", "setting", "assumption", "result", "step", "example", "next")
 UNIT_SCHEMA = ('{"id":"stable unique id","kind":"problem|intuition|prerequisites|symbols|setting|assumption|result|step|example|next",'
@@ -44,6 +44,17 @@ SOURCE_REPAIR = _register(Template(
     "and valid references. Use the short source_id from chunks; never fabricate an id or splice a quotation.",
     "If a source cannot support the statement, do not invent evidence. An unverifiable replacement remains blocked.",
     "Fix every listed citation error. Return replacements only; do not regenerate teaching units or edit prose.",
+))
+SOURCE_SELECT = _register(Template(
+    "research.source-select.v1", 1, "read", ("issues", "units"),
+    '{"selections":[{"unit_id":"given id","source_indices":[0,1]}]}',
+    "Only choose 1..12 distinct existing source indices for EVERY listed unit. Indices are zero-based. "
+    "Select a compact set that supports the unit's claims. Never invent a reference, quote, explanation or equation. "
+    "The backend preserves all text, mathematics, dependencies and untouched units, then verifies every selected quote.",
+    "If the existing references cannot support a unit, do not claim it is repaired. Return no selection for that unit; "
+    "the program will stop for human review rather than regenerate the teaching text.",
+    "Reduce over-limit source lists only. Return indices, not the references or teaching units. "
+    "A selection is not mathematical review or proof of completeness.",
 ))
 CHECK = _register(Template(
     "research.study-review.v1", 1, "review", ("units", "chunks", "previous_issues"),
@@ -119,7 +130,7 @@ def study_result(out, chunks):
     units = out.get("units")
     if not isinstance(units, list) or not 1 <= len(units) <= 60:
         raise FormatError("study needs all teaching units and at least two derivation steps")
-    seen, kinds = set(), []
+    seen, kinds, overflow = set(), [], []
     for unit in units:
         uid = _text(unit, "id")
         if uid in seen or len(uid)>80 or not re.fullmatch(r"[A-Za-z0-9_-]+", uid):
@@ -148,12 +159,18 @@ def study_result(out, chunks):
         if unit.get("origin") not in ("source", "reconstruction"):
             raise FormatError("origin must distinguish source from teaching reconstruction")
         refs = unit.get("sources", [])
-        if not isinstance(refs,list) or len(refs)>12 or (unit["origin"]=="source" or kind in ("problem","setting","assumption","result")) and not refs:
-            raise FormatError("source units require locations")
+        if not isinstance(refs,list):
+            raise FormatError(f"unit {uid}: sources must be a list")
+        if (unit["origin"]=="source" or kind in ("problem","setting","assumption","result")) and not refs:
+            raise FormatError(f"unit {uid}: source units require locations (at least one reference)")
+        if len(refs)>12:
+            overflow.append({"unit_id":uid,"count":len(refs),"limit":12})
         kinds.append(kind); seen.add(uid)
     if out.get("math_state")=="complete" and (set(KINDS)-set(kinds) or kinds.count("step")<2):
         raise FormatError("missing teaching components")
     missing=missing_items(out)
+    if overflow:
+        raise ReferenceLimitError(overflow,{"units":units,"math_state":out["math_state"],"missing":missing})
     checked = resolve_units({"units":units,"math_state":out["math_state"],"missing":missing}, chunks)
     return checked
 
@@ -229,7 +246,13 @@ def patch_result(out, study, chunks, editable, allow_additions=False, *, preserv
         candidate['missing'] = study['missing']
         if study['math_state'] == 'incomplete' or study['missing']:
             candidate['math_state'] = 'incomplete'
-    checked = study_result(candidate,chunks)
+    try:
+        checked = study_result(candidate,chunks)
+    except (CitationError, ReferenceLimitError) as exc:
+        # Retain the exact patch envelope as well as the assembled candidate.
+        # A repair may edit reference slots/lists, never other teaching fields.
+        exc.patch = copy.deepcopy(out)
+        raise
     checked['citation_audit'] = merge_audit(study.get('citation_audit', []), checked['citation_audit'])
     return checked
 

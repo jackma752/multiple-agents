@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 #: Bump when a mapping's meaning changes; stored records keep their version.
-USAGE_MAPPING_VERSION = 1
+USAGE_MAPPING_VERSION = 2
 
 MAPPING_CODEX_APPSERVER = "codex.app_server.token_usage_breakdown"
 MAPPING_CODEX_EXEC = "codex.exec.turn_completed_usage"
@@ -190,10 +190,15 @@ def _claude_code(usage: dict, notes: list[str]) -> dict[str, Optional[int]]:
     read = read if is_count(read) else None
     if write is None or read is None:
         notes.append("cache_fields_missing")
+    details = usage.get('output_tokens_details')
+    thinking = details.get('thinking_tokens') if isinstance(details, dict) else None
+    if thinking is not None and (not is_count(thinking) or thinking > out):
+        notes.append('mapping_mismatch')
+        thinking = None
     return {
         "input_total": inp + write + read if write is not None and read is not None else None,
         "input_uncached": inp, "cache_read": read, "cache_write": write,
-        "output_total": out, "reasoning": None,
+        "output_total": out, "reasoning": thinking,
     }
 
 

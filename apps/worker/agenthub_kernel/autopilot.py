@@ -51,6 +51,8 @@ TRANSIENT = ("max_subagents_concurrent", "tree_paused", "not_ready", "worker_sto
 
 #: What the user needs to do for each way a stage can block (shown in the summary).
 NEEDS = {
+    "paper_repair_review": "已保留生成内容并停止自动重写：查看具体修复错误后，确认是否重新授权定点修复。",
+    "paper_output_review": "本阶段累计输出（含思考）达到复核阈值，已阻止后续自动调用；核对用量后再决定是否重新授权。单次调用可能超过阈值。",
     "step_failed": "修复重试额度已用完；查看失败条件和重试记录后调整目标或规则",
     "no_result": "该步骤结束但没有可交接的回复：检查 Agent 输出后重新开启阶段",
     "status_unknown": "该步骤的调用状态未知：先经恢复或人工裁决确认它已结束，才能继续",
@@ -751,6 +753,19 @@ class Autopilot:
         from agenthub_kernel.conversations import submit_turn
 
         rules = rules_of(stage.rules)
+        if rules.plan == PLAN_PAPER:
+            from agenthub.papers import PAPER_OUTPUT_REVIEW_TOKENS
+
+            limit = (rules.paper or {}).get('output_review_tokens', PAPER_OUTPUT_REVIEW_TOKENS)
+            # A missing/invalid value never disables the default safeguard.
+            if type(limit) is not int or limit < 1:
+                limit = PAPER_OUTPUT_REVIEW_TOKENS
+            spent = session.scalar(select(func.coalesce(func.sum(UsageLedgerRow.output_total), 0))
+                .join(StageGrantRow, StageGrantRow.invocation_id == UsageLedgerRow.invocation_id)
+                .where(StageGrantRow.stage_id == stage.id)) or 0
+            if spent >= limit:
+                raise _Blocked(step, 'paper_output_review',
+                    f'Stage output including reasoning: {spent}/{limit}. No new invocation created.')
         used = session.scalar(select(func.count()).select_from(StageGrantRow)
                               .where(StageGrantRow.stage_id == stage.id)) or 0
         if rules.max_calls and used >= rules.max_calls:
@@ -773,7 +788,9 @@ class Autopilot:
                                adapter_version=adapter_binding(adapter, agent_id),
                                context_profile=adapter_context_profile(adapter, agent_id),
                                files_root=self.files_root(), stage_dispatch_limit=rules.max_calls,
-                               stage_resume_thread_id=resume_thread)
+                               stage_resume_thread_id=resume_thread,
+                               stage_output_limit=((rules.paper or {}).get('max_output_tokens', 32768)
+                                   if rules.plan == PLAN_PAPER and agent_id == 'claude-code' else None))
         except QuotaError as exc:
             raise _Blocked(step, "start_refused", f"{exc.code}: {exc.message[:300]}")
         inv = session.get(InvocationRow, turn["invocation_id"])

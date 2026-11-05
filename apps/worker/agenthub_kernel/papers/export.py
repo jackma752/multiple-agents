@@ -33,7 +33,9 @@ DECISIONS = {"user_continue": "用户选择不补充，按现有资料继续", "
 
 
 def usage_of(session, invocation_ids: list) -> dict:
-    totals = {"calls": len(invocation_ids), "input": 0, "output": 0, "unknown": 0}
+    invocation_ids = list(dict.fromkeys(invocation_ids))
+    totals = {"calls": len(invocation_ids), "input": 0, "output": 0, "unknown": 0,
+              "reasoning": None, "reasoning_unknown": 0}
     for inv_id in invocation_ids:
         row = session.get(UsageLedgerRow, inv_id)
         if row is None or row.input_total is None:
@@ -41,6 +43,10 @@ def usage_of(session, invocation_ids: list) -> dict:
         else:
             totals["input"] += row.input_total
             totals["output"] += row.output_total or 0
+        if row is not None and row.reasoning is not None:
+            totals['reasoning'] = (totals['reasoning'] or 0) + row.reasoning
+        else:
+            totals['reasoning_unknown'] += 1
     return totals
 
 

@@ -560,6 +560,12 @@ class PolicyService:
                     or inv.snapshot.get("agent_id") not in rules.agents
                     or inv.snapshot.get("execution_mode", "strict") != stage.execution_mode):
                 raise QuotaError("stage_rule_mismatch", "call is outside the authorized stage rules")
+            if rules.plan == 'paper' and inv.snapshot.get('agent_id') == 'claude-code':
+                from agenthub.papers import PAPER_REQUEST_OUTPUT_TOKENS
+                expected = (rules.paper or {}).get('max_output_tokens', PAPER_REQUEST_OUTPUT_TOKENS)
+                if (inv.snapshot.get('resources') or {}).get('max_output_tokens') != expected:
+                    raise QuotaError('stage_output_limit_mismatch',
+                        'Old paper approval lacks the current request output ceiling; authorize a new stage')
 
         # 3. Approval bound to the same hash
         if appr.payload_hash != inv.payload_hash:

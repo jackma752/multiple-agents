@@ -1,5 +1,7 @@
 # Claude Code 最小接入（P3 工作流 B，2026-10-23，离线）
 
+**2026-11-05 耗量保护**：论文自动调用按用户选择把每次模型请求输出上限 32768 放入审批快照 `resources.max_output_tokens`，两条启动路径均传 `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32768`。普通手动调用无该字段时不改变默认配置；旧无上限论文审批在 consume 门禁拒绝，不能沿用。能力表：**输出上限配置传递：离线验证；Claude 实际服务端执行：未实测；整次 CLI 总硬上限：不支持此声明**。官方变量适用于多数模型请求，CLI 多请求总量可能更大；不能代替 Hub 总预算。美元上限仍默认关闭，模型与 effort 不变。论文阶段另有输出累计 32768 后阻止下一个自动调用的复核门禁，不更改已完成调用。见 [问题与验证](issue-paper-repair-cost.md) 和 [官方环境变量](https://code.claude.com/docs/en/env-vars)。
+
 **当前金额预算行为（2026-11-05）**：按用户要求，严格与用户监督启动路径均默认不传 `--max-budget-usd`，取消原来固定的单次 1 美元限制。Hub Token 预算、审批、重试/次数与工具准入保持。实际绑定新增 `spend-profile=usd-cap-off-v1`，旧审批不能直接沿用新配置。下文 1 美元条目均为历史运行记录，不代表当前默认值。见 [修复记录](issue-claude-usd-default-off.md)。
 
 **当前实现更新（2026-11-03）**：下文为 P3 历史记录。新 `file-hooks-v1` 严格文件工具配置、原生子任务审批和真实 CLI/合成模型实测见 [native-strict.md](native-strict.md)；旧监督模式启动路径保留。

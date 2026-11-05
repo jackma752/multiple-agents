@@ -853,6 +853,11 @@ class ClaudeCodeAdapter(AdapterContract):
             os.makedirs(logs, exist_ok=True)
             os.makedirs(scratch, exist_ok=True)
             env, stripped, added = self.launcher.environment()
+            if 'max_output_tokens' in snapshot.resources:
+                # Bound in the approval snapshot, not a prompt or a global
+                # shell setting. Applied before both strict/supervised paths.
+                env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = str(snapshot.resources['max_output_tokens'])
+                added = sorted(set(added) | {'CLAUDE_CODE_MAX_OUTPUT_TOKENS'})
         except (OSError, ValueError) as exc:
             return AdapterStartResult("", ok=False, terminal=True,
                                       detail=f"refused: launch preparation failed ({type(exc).__name__})")

@@ -32,6 +32,9 @@ def teaching(data):
 
 
 def respond(template,data):
+    if template == 'research.source-select.v1':
+        return {'selections': [{'unit_id': i['unit_id'], 'source_indices': list(range(i['limit']))}
+                               for i in data['issues']]}
     if template in ("research.study.v1", "research.study.v2"):return teaching(data)
     if template == 'research.source-repair.v1':
         c = data['chunks'][0]

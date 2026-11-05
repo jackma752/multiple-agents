@@ -51,7 +51,9 @@ from agenthub_kernel.papers.db import (
 from agenthub_kernel.papers.parse import chunk, parse_bytes, quote_in
 from agenthub_kernel.papers.templates import ABSTRACT, EXTRACT, OUTLINE, PLAN, REVIEW, SCREEN, SECTION, SYNTHESIZE, render
 from agenthub_kernel.papers.validate import FormatError, parse_json
-from agenthub_kernel.papers.citations import CitationError, apply_source_patch, merge_audit
+from agenthub_kernel.papers.citations import (
+    CitationError, ReferenceLimitError, apply_source_patch, apply_source_selection, merge_audit,
+)
 from agenthub_kernel.service import new_id
 
 SCREEN_BATCH = 20
@@ -165,8 +167,23 @@ class Ctx:
         ok, why = resource_decision(self.resource, ACTION_SEND, agent)
         if not ok:
             raise _Blocked(name, "plan_outside_rules", f"paper material may not be sent to {agent}: {why}")
-        repair = (row.result or {}).get('_citation_repair') if isinstance(row.result, dict) else None
+        # An older Hub may already have paid for a structurally usable patch
+        # before failing/retrying its reference lists. Salvage that exact reply
+        # under this step's unchanged input and validator, never regenerate it.
+        last = self.session.get(InvocationRow, row.invocation_ids[-1]) if row.invocation_ids else None
+        grant = self.session.scalar(select(StageGrantRow).where(StageGrantRow.invocation_id == last.id)) if last else None
+        legacy_patch = last and (last.status == 'failed' or (grant and grant.stage_id != self.stage.id))
+        if name.startswith('study_patch:') and legacy_patch and not any((row.result or {}).get(k) for k in ('_citation_repair','_source_selection')):
+            recovered = self._saved_patch(row, validator)
+            if recovered is not None:
+                return recovered
+        state_data = row.result if isinstance(row.result, dict) else {}
+        repair = state_data.get('_citation_repair')
+        selection = state_data.get('_source_selection')
         active_template, active_data = template, data
+        if name.startswith(('study:', 'study_patch:')):
+            active_data = {**data, 'output_constraints': {'max_sources_per_unit': 12, 'max_units': 60,
+                'instruction': 'Keep references concise. Do not regenerate unrelated teaching units.'}}
         if repair:
             from agenthub_kernel.papers.guidance import SOURCE_REPAIR
             active_template = SOURCE_REPAIR
@@ -174,6 +191,13 @@ class Ctx:
             active_data = {'issues': repair['issues'], 'chunks': data['chunks'],
                 'units': [{k: u[k] for k in ('id', 'title', 'text', 'sources')}
                           for u in repair['seed']['units'] if u['id'] in failed]}
+        elif selection:
+            from agenthub_kernel.papers.guidance import SOURCE_SELECT
+            active_template = SOURCE_SELECT
+            failed = {i['unit_id'] for i in selection['issues']}
+            active_data = {'issues': selection['issues'],
+                'units': [{k: u[k] for k in ('id', 'title', 'text', 'latex', 'sources') if k in u}
+                          for u in selection['seed']['units'] if u['id'] in failed]}
         row.template = active_template.meta()
         stage_step = "p:" + name
         reused = self._reuse_previous_stage(row, validator, stage_step)
@@ -184,6 +208,10 @@ class Ctx:
                                                 render(active_template, active_data, language=self.request.language),
                                                 self.to_start)
         except _Blocked as blocked:
+            if (repair or selection) and blocked.reason in SOFT_REASONS:
+                raise _Blocked(stage_step, 'paper_repair_review',
+                    'Saved teaching retained; reference repair needs a new user-authorized stage. No full regeneration.',
+                    blocked.invocation_id)
             if soft and blocked.reason in SOFT_REASONS:
                 return self._fail(row, blocked.reason, blocked.message)
             raise
@@ -197,23 +225,26 @@ class Ctx:
         try:
             result = self._checked_reply(row, validator, reply.text)
         except FormatError as exc:
-            if isinstance(exc, CitationError):
-                state = dict(row.result or {})
-                history = state.get('_citation_history', []) + exc.candidate.get('citation_audit', [])
-                state['_citation_history'] = history
-                state['_citation_issues'] = exc.issues
-                # The seed is a validated teaching structure with unresolved
-                # references, never a model-authorized plan or a finished result.
-                if name.startswith('study:'):
-                    state['_citation_repair'] = {'seed': exc.candidate, 'issues': exc.issues}
-                row.result = state
+            targeted = isinstance(exc, (CitationError, ReferenceLimitError)) and name.startswith(('study:', 'study_patch:'))
+            if targeted:
+                self._save_reference_repair(row, exc)
+            # A failed local repair must never fall back to rewriting all units.
+            # Permit a source-list selection to expose a *different* exact-span
+            # problem once; every other failed local repair blocks immediately.
+            if (repair or selection) and not (selection and isinstance(exc, CitationError)):
+                row.error = f'local_reference_repair_failed: {str(exc)[:350]}'
+                raise _Blocked(stage_step, 'paper_repair_review', row.error, inv.id)
+            if name.startswith('study_patch:') and not targeted:
+                row.error = f'patch_format_invalid: {str(exc)[:350]}'
+                raise _Blocked(stage_step, 'paper_repair_review', row.error, inv.id)
             try:
                 self.ap._retry(self.session, self.stage, stage_step, inv, f"format_invalid: {str(exc)[:200]}")
             except _Blocked as blocked:
                 if soft:
                     return self._fail(row, "format_invalid", str(exc))
                 raise blocked
-            _event(self.session, self.stage, "paper_format_repair", invocation_id=inv.id, step=name)
+            _event(self.session, self.stage, "paper_format_repair", invocation_id=inv.id, step=name,
+                   repair_scope='references_only' if targeted else 'format')
             return "wait", None
         return self._succeed(row, result, inv.id)
 
@@ -222,12 +253,60 @@ class Ctx:
         out = parse_json(text)
         state = row.result if isinstance(row.result, dict) else {}
         repair = state.get('_citation_repair')
+        selection = state.get('_source_selection')
         if repair:
             out = apply_source_patch(out, repair['seed'], repair['issues'])
+            out = Ctx._patch_envelope(out, repair)
+        elif selection:
+            out = apply_source_selection(out, selection['seed'], selection['issues'])
+            out = Ctx._patch_envelope(out, selection)
         result = validator(out)
         if isinstance(result, dict) and state.get('_citation_history'):
             result['citation_audit'] = merge_audit(state['_citation_history'], result.get('citation_audit', []))
         return result
+
+    @staticmethod
+    def _patch_envelope(candidate, repair):
+        patch = repair.get('patch')
+        if patch is None:
+            return candidate
+        by_id = {u['id']: u for u in candidate['units']}
+        return {**patch, **{key: [{**u, 'sources': by_id[u['id']].get('sources', [])} for u in patch.get(key, [])]
+                           for key in ('replacements', 'additions')}}
+
+    @staticmethod
+    def _save_reference_repair(row, exc):
+        state = dict(row.result or {})
+        seed = {'seed': exc.candidate, 'issues': exc.issues}
+        if hasattr(exc, 'patch'):
+            seed['patch'] = exc.patch
+        key = '_citation_repair' if isinstance(exc, CitationError) else '_source_selection'
+        state.pop('_citation_repair', None)
+        state.pop('_source_selection', None)
+        state[key] = seed
+        state['_citation_history'] = state.get('_citation_history', []) + exc.candidate.get('citation_audit', [])
+        row.result = state
+
+    def _saved_patch(self, row, validator):
+        for iid in reversed(row.invocation_ids or []):
+            inv = self.session.get(InvocationRow, iid)
+            if inv is None or inv.status != 'succeeded':
+                continue
+            reply = self.session.scalar(select(ChatMessageRow).where(ChatMessageRow.invocation_id == iid,
+                                                                      ChatMessageRow.role == 'assistant'))
+            if reply is None:
+                continue
+            try:
+                checked = validator(parse_json(reply.text))
+            except (ReferenceLimitError, CitationError) as exc:
+                self._save_reference_repair(row, exc)
+                _event(self.session, self.stage, 'paper_patch_seed_recovered', invocation_id=iid, step=row.key[:120])
+                return None
+            except FormatError:
+                continue
+            _event(self.session, self.stage, 'paper_patch_reply_reused', invocation_id=iid, step=row.key[:120])
+            return self._succeed(row, checked, iid)
+        return None
 
     def _succeed(self, row: PaperStepRow, result: Any, invocation_id: str) -> tuple[str, Any]:
         row.status, row.result, row.finished_at, row.error = "succeeded", result, self.now, None

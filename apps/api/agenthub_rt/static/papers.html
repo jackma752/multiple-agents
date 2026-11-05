@@ -423,6 +423,8 @@ async function runPreflight() {
         <tr><th>补充资料</th><td>上传${p.resources.allow_upload ? "允许" : "不允许"}；网络地址${p.resources.url_supplement === "public_http" ? "允许（仅公网 http/https）" : "不允许"}；本地目录：${esc((p.resources.local_roots || []).join("；") || "无")}</td></tr>
         <tr><th>预计调用</th><td>约 ${esc(e.expected)} 次，最坏 ${esc(e.worst_case)} 次（${esc(Object.entries(e.parts).map(([k,n])=>k+": "+n).join("，"))}）；上限 ${esc(p.max_calls)} 次，全部计入同一根任务</td></tr>
         <tr><th>Token 预算</th><td>总预算：${p.token_budget_total ? esc(p.token_budget_total) : "不设（仍记录用量）"}；单次预留：${p.token_budget_per_call ? esc(p.token_budget_per_call) : "不设"}</td></tr>
+        <tr><th>耗量复核</th><td>单阶段累计输出（包含思考）达到 ${esc(p.output_review_tokens ?? 32768)} Token 后，阻止后续自动调用，需你核对后重新授权；这是调用之间的复核门禁，单次调用可能超过它。</td></tr>
+        <tr><th>Claude 输出上限</th><td>每次模型请求 ${esc(p.claude_request_output_tokens ?? 32768)} Token（含思考）；CLI 调用可能包含多个请求，不等于整次调用总硬上限。其他 Agent 不声称支持此 Claude 设置。</td></tr>
         <tr><th>输出</th><td class="mono">${esc(p.output.files.join(", "))}<br>保存在 ${esc(p.output.location)}${p.output.copy_to ? `<br>并复制到你选的目录 ${esc(p.output.copy_to)}\\v&lt;版本&gt;` : ""}</td></tr>
         <tr><th>完成条件</th><td>导出综述与证据；执行完成与质量通过分别记录，审阅不可用或检查失败不会标为通过</td></tr>
       </tbody></table>`;
@@ -508,10 +510,12 @@ function renderHead(v) {
   $("taskHead").innerHTML = `<div class="row"><h2 style="margin:0;flex:1;min-width:200px">${esc(v.request.topic)}</h2>
       ${chip(taskStatus(v))} ${chip(qualityLabel)}</div>
     <div class="phases">${phases}</div>
-    <div class="row small dim">调用 ${esc(v.usage.calls)} 次（本阶段 ${esc(st.calls_used ?? "-")}/${esc(st.max_calls ?? "-")}）· 输入 ${esc(v.usage.input)} / 输出 ${esc(v.usage.output)} tokens${v.usage.unknown ? ` · 用量未知 ${esc(v.usage.unknown)} 次` : ""}
+    <div class="row small dim">调用 ${esc(v.usage.calls)} 次（本阶段 ${esc(st.calls_used ?? "-")}/${esc(st.max_calls ?? "-")}）· 输入 ${esc(v.usage.input)} / 输出 ${esc(v.usage.output)} tokens（包含思考）${v.usage.reasoning == null ? " · 思考用量未拆分" : ` · 已记录思考 ${esc(v.usage.reasoning)}${v.usage.reasoning_unknown ? `（${esc(v.usage.reasoning_unknown)} 次未拆分）` : ""}`}${v.usage.unknown ? ` · 用量未知 ${esc(v.usage.unknown)} 次` : ""}
       · 模型：${esc(v.roles.main_agent)}${v.roles.review_agent ? " / 审阅 " + esc(v.roles.review_agent) : "（无审阅）"} · <a href="/chat" title="每一步调用都在对应会话里可查">查看调用记录</a></div>
     ${block}<div class="row">${ctl}<span class="grow" style="flex:1"></span>
       <button id="archiveBtn" class="mini" title="${v.archived ? "移回研究列表" : "从列表移到“已归档”，记录与文件都保留，可随时取消"}">${v.archived ? "取消归档" : "归档"}</button></div>`;
+  $("taskHead").innerHTML += `<div class="small dim">耗量复核：本阶段输出（含思考）累计 ${esc(st.output_review_tokens ?? 32768)} Token 后，阻止后续自动调用；单次调用可能超过此值。</div>`;
+  $("taskHead").innerHTML += `<div class="small dim">后续 Claude 模型请求输出上限：${esc(st.claude_request_output_tokens ?? 32768)} Token（含思考；CLI 总量可能超过单请求上限）。</div>`;
   const on = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
   on("archiveBtn", () => setArchived(v.task_id, !v.archived));
   const act = (action) => async () => { try { await api("POST", `/api/papers/${v.task_id}/stage/${action}`); await refresh(true); } catch (e) { toast(e.message); } };
