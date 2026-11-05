@@ -301,3 +301,22 @@
 | `paper-empty-export/var/guidance-final-tests.xml` | 3027 | `9b3c3647145c6180511a9fe87e30ff400b60bd8073249e9bab6f7b2c017c119a` |
 | `paper-empty-export/var/check_result_ui.js` | 1865 | `f3f9d5d6b82e5d4c12f3245d6a8e855273a6954c8c0ab3b2741a1d3bb9d07ef2` |
 | `paper-empty-export/var/result-ui-check.json` | 82 | `47431339ec0ec920bd93f7dd912c8f8f5b31cb17b241483a5cd734166327ff94` |
+
+
+### 0.8.6 单次美元上限默认关闭与本机更新（2026-11-05）
+
+真实模型调用 0；本机安装只备份旧程序清单内文件，配置、旧排队记录及已完成阶段保留。首个系统 Python 候选因依赖偏离未采用；隔离环境最终包单独核验，原文/登录材料/配置正文均不入库。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `claude-usd-default-off/var/usd-cap-regression.xml` | 30275 | `273ad13f3c3300e142897261b451a5ce6aba341f07ee88797d3d94dae0b98686` |
+| `claude-usd-default-off/var/build-0.8.6.log` | 12369 | `2e9f68e7f0d3fb557d844b5884044e13dc880bacfd452dba5b53c3214fe32edb` |
+| `claude-usd-default-off/var/build-0.8.6-isolated.log` | 11630 | `088b19bfe7422f39c3c3c7b82eaa888a4a6000caed3a1bf69ee07c8ea1b602aa` |
+| `claude-usd-default-off/var/release_smoke_086.py` | 8458 | `011cadb44e2e6d01bbf39c050f0f17319c7c36d3e6d642ae125768b2bede2784` |
+| `claude-usd-default-off/var/release-smoke.json` | 814 | `f08085bbe36043faf764e99edb6cd90c42455c778c86d7adddc47894b6dc0e28` |
+| `claude-usd-default-off/var/upgrade_local_086.py` | 9105 | `535de57fd0c15ff6a7ebe5e94be2cf2354d22c6ac59ac9d28dfd25e297405e71` |
+| `claude-usd-default-off/var/local-upgrade-086.json` | 633 | `f1435e92753c55d6e5bce78a3704abbe79ceac20a0277ce8b667565b8f375eef` |
+| `claude-usd-default-off/dist/p6-release-0.8.6/AgentHub-0.8.6-windows-x64-setup.exe` | 22914671 | `24df1f908b9690be9714c8b8e7fc956c3464e7530c35500ace96fb3199cb99af` |
+| `claude-usd-default-off/dist/p6-release-0.8.6/AgentHub-0.8.6-windows-x64-portable.zip` | 22614733 | `79c432cbec159572a9d7e2494aba6802a37e0a720a21f3512818d5729a9666f1` |
+| `claude-usd-default-off/dist/p6-release-0.8.6/SHA256SUMS.txt` | 211 | `29a50f5c24981aafe325266a138f5f998e14a8134f118467c09c10686a4a2d2e` |
+| `claude-usd-default-off/dist/p6-release-0.8.6/payload/AgentHub/MANIFEST.json` | 40300 | `0afb61bf51a83ff5789a1e973ea26eda69fd29b2685d6864400a4e0d199704cf` |

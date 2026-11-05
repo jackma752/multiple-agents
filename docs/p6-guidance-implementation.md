@@ -2,7 +2,7 @@
 
 后续显示修复：0.7.1 统一网页和导出的公式界定符、符号表与裸 TeX 排版，既有结果不重新调用模型。见 [公式导出修复记录](issue-guidance-math-export.md)。
 
-2026-11-05 空正文导出修复：零可用讲解单元的指导任务使用现有 `quality_status=failed`，页面显示“已结束，正文生成失败”；存在正文但所请求的研究方案未生成则保留 `needs_review`。`agenthub.guidance/1` 报告增补可选 `quality_reasons`、`sample`，类型为 `GuidanceReport` / `GuidanceSample`。指导模式样本统计表示资料可用性，不表示全文已成功讲解。README 和正文说明失败原因，明确 ZIP 不含原论文 PDF。重新导出不重试模型，也不能恢复从未通过校验的正文。实现及本地验证见 [问题记录](issue-paper-empty-export.md)。此补丁尚未构建或安装到用户本机。
+2026-11-05 空正文导出修复：零可用讲解单元的指导任务使用现有 `quality_status=failed`，页面显示“已结束，正文生成失败”；存在正文但所请求的研究方案未生成则保留 `needs_review`。`agenthub.guidance/1` 报告增补可选 `quality_reasons`、`sample`，类型为 `GuidanceReport` / `GuidanceSample`。指导模式样本统计表示资料可用性，不表示全文已成功讲解。README 和正文说明失败原因，明确 ZIP 不含原论文 PDF。重新导出不重试模型，也不能恢复从未通过校验的正文。实现及本地验证见 [问题记录](issue-paper-empty-export.md)。此补丁现已随 0.8.6 构建并安装到用户本机，见 [发行记录](github-release-0.8.6.md)。
 
 2026-10-30，依据用户批准的 [改进需求](p6-research-guidance.md) 实施。基线是 `4784255`，它包含 0.6.5 安装包清单中的源码 `1c68d8571d146ba8599bdfcd0b98f75460ebca2c`，以及此前 0.5.2–0.5.5 的整合；没有从旧 main 重做。独立工作树 `.worktrees/p6-research-guidance` / `feat/p6-research-guidance`。
 
