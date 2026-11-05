@@ -396,7 +396,7 @@ def phase_read(ctx):
             all_seen=seen+fresh
             state,patched=ctx.model(f"study_patch:{paper.id}:r{round_no}",paper.id,PATCH,data,
                 _h([data,PATCH.sha256]),lambda out:patch_result(out,study,all_seen,editable,bool(fresh),
-                    preserve_material_gaps=preserve_gaps),soft=True)
+                    preserve_material_gaps=preserve_gaps),soft=True,repair_material=payload(all_seen))
             if state=="wait":return None
             if state=="failed":status="needs_review";break
             added_ids={u['id'] for u in patched['units']}-{u['id'] for u in study['units']}

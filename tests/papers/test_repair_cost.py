@@ -61,8 +61,8 @@ def test_selection_cannot_edit_text_or_admit_unverifiable_quotes():
         study_result(selected, [c])
 
 
-@pytest.mark.parametrize('broken_selection', [False, True])
-def test_over_limit_patch_uses_one_small_selection_and_never_full_regeneration(hub, monkeypatch, broken_selection):
+@pytest.mark.parametrize('broken_selection,bad_quote', [(False,False), (True,False), (False,True)])
+def test_over_limit_patch_uses_one_small_selection_and_never_full_regeneration(hub, monkeypatch, broken_selection, bad_quote):
     from tools.demo import guidance_stub
 
     original, observed, source = guidance_stub.respond, [], []
@@ -75,6 +75,8 @@ def test_over_limit_patch_uses_one_small_selection_and_never_full_regeneration(h
             c = source[0]
             out['replacements'][0]['sources'] = [{'chunk_id': c['chunk_id'], 'quote': c['text'][i:i+60]}
                                                  for i in range(20)]
+            if bad_quote:
+                out['replacements'][0]['sources'][0]['quote'] = 'Authored nonexistent quotation: repair only this slot.'
         if template == 'research.source-select.v1' and broken_selection:
             return {'selections': []}
         return out
@@ -97,6 +99,10 @@ def test_over_limit_patch_uses_one_small_selection_and_never_full_regeneration(h
     else:
         assert view['status'] == 'completed' and view['quality_status'] == 'passed'
         assert '修复后' in next(iter(view['outcome']['studies'].values()))['units'][8]['text']
+        if bad_quote:
+            assert names.count('research.source-repair.v1') == 1
+            refs = next(d for t,d in observed if t == 'research.source-repair.v1')
+            assert [c['chunk_id'] for c in refs['chunks']] == [source[0]['chunk_id']]
 
 
 def test_high_reported_output_stops_before_next_model_creation(hub):

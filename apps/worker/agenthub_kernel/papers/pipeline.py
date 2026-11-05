@@ -154,7 +154,7 @@ class Ctx:
 
     def model(self, name: str, target: Optional[str], template: Any, data: dict, input_hash: str,
               validator: Callable[[dict], Any], *, agent: Optional[str] = None,
-              soft: bool = False) -> tuple[str, Any]:
+              soft: bool = False, repair_material: Optional[list] = None) -> tuple[str, Any]:
         """``("done", result) | ("wait", None) | ("failed", None)`` for one model step."""
         agent = agent or self.main
         key = f"v{self.task.input_version}:{name}:{input_hash[:16]}"
@@ -188,7 +188,10 @@ class Ctx:
             from agenthub_kernel.papers.guidance import SOURCE_REPAIR
             active_template = SOURCE_REPAIR
             failed = {i['unit_id'] for i in repair['issues']}
-            active_data = {'issues': repair['issues'], 'chunks': data['chunks'],
+            available = repair_material if repair_material is not None else data['chunks']
+            requested = {i['chunk_id'] for i in repair['issues']}
+            material = [c for c in available if c['chunk_id'] in requested or c.get('source_id') in requested]
+            active_data = {'issues': repair['issues'], 'chunks': material or available,
                 'units': [{k: u[k] for k in ('id', 'title', 'text', 'sources')}
                           for u in repair['seed']['units'] if u['id'] in failed]}
         elif selection:
