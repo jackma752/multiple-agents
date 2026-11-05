@@ -376,3 +376,30 @@
 | `paper-recover-paid/var/verify_export.py` | 3165 | `052e2bb23f2270915cc307c434497aaa68ec0e499ef55db54d47337136b48dc3` |
 | `paper-recover-paid/var/verify_math.cjs` | 756 | `26a556eacf54cdef3b044f8949e9f3559d931842ca5f33faedc32911e893a14b` |
 | `paper-recover-paid/var/final-state.json` | 128 | `adf60af647a9b0dd0b65eb29b090390df9138c3c43b90d26e254fbbe569f21c1` |
+
+## 2026-11-05：0.8.9 项目内恢复与本机回接
+
+来源 fc72bcab55685ec25f2fae33a55ef4379502c7af。本机原任务已通过安装版 HTTP 接回 19 单元/81 条精确来源；数学未复审，阶段仍 blocked，原调用及账本不变，本轮 Hub 模型调用 0。研究正文、模型回复、私有 DB/PDF/恢复脚本内容不入库，仅登记哈希。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `paper-recover-paid/var/runtime-final-tests.xml` | 56725 | `0e89c1f1d94ccc8960362428e05d29a015facefc39e0f40e3c5b717f1da1f788` |
+| `paper-recover-paid/var/runtime-affected-final.xml` | 8852 | `6a1f7596f60971e8b23ce0215c17525cf05b11191a895a65abc70d9a6c637747` |
+| `paper-recover-paid/var/recovery-package-tests.xml` | 6022 | `959b4a04b04449adb1444760f613889d587f8d6df06452070e0a485ec8caf893` |
+| `paper-recover-paid/var/recovery-ui-result.json` | 276 | `98639f74d134d347a1c20db24f586acd803c5875e80e5fa46af3c6cc5bbf5506` |
+| `paper-recover-paid/var/checkpoint-ui-result.json` | 56 | `fd713757d44535b6672fdee4f06d0692ddc290817477190108b7eeab3ae99bbb` |
+| `paper-recover-paid/var/runtime-preflight.json` | 922 | `49e2d7cde13e0f8a7ecece2d2409156d619da8e460790281faed4da10fa5c6f5` |
+| `paper-recover-paid/var/runtime-db-replay.json` | 367 | `7385ef50cc77381d195b8ec4248dc8cdc551e04f47766f6f605ecadbf9e9aadf` |
+| `paper-recover-paid/var/build-0.8.9.log` | 11567 | `1354d1e513f9415abe5678f5469c116fb179f79f514290d1773f2fef3f6d9614` |
+| `paper-recover-paid/var/release-smoke.json` | 1072 | `7255daea0832102a3f9dfa0cd09dfb389c824fbdd54163dc8c55dad8056d73ba` |
+| `paper-recover-paid/var/frozen-recovery-replay.json` | 347 | `13a501ccbe65c4682129c493ec99ddbd52903ec388558a3a41895e18610e96f7` |
+| `paper-recover-paid/var/local-upgrade-089.json` | 860 | `63a513d6325af9b2f3075d5306b79a8d991f3877599b856cd9f28ba6210f13e6` |
+| `paper-recover-paid/var/local-recovery-089.json` | 502 | `a2484ef4397622b860d5d5f0770d1329f1d545d1ddc58fb53f1f5e9d9ef3bf2d` |
+| `paper-recover-paid/var/release_smoke_089.py` | 9699 | `b828725d30cb344247b35ac90b9c53040d03614ba0c29a96805bd3da90e579f1` |
+| `paper-recover-paid/var/frozen_recovery_replay.py` | 4438 | `d00112a6ddf4f172ee9eeeb119b2fa2bea8c3fa463cabb3dab8386c0c914d175` |
+| `paper-recover-paid/var/upgrade_local_089.py` | 10616 | `cd42fad8f5d19c6f04b0037a6184ea6712b0a08456eaeb82df11900e6a8adec4` |
+| `paper-recover-paid/var/restore_local_089.py` | 3262 | `44c96a61f65c3351c05d231cf66b5122da5e226aaf3a4412a71a2bff86f62704` |
+| `paper-recover-paid/dist/p6-release-0.8.9/AgentHub-0.8.9-windows-x64-setup.exe` | 22955591 | `139770e3491ea1f928b52d1fcd6e5b860f04209a5e676460b1c7597a5f90a502` |
+| `paper-recover-paid/dist/p6-release-0.8.9/AgentHub-0.8.9-windows-x64-portable.zip` | 22655265 | `1b92e71743e9f99dd1baaec90a89e54d4b13969c5cf0c73550b73c457f87933f` |
+| `paper-recover-paid/dist/p6-release-0.8.9/SHA256SUMS.txt` | 211 | `5c73df0c624ff1f126637c3830a73fb6a21caafe8e2b3965d28516e433c2fa0c` |
+| `paper-recover-paid/dist/p6-release-0.8.9/payload/AgentHub/MANIFEST.json` | 40300 | `72c0bd573a7e68d8ac078e0cf439a280960abb5988c6fe6cc80c3a7baea5a11d` |
