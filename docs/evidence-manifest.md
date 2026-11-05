@@ -403,3 +403,6 @@
 | `paper-recover-paid/dist/p6-release-0.8.9/AgentHub-0.8.9-windows-x64-portable.zip` | 22655265 | `1b92e71743e9f99dd1baaec90a89e54d4b13969c5cf0c73550b73c457f87933f` |
 | `paper-recover-paid/dist/p6-release-0.8.9/SHA256SUMS.txt` | 211 | `5c73df0c624ff1f126637c3830a73fb6a21caafe8e2b3965d28516e433c2fa0c` |
 | `paper-recover-paid/dist/p6-release-0.8.9/payload/AgentHub/MANIFEST.json` | 40300 | `72c0bd573a7e68d8ac078e0cf439a280960abb5988c6fe6cc80c3a7baea5a11d` |
+| `paper-recover-paid/var/final-local-089.json` | 168 | `229b020c437f6c99341642e3e6055da67664cf7151d6895d2368105526174d96` |
+| `paper-recover-paid/var/github-release-pending-089.json` | 456 | `8e57cf85869b31f5ec38bfa2c67929aa9487c698e7c53adf0b737fa75bdd5c70` |
+| `paper-recover-paid/var/finish_release_089.py` | 2085 | `65ee08185261b1141f9b2f981c5b1623363d7917a439621bc4994b2c9d45ca75` |
