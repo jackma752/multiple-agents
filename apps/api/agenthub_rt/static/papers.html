@@ -232,6 +232,9 @@ const STATUS = { running: ["进行中", "info"], waiting_input: ["等待你补�
                  stopped: ["已停止", "bad"], blocked: ["已阻塞", "bad"], completed: ["已完成", "ok"] };
 const QUALITY = { pending: ["质量：待定", ""], passed: ["质量：通过", "ok"], failed: ["质量：未通过", "bad"],
                   unavailable: ["质量：审阅不可用", "warn"], needs_review: ["质量：需人工复核", "warn"] };
+function taskStatus(v) {
+  return v.status === "completed" && v.quality_status === "failed" ? ["已结束，成果未通过", "bad"] : (STATUS[v.status] || [v.status, ""]);
+}
 const PHASE = { plan: "检索规划", search: "检索去重", screen: "摘要筛选", fetch: "全文获取", fulltext_gate: "全文补充",
                 read: "阅读与数学讲解", related_read: "关联文献阅读", directions: "方法比较与研究方案", synthesize: "综合分析", outline: "大纲", write: "分节写作", review: "审阅修订",
                 abstract: "摘要", export: "导出", done: "完成" };
@@ -248,7 +251,7 @@ async function loadTasks() {
     api("GET", "/api/papers?archived=true").catch(() => ({ tasks: [] }))]);
   S.tasks = data.tasks;
   const item = (t) => `<li data-id="${esc(t.task_id)}" class="${t.task_id === S.current ? "active" : ""}">
-      <div class="t">${esc(t.topic)}</div><div class="d">${esc((STATUS[t.status] || [t.status])[0])} · ${esc(PHASE[t.phase] || t.phase)}</div></li>`;
+      <div class="t">${esc(t.topic)}</div><div class="d">${esc(taskStatus(t)[0])} · ${esc(PHASE[t.phase] || t.phase)}</div></li>`;
   $("taskList").innerHTML = S.tasks.map(item).join("") || `<li class="dim small">还没有研究任务</li>`;
   $("archivedTasks").hidden = !archived.tasks.length;
   $("archivedSummary").textContent = `已归档（${archived.tasks.length}）`;
@@ -499,7 +502,7 @@ function renderHead(v) {
   if (v.continued_from) block += `<div class="small dim">接续自 <a href="#" data-open="${esc(v.continued_from)}">原研究</a>；“调用”合计含原研究已用部分。</div>`;
   const qualityLabel=v.request.mode&&v.request.mode!=='review'&&v.quality_status==='passed'?['讲解模型核查完成；方案待验证','ok']:(QUALITY[v.quality_status] || [v.quality_status,'']);
   $("taskHead").innerHTML = `<div class="row"><h2 style="margin:0;flex:1;min-width:200px">${esc(v.request.topic)}</h2>
-      ${chip(STATUS[v.status] || [v.status, ""])} ${chip(qualityLabel)}</div>
+      ${chip(taskStatus(v))} ${chip(qualityLabel)}</div>
     <div class="phases">${phases}</div>
     <div class="row small dim">调用 ${esc(v.usage.calls)} 次（本阶段 ${esc(st.calls_used ?? "-")}/${esc(st.max_calls ?? "-")}）· 输入 ${esc(v.usage.input)} / 输出 ${esc(v.usage.output)} tokens${v.usage.unknown ? ` · 用量未知 ${esc(v.usage.unknown)} 次` : ""}
       · 模型：${esc(v.roles.main_agent)}${v.roles.review_agent ? " / 审阅 " + esc(v.roles.review_agent) : "（无审阅）"} · <a href="/chat" title="每一步调用都在对应会话里可查">查看调用记录</a></div>
@@ -628,17 +631,18 @@ function renderResult(v) {
   const o = v.outcome || {};
   if (!v.artifacts.length && !o.insufficient) { box.innerHTML = ""; return; }
   const sample = o.sample || {};
+  const failureLabel = v.request.mode&&v.request.mode!=='review' ? "成果正文生成失败" : "成果质量未通过";
   const reasons = (o.quality_reasons || []).map((r) => `<li>${esc(r)}</li>`).join("");
   const sig = JSON.stringify([v.artifacts.map((a) => a.sha256), v.quality_status]);
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.innerHTML = `<div class="pane"><h2>成果</h2>
     ${o.insufficient ? `<div class="badbox">资料不足：${esc(o.insufficient.detail || o.insufficient.reason)}。已交付资料不足说明，没有补造结论。</div>` : ""}
-    <div class="${v.quality_status === "passed" ? "okbox" : "warnbox"}">执行已完成；${esc(v.request.mode&&v.request.mode!=='review'&&v.quality_status==='passed'?'讲解模型核查完成；方案待查重和验证':(QUALITY[v.quality_status] || [v.quality_status])[0])}
+    <div class="${v.quality_status === "passed" ? "okbox" : v.quality_status === "failed" ? "badbox" : "warnbox"}">${v.quality_status === "failed" ? "执行已结束；"+failureLabel : "执行已结束；"+esc(v.request.mode&&v.request.mode!=='review'&&v.quality_status==='passed'?'讲解模型核查完成；方案待查重和验证':(QUALITY[v.quality_status] || [v.quality_status])[0])}
       ${v.quality_status !== "passed" ? "（成品标为草稿）" : ""}${reasons ? `<ul>${reasons}</ul>` : ""}</div>
-    <div class="small dim">纳入 ${esc(sample.included ?? "-")} 篇：全文 ${esc(sample.fulltext ?? "-")}、仅摘要 ${esc(sample.abstract_only ?? "-")}、仅题录 ${esc(sample.metadata_only ?? "-")}</div>
+    <div class="small dim">纳入 ${esc(sample.included ?? "-")} 篇：${v.request.mode&&v.request.mode!=='review'?'可解析全文':'全文'} ${esc(sample.fulltext ?? "-")}、仅摘要 ${esc(sample.abstract_only ?? "-")}、仅题录 ${esc(sample.metadata_only ?? "-")}</div>
     ${(o.search_sources || []).length ? `<details><summary>各来源检索结果（失败不表示没有文献）</summary><ul>${o.search_sources.map(s=>`<li>${esc(s.query)}：${esc(s.status)}${s.error?' · '+esc(s.error):''}；新增 ${esc(s.counts?.new??0)} 条，合并 ${esc(s.counts?.merged??0)} 条</li>`).join('')}</ul></details>` : ''}
-    <p class="small dim">成果包含原文导出与可编辑文字稿。HTML 可离线阅读/打印为 PDF；DOCX 和 LaTeX 保留公式源文，尚未做公式排版转换。</p>
+    <p class="small dim">成果包包含已生成的讲解、方案和结构化资料，不包含原始论文 PDF。若正文生成失败，文件保存失败说明和已有资料。HTML 可离线阅读/打印为 PDF；DOCX 和 LaTeX 保留公式源文。</p>
     ${o.abstract ? `<h3>摘要</h3><p>${esc(o.abstract.abstract)}</p>` : ""}
     ${(o.synthesis && o.synthesis.gaps || []).length ? `<h3>当前样本中的空白</h3><ul>${o.synthesis.gaps.map((g) => `<li>${esc(g.text)}</li>`).join("")}</ul>` : ""}
     ${o.export_copy ? `<div class="${o.export_copy.ok ? "okbox" : "badbox"} small">${o.export_copy.ok ? "已复制到" : "复制到所选目录失败（" + esc(o.export_copy.error) + "），以下载为准："} <span class="mono">${esc(o.export_copy.directory)}</span></div>` : ""}
@@ -650,7 +654,7 @@ function renderResult(v) {
   const re = $("reexportBtn");
   if (re) re.onclick = async () => {
     re.disabled = true;
-    try { await api("POST", `/api/papers/${v.task_id}/reexport`); box.dataset.sig = ""; await refresh(true); toast("已重新导出；质量状态已按现有正文与审阅重新计算"); }
+    try { await api("POST", `/api/papers/${v.task_id}/reexport`); box.dataset.sig = ""; await refresh(true); toast("已用保存内容重新导出；没有重新阅读或重试模型"); }
     catch (e) { toast(e.message); re.disabled = false; }
   };
 }

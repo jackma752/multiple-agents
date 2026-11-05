@@ -19,6 +19,82 @@ def sample():
     return chunk,teaching({"chunks":[{"chunk_id":chunk.id,"text":chunk.text}]})
 
 
+def test_empty_studies_fail_instead_of_becoming_reviewable_drafts():
+    from agenthub_kernel.papers.guidance_export import quality
+    assert quality({},True)[0]=='failed'
+    assert quality({'p':{'units':[],'depth':'partial'}},True)[0]=='failed'
+    assert quality({'p':{'units':[],'depth':'material_missing'}},False)[0]=='failed'
+    assert quality({'p':{'units':[{}],'depth':'partial'}},True)[0]=='needs_review'
+
+
+def test_saved_reply_recovery_excludes_bad_sources_and_transitive_dependents():
+    from agenthub_kernel.papers.guidance import recover_study_draft
+    c,out=sample()
+    # Append independently authored invalid material and its dependent chain.
+    bad=copy.deepcopy(out['units'][-1]);bad.update(id='bad',sources=[{'chunk_id':c.id,'quote':'A quotation absent from the provided text.'}])
+    child=copy.deepcopy(bad);child.update(id='child',depends_on=['bad'],sources=[])
+    grandchild=copy.deepcopy(child);grandchild.update(id='grandchild',depends_on=['child'])
+    seed={**out,'units':out['units']+[bad,child,grandchild]}
+    recovered=recover_study_draft(seed,[c])
+    assert recovered['units']==study_result(out,[c])['units']
+    assert recovered['math_state']=='incomplete' and recovered['missing']
+    assert recovered['recovery']['excluded_unit_ids']==['bad','child','grandchild']
+    assert recovered['recovery']['model_calls']==0 and not recovered['recovery']['reviewed']
+    assert seed['units'][-3]['sources'][0]['quote'].startswith('A quotation absent')
+    malformed=copy.deepcopy(out);malformed['units'][0]['kind']='invented-kind'
+    assert recover_study_draft(malformed,[c]) is None
+
+
+def test_failed_teaching_exports_clear_diagnostics_and_reexports_without_calls(hub,monkeypatch):
+    from tools.demo import guidance_stub
+    original=guidance_stub.respond
+    def response(template,data):
+        return {'units':[]} if template in ('research.study.v1','research.study.v2') else original(template,data)
+    monkeypatch.setattr(guidance_stub,'respond',response)
+    tid,v=complete(hub,'proposal','empty teaching regression')
+    assert v['quality_status']=='failed'
+    assert v['outcome']['sample']['included']==1
+    assert v['outcome']['sample']['fulltext']==1
+    assert v['papers'][0]['read_status']=='failed'
+    assert any('讲解未生成' in reason for reason in v['outcome']['quality_reasons'])
+    before=hub.model_calls()
+    assert hub.api('POST',f'/api/papers/{tid}/reexport').status_code==200
+    assert hub.model_calls()==before
+    report=hub.api('GET',f'/api/papers/{tid}/artifacts/research-report.json').json()
+    assert report['quality_status']=='failed' and report['quality_reasons']
+    assert report['sample']==v['outcome']['sample']
+    assert '讲解正文未生成' in hub.api('GET',f'/api/papers/{tid}/artifacts/study.md').text
+    assert '研究方案未生成' in hub.api('GET',f'/api/papers/{tid}/artifacts/research-plan.md').text
+    assert '可用讲解单元为 0' in hub.api('GET',f'/api/papers/{tid}/artifacts/EXPORT-README.txt').text
+
+
+def test_failed_directions_keep_existing_teaching_as_partial_output(hub,monkeypatch):
+    from tools.demo import guidance_stub
+    original=guidance_stub.respond
+    def response(template,data):
+        return {'comparison':'candidate generation failed','candidates':[]} if template=='research.directions.v1' else original(template,data)
+    monkeypatch.setattr(guidance_stub,'respond',response)
+    tid,v=complete(hub,'proposal','empty directions regression')
+    assert any(s['units'] for s in v['outcome']['studies'].values())
+    assert not v['outcome']['directions']['candidates']
+    assert v['quality_status']=='needs_review'
+    assert any('研究方案未生成' in reason for reason in v['outcome']['quality_reasons'])
+
+
+def test_historical_failed_step_does_not_taint_current_validated_teaching(hub):
+    from agenthub_kernel.papers.db import PaperStepRow
+    tid,v=complete(hub,'study','historical failure regression')
+    paper=next(iter(v['outcome']['studies']))
+    with hub.client.app.state.db.session() as session:
+        session.add(PaperStepRow(task_id=tid,key='v0:study:old-input',kind='model',name='study',
+                                target=paper,input_hash='old-input',status='failed',error='old failure'))
+    before=hub.model_calls()
+    assert hub.api('POST',f'/api/papers/{tid}/reexport').status_code==200
+    assert hub.model_calls()==before
+    report=hub.api('GET',f'/api/papers/{tid}/artifacts/research-report.json').json()
+    assert report['quality_status']=='passed' and report['quality_reasons']==[]
+
+
 def test_structure_requires_math_chain_and_verifiable_source():
     c,out=sample()
     assert study_result(out,[c])["units"][0]["sources"][0]["pdf_page"]==1

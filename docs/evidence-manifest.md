@@ -286,3 +286,18 @@
 |---|---:|---|
 | `native-preflight-085/var/local-upgrade-085.json` | 522 | `93f5d037a1f311a4f112999de3c20992a03e9e03a42af378c367b96450f95f99` |
 | `native-preflight-085/var/upgrade_local_085.py` | 8526 | `6ec87b7bb995d7203cfa36c6a86866de1742050c83a2ca638ab394caf9e1e013` |
+
+### 空正文导出诊断与独立草稿恢复（2026-11-05）
+
+真实用户数据仅在本地只读检查，不复制账号、凭据或数据库。原失败状态、审批、用量与导出不改；恢复内容是独立、未审阅且未完成的草稿。原文、提示词和模型正文不入库，本轮真实模型调用 0。下列诊断、恢复报告和离线测试记录仅登记长度及哈希。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `paper-empty-export/var/recovery-result.json` | 1123 | `1d924639edc4a6a27e596033aef77424679fd045596c8984ab76babf9efe9492` |
+| `paper-empty-export/var/recover_saved_study.py` | 3808 | `9af4d7121a2be316fe5c7c09b26e1155f2fd5a7309a44c55187c3f51935006a9` |
+| `paper-empty-export/var/failed-reply-diagnostics.json` | 302 | `bb4618ccdf811083ce01008e009955c72585f53c5a9d9a36bbcddac4c93c4cf0` |
+| `paper-empty-export/var/export-guidance-tests.xml` | 6854 | `00d4654978ece28639713263b4125ed27e04cbe178cd7e5349fbbecb533eff84` |
+| `paper-empty-export/var/remaining-papers-tests.xml` | 28239 | `8d02e728785d093f6942cb4a61107832d87b25c4a1b859ed016c4cd87527dd7c` |
+| `paper-empty-export/var/guidance-final-tests.xml` | 3027 | `9b3c3647145c6180511a9fe87e30ff400b60bd8073249e9bab6f7b2c017c119a` |
+| `paper-empty-export/var/check_result_ui.js` | 1865 | `f3f9d5d6b82e5d4c12f3245d6a8e855273a6954c8c0ab3b2741a1d3bb9d07ef2` |
+| `paper-empty-export/var/result-ui-check.json` | 82 | `47431339ec0ec920bd93f7dd912c8f8f5b31cb17b241483a5cd734166327ff94` |

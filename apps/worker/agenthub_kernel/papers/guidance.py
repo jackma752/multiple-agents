@@ -7,12 +7,13 @@ This module does not execute model-generated mathematics or code.
 from __future__ import annotations
 
 import re
+import copy
 from sqlalchemy import select
 
 from agenthub_kernel.papers.db import PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow
 from agenthub_kernel.papers.templates import Template, _register
 from agenthub_kernel.papers.validate import FormatError
-from agenthub_kernel.papers.citations import merge_audit, resolve_units, source_aliases
+from agenthub_kernel.papers.citations import CitationError, merge_audit, resolve_units, source_aliases
 
 KINDS = ("problem", "intuition", "prerequisites", "symbols", "setting", "assumption", "result", "step", "example", "next")
 UNIT_SCHEMA = ('{"id":"stable unique id","kind":"problem|intuition|prerequisites|symbols|setting|assumption|result|step|example|next",'
@@ -173,6 +174,38 @@ def review_result(out, ids):
     return {"issues":issues}
 
 
+def recover_study_draft(seed, chunks):
+    """Separate unfinished draft from a schema-valid saved reply, never a step success.
+
+    Caller must supply only the chunks of the original approved request. Invalid
+    source units and all dependent successors are excluded, not rewritten.
+    This helper is deliberately not used to advance the research pipeline.
+    """
+    excluded=set()
+    try:
+        candidate=study_result(copy.deepcopy(seed),chunks)
+    except CitationError as exc:
+        candidate=exc.candidate
+        excluded={i['unit_id'] for i in exc.issues}
+    except (FormatError, AttributeError, KeyError, TypeError):
+        return None
+    kept=[]
+    for unit in candidate['units']:
+        if unit['id'] in excluded or any(d in excluded for d in unit.get('depends_on',[])):
+            excluded.add(unit['id'])
+        else:kept.append(unit)
+    if not kept:return None
+    missing=list(candidate.get('missing',[]))
+    notice="从历史失败回复恢复的未完成草稿；未重新调用模型，未通过数学审阅。"
+    if excluded:notice+="已排除引用无效的单元及其依赖后继："+", ".join(sorted(excluded))
+    # Keep original material gaps as well as the explicit recovery limitation.
+    if len(missing)<12:missing.append({"reason":notice})
+    checked=study_result({"units":kept,"math_state":"incomplete","missing":missing},chunks)
+    checked['recovery']={"notice":notice,"excluded_unit_ids":sorted(excluded),"original_units":len(seed['units']),
+                         "reviewed":False,"model_calls":0}
+    return checked
+
+
 def patch_result(out, study, chunks, editable, allow_additions=False, *, preserve_material_gaps=False):
     replacements=out.get("replacements")
     additions=out.get("additions",[])
@@ -280,8 +313,12 @@ def phase_read(ctx):
             _h([doc.sha256,[c.id for c in selected],STUDY.sha256]),lambda out:study_result(out,selected),soft=True)
         if state=="wait":return None
         if state=="failed":
+            paper.read_depth="fulltext";paper.read_status="failed"
             studies[paper.id]={"paper_id":paper.id,"title":paper.title,"finished":True,"depth":"partial","units":[],
-                               "missing":[{"reason":"方法结构校验或模型调用失败"}],"issues":[],"review_status":"unavailable"}
+                               "missing":[{"reason":"讲解正文未生成：结构、引文校验或模型调用失败；详情见调用记录。"}],
+                               "issues":[],"review_status":"unavailable",
+                               "coverage":{"chunk_ids":[c.id for c in selected],"pdf_pages":sorted({c.page for c in selected if c.page}),
+                                           "selected":len(selected),"total":len(chunks),"source_hash":doc.sha256}}
             ctx.outcome(studies=studies);continue
         study={k:v for k,v in result.items() if not k.startswith('_')}
         seen=list(selected); issues=[];status="unavailable"

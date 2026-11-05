@@ -18,7 +18,7 @@ import ipaddress
 import json
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, NotRequired, Optional, TypedDict
 from urllib.parse import urlsplit
 
 PAPER_CONTRACT_VERSION = 1
@@ -411,6 +411,30 @@ QUALITY_FAILED = "failed"
 QUALITY_UNAVAILABLE = "unavailable"
 QUALITY_NEEDS_REVIEW = "needs_review"
 QUALITY_STATUSES = (QUALITY_PENDING, QUALITY_PASSED, QUALITY_FAILED, QUALITY_UNAVAILABLE, QUALITY_NEEDS_REVIEW)
+
+
+class GuidanceSample(TypedDict):
+    """Material availability for included papers; not a claim of successful reading."""
+    included: int
+    fulltext: int
+    abstract_only: int
+    metadata_only: int
+
+
+class GuidanceReport(TypedDict):
+    """Guidance export v1; additive diagnostics can be absent in older files."""
+    contract: str
+    task_id: str
+    request: dict[str, Any]
+    studies: dict[str, Any]
+    source_results: list[dict]
+    directions: dict[str, Any]
+    quality_status: str
+    quality_dimensions: dict[str, str]
+    quality_reasons: NotRequired[list[str]]
+    sample: NotRequired[GuidanceSample]
+    usage: dict
+    usage_by_step: dict[str, dict]
 
 
 # --------------------------------------------------------------------------- #

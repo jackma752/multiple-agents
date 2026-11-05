@@ -1,8 +1,8 @@
 """Readable teaching report; provenance is adjacent to mathematics and in an appendix."""
 from sqlalchemy import select
 
-from agenthub.papers import reference_text
-from agenthub_kernel.papers.db import ArtifactRow, PaperRow, PaperStepRow, ProjectRevisionRow
+from agenthub.papers import GuidanceReport, reference_text
+from agenthub_kernel.papers.db import ArtifactRow, PaperDocumentRow, PaperRow, PaperStepRow, ProjectRevisionRow
 from agenthub_kernel.papers.math_markdown import display, prose, symbol
 from agenthub_kernel.service import new_id
 
@@ -15,7 +15,7 @@ def quality(studies, reviewer):
     math = source and all(s.get("depth")=="model_checked" for s in studies.values())
     dimensions={"sources":"located" if source else "missing", "mathematics":"model_checked" if math else "needs_review",
                 "research_plan":"unverified", "language":"not_separately_reviewed"}
-    state="passed" if math else "needs_review" if reviewer else "unavailable"
+    state="failed" if not any(s.get("units") for s in studies.values()) else "passed" if math else "needs_review" if reviewer else "unavailable"
     return state, dimensions
 
 
@@ -40,6 +40,8 @@ def display_studies(studies):
 
 def render_studies(studies):
     md=["# 论文理解与数学推导", "", "> 来源核对与模型审阅不等于数学证明已获形式化验证。", ""]
+    if not any(s.get("units") for s in studies.values()):
+        md += ["> 讲解正文未生成。以下保存缺口、失败说明和参考文献；重新导出不会重新阅读或调用模型。", ""]
     for s in studies.values():
         md += [f"## {s['title']}", "", f"阅读状态：{DEPTH[s['depth']]}", ""]
         for u in s.get("units",[]):
@@ -62,6 +64,8 @@ def render_studies(studies):
 def render_directions(directions):
     md=["# 方法比较与可尝试的研究方案", "", prose(directions.get("comparison","尚未形成方案"),preserve_quotes=False), "",
         "> 以下均为待查重、待证明或待实验的候选，不能直接写成论文成果。", ""]
+    if not directions.get("candidates"):
+        md += ["> 研究方案未生成：当前候选数量为 0。请先处理讲解或方案生成的失败原因。", ""]
     labels={"question":"研究问题","baseline":"已有基线","change":"要改变的一步","rationale":"为什么值得尝试",
             "method":"公式、证明路线或算法","validation":"最小验证","success":"成功标准","failure_plan":"失败后怎么办",
             "prerequisites":"知识与工具准备","first_week":"第一周任务"}
@@ -93,15 +97,15 @@ def project_markdown(project, directions):
     return "\n".join(md)
 
 
-def export_guidance(ctx):
+def export_guidance(ctx) -> GuidanceReport:
     from agenthub_kernel.papers.export import _copy_out, _json, _meta, usage_of
     task,session=ctx.task,ctx.session
     studies=(task.outcome or {}).get("studies",{})
     directions=(task.outcome or {}).get("directions",{})
     state,dimensions=quality(studies,ctx.rules.review_agent)
-    if len(studies)<ctx.request.core_papers:
+    if len(studies)<ctx.request.core_papers and state!="failed":
         state="needs_review";dimensions["sources"]="missing"
-    if ctx.request.mode!="study" and not directions.get("candidates"):state="needs_review"
+    if ctx.request.mode!="study" and not directions.get("candidates") and state!="failed":state="needs_review"
     # A successful teaching check does not upgrade candidate novelty/validation.
     papers=list(session.scalars(select(PaperRow).where(PaperRow.task_id==task.id,PaperRow.included.is_(True)).order_by(PaperRow.rank)))
     references=[{"paper_id":p.id,"reference":reference_text(i+1,_meta(p))} for i,p in enumerate(papers)]
@@ -109,11 +113,30 @@ def export_guidance(ctx):
     study=render_studies(studies)+appendix
     plan=render_directions(directions)
     steps=list(session.scalars(select(PaperStepRow).where(PaperStepRow.task_id==task.id)))
+    reasons=[]
+    if state=="failed":
+        reasons.append("核心论文讲解未生成：可用讲解单元为 0，导出文件仅包含失败说明和已有资料。")
+    if ctx.request.mode!="study" and not directions.get("candidates"):
+        reasons.append("研究方案未生成：候选数量为 0。重新导出只重建文件，不会重试模型。")
+    for step in steps:
+        if step.name=="study" and step.status=="failed" and step.target in studies and not studies[step.target].get("units"):
+            title=next((p.title for p in papers if p.id==step.target),"核心论文")
+            cause="引用原文校验失败" if "source span not found" in (step.error or "") else "模型调用或结构校验未通过，重试已耗尽"
+            reasons.append(f"{title}：{cause}；详情见调用记录。")
+    if state!="passed" and not reasons:
+        reasons.append("请核对推导缺口；研究候选尚未查重和验证")
+    docs={d.id for d in session.scalars(select(PaperDocumentRow).where(PaperDocumentRow.task_id==task.id,
+                                                                     PaperDocumentRow.parse_status=="ok"))}
+    fulltext=sum(p.document_id in docs for p in papers)
+    abstracts=sum(p.document_id not in docs and bool(p.abstract) for p in papers)
+    sample={"included":len(papers),"fulltext":fulltext,"abstract_only":abstracts,
+            "metadata_only":len(papers)-fulltext-abstracts}
     usage=usage_of(session,[i for st in steps for i in (st.invocation_ids or [])])
     project=project_of(session,task)
     report={"contract":"agenthub.guidance/1","task_id":task.id,"request":task.request,"studies":studies,
             "source_results":(task.outcome or {}).get("search_sources",[]),
-            "directions":directions,"quality_status":state,"quality_dimensions":dimensions,"usage":usage,
+            "directions":directions,"quality_status":state,"quality_dimensions":dimensions,"quality_reasons":reasons,
+            "sample":sample,"usage":usage,
             "usage_by_step":{n:usage_of(session,[i for s in steps if s.name==n for i in (s.invocation_ids or [])]) for n in {s.name for s in steps}}}
     files={"review.md":(study+"\n\n"+plan).encode("utf-8"),"study.md":study.encode("utf-8"),
            "research-plan.md":plan.encode("utf-8"),"references.json":_json(references),"research-report.json":_json(report)}
@@ -122,7 +145,7 @@ def export_guidance(ctx):
     from agenthub_kernel.papers.experiments import export_files
     from agenthub_kernel.papers.portable import enrich
     files.update(export_files(session,task))
-    files=enrich(files)
+    files=enrich(files,notice="\n".join(reasons) if reasons else "")
     for name,data in files.items():
         rel,sha,size=ctx.ap.papers.store.write_export(task.id,task.input_version,name,data)
         row=session.scalar(select(ArtifactRow).where(ArtifactRow.task_id==task.id,ArtifactRow.version==task.input_version,ArtifactRow.name==name))
@@ -130,7 +153,7 @@ def export_guidance(ctx):
             row=ArtifactRow(id=new_id("art"),task_id=task.id,version=task.input_version,name=name);session.add(row)
         row.rel_path,row.sha256,row.size,row.final=rel,sha,size,state=="passed"
     task.quality_status=state
-    task.outcome={**(task.outcome or {}),"quality_dimensions":dimensions,
-        "quality_reasons":[] if state=="passed" else ["请核对推导缺口；研究候选尚未查重和验证"],
+    task.outcome={**(task.outcome or {}),"quality_dimensions":dimensions,"sample":sample,
+        "quality_reasons":reasons,
         "export_copy":_copy_out(ctx,files,task.input_version)}
     return report

@@ -105,7 +105,7 @@ def docx_document(md: str) -> bytes:
     return archive(files)
 
 
-def enrich(files: dict[str, bytes]) -> dict[str, bytes]:
+def enrich(files: dict[str, bytes], *, notice: str = "") -> dict[str, bytes]:
     result = dict(files)
     for name, data in files.items():
         if not name.endswith('.md'): continue
@@ -114,7 +114,7 @@ def enrich(files: dict[str, bytes]) -> dict[str, bytes]:
         result[stem+'.html'] = html_document(md)
         result[stem+'.tex'] = tex_document(md)
         result[stem+'.docx'] = docx_document(md)
-    result['EXPORT-README.txt'] = ("研究成果包：正文、结构化资料及可编辑副本。\n"
+    result['EXPORT-README.txt'] = (("本次导出说明：\n"+notice+"\n\n" if notice else "")+"研究成果包：正文、结构化资料及可编辑副本。\n"
         "HTML 可离线阅读并由浏览器打印为 PDF；DOCX/LaTeX 是文字稿，数学公式保留源文。\n"
         "未自动运行 LaTeX 编译器，不承诺出版级公式排版。质量状态以研究报告为准。\n"
         "不含原始论文 PDF、账号密钥或运行数据库。\n").encode('utf-8')
