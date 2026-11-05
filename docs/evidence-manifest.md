@@ -277,3 +277,12 @@
 | `native-preflight-085/var/github-finish-assets.jsonl` | 492 | `36e235f8fec54178bc1642cfbf99190ae1f09303f2cf631991dde252463c36d9` |
 | `native-preflight-085/var/github-publish.json` | 227 | `01e417c1b029c2677bd6bfd2cc10d2452649dc770f47c277d5a0e7e7f34c4f0f` |
 | `native-preflight-085/var/github-verify.json` | 227 | `01e417c1b029c2677bd6bfd2cc10d2452649dc770f47c277d5a0e7e7f34c4f0f` |
+
+### 0.8.5 本机安装完成（2026-11-05）
+
+用户明确确认后执行；指定阶段核对时已暂停，升级后保持暂停。仅登记脱敏安装报告与维护脚本，不读取或计算登录目录、账号文件及配置正文的哈希。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `native-preflight-085/var/local-upgrade-085.json` | 522 | `93f5d037a1f311a4f112999de3c20992a03e9e03a42af378c367b96450f95f99` |
+| `native-preflight-085/var/upgrade_local_085.py` | 8526 | `6ec87b7bb995d7203cfa36c6a86866de1742050c83a2ca638ab394caf9e1e013` |
