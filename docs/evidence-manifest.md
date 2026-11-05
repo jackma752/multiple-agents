@@ -321,3 +321,21 @@
 | `claude-usd-default-off/dist/p6-release-0.8.6/SHA256SUMS.txt` | 211 | `29a50f5c24981aafe325266a138f5f998e14a8134f118467c09c10686a4a2d2e` |
 | `claude-usd-default-off/dist/p6-release-0.8.6/payload/AgentHub/MANIFEST.json` | 40300 | `0afb61bf51a83ff5789a1e973ea26eda69fd29b2685d6864400a4e0d199704cf` |
 | `claude-usd-default-off/var/github-verify-086.json` | 783 | `91620b7a62bdf0e3a54f5d3bf25afa7dad2093022d2e38e78edeca14734b4035` |
+
+
+## 2026-11-05：0.8.7 失败生成断点接续
+
+来源 efbfb609bb1604a3ceaa494aa115e82244562ffe；真实模型调用 0，未启动研究接续。仅登记本地证据哈希，不上传用户研究或数据库。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `paper-failed-checkpoint/var/checkpoint-final-tests.xml` | 43469 | `40400e5e1b16999fa4c739afbfd7fb110b116ad843dd0e017cc875d67e258376` |
+| `paper-failed-checkpoint/var/checkpoint-ui-result.json` | 56 | `a2919b07d91f010c0a43cc24a2c4a20df37f7422127471bdaf21b177aa189850` |
+| `paper-failed-checkpoint/var/actual-checkpoint-preflight.json` | 362 | `9575981c0542c06d9ec7fb37ea81406f9dcd2f693b3decb45a0b03fde0a8fec4` |
+| `paper-failed-checkpoint/var/continuation-proof-preflight.json` | 112 | `df569fae2edf07a36515d512eb6564f0220cc3468966987afd78dfffd94400a2` |
+| `paper-failed-checkpoint/var/release-smoke.json` | 892 | `def3ee6b1f3d8df380b982c0fdd93d7df6bb6acfc64f4c7482fcb5df922b9622` |
+| `paper-failed-checkpoint/var/local-upgrade-087.json` | 752 | `66b409e285d98a0be06941ba6fdfbd53d310b5570f4a2e9954c47d3f9d3544aa` |
+| `paper-failed-checkpoint/dist/p6-release-0.8.7/AgentHub-0.8.7-windows-x64-setup.exe` | 22919921 | `1fddc5da4b30243a967b0bb5d715eac035f84584151bca18a7b6e867b2f57881` |
+| `paper-failed-checkpoint/dist/p6-release-0.8.7/AgentHub-0.8.7-windows-x64-portable.zip` | 22619434 | `70c81358cd450573162a56fe0d68e21381ba7b5b22a727cef2873bb1c4fd6d35` |
+| `paper-failed-checkpoint/dist/p6-release-0.8.7/SHA256SUMS.txt` | 211 | `f48a4dff8b7f4ce1c5d316e6095892256d2ecac224c489f60cadfbaef31759a7` |
+| `paper-failed-checkpoint/dist/p6-release-0.8.7/payload/AgentHub/MANIFEST.json` | 40300 | `3d3394f7759129c287d34523fd8b07cd7627a813d8dd402fe0b5ddc69df04241` |
