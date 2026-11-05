@@ -340,3 +340,22 @@
 | `paper-failed-checkpoint/dist/p6-release-0.8.7/SHA256SUMS.txt` | 211 | `f48a4dff8b7f4ce1c5d316e6095892256d2ecac224c489f60cadfbaef31759a7` |
 | `paper-failed-checkpoint/dist/p6-release-0.8.7/payload/AgentHub/MANIFEST.json` | 40300 | `3d3394f7759129c287d34523fd8b07cd7627a813d8dd402fe0b5ddc69df04241` |
 | `paper-failed-checkpoint/var/github-verify-087.json` | 807 | `5db2e09470ddabfc9f31ac2891879a68225c644d74556e320a563bcda2b38523` |
+
+
+## 2026-11-05：0.8.8 修订耗量保护
+
+来源 08a376dbe668ccaaa886a23700f0457a70986d53；真实模型调用 0，用户阶段保持暂停，研究/聊天不入库。
+
+| 工作树内路径 | 字节 | SHA-256 |
+|---|---:|---|
+| `paper-repair-cost/var/repair-cost-final.xml` | 93186 | `1fa39e50db4b43bfbeb7a99ed79327fbff0df8fe4961569b95eff12535817d91` |
+| `paper-repair-cost/var/repair-usage-contracts.xml` | 9307 | `e19b4eb763dd4b7288e2cafba2e7a61eeeb4f36247850b7e57aed330d27a5245` |
+| `paper-repair-cost/var/repair-material-final.xml` | 6655 | `8bd995e4dab604079b9f4aaff2c7fb5a1a6bff3a163500b1548a175f12f353a4` |
+| `paper-repair-cost/var/checkpoint-ui-result.json` | 56 | `fd713757d44535b6672fdee4f06d0692ddc290817477190108b7eeab3ae99bbb` |
+| `paper-repair-cost/var/actual-cost-replay.json` | 789 | `ca32daa9b1d14c94c13a6bda58b60849ecfbaa99783d02b9c0353d413ffacfb5` |
+| `paper-repair-cost/var/release-smoke.json` | 979 | `ed2c7f26cd5b642ddb8848402055e7a3054d2afe9ddc2b2b89cc36bd14c569f9` |
+| `paper-repair-cost/var/local-upgrade-088.json` | 858 | `c1d1d5c850bb7b4d00b63ad4b5c7542c4bf0d5621bc09e7f719c4a87c6d6ba48` |
+| `paper-repair-cost/dist/p6-release-0.8.8/AgentHub-0.8.8-windows-x64-setup.exe` | 22926446 | `81f07c8e4914c9b9932a0b4a749e1348ef799c79b2e1c3a754efacd1795eaac6` |
+| `paper-repair-cost/dist/p6-release-0.8.8/AgentHub-0.8.8-windows-x64-portable.zip` | 22626617 | `61baec3d86bd7d4a4efc7cfa7c963d2d5f845c2db33431777ee90969ccfd8071` |
+| `paper-repair-cost/dist/p6-release-0.8.8/SHA256SUMS.txt` | 211 | `33acfbab9dd0910cb07694a45664aa5c75c53954efa39a68d7fa1373a4bffc09` |
+| `paper-repair-cost/dist/p6-release-0.8.8/payload/AgentHub/MANIFEST.json` | 40300 | `89eaf37e3dc3114a612953113b3d095b6f7736505dcef379b8a41ca68af4bea2` |
