@@ -339,3 +339,4 @@
 | `paper-failed-checkpoint/dist/p6-release-0.8.7/AgentHub-0.8.7-windows-x64-portable.zip` | 22619434 | `70c81358cd450573162a56fe0d68e21381ba7b5b22a727cef2873bb1c4fd6d35` |
 | `paper-failed-checkpoint/dist/p6-release-0.8.7/SHA256SUMS.txt` | 211 | `f48a4dff8b7f4ce1c5d316e6095892256d2ecac224c489f60cadfbaef31759a7` |
 | `paper-failed-checkpoint/dist/p6-release-0.8.7/payload/AgentHub/MANIFEST.json` | 40300 | `3d3394f7759129c287d34523fd8b07cd7627a813d8dd402fe0b5ddc69df04241` |
+| `paper-failed-checkpoint/var/github-verify-087.json` | 807 | `5db2e09470ddabfc9f31ac2891879a68225c644d74556e320a563bcda2b38523` |
