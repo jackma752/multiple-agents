@@ -457,11 +457,12 @@ function render(force) {
   if (!v) return;
   const main = $("main");
   if (force || !main.querySelector("#taskHead")) {
-    main.innerHTML = `<div id="taskHead" class="pane"></div><div id="supBox"></div><div id="resultBox"></div>
+    main.innerHTML = `<div id="taskHead" class="pane"></div><div id="recoveryBox"></div><div id="supBox"></div><div id="resultBox"></div>
       <div id="papersBox" class="pane"></div><div id="evidenceBox" class="pane" hidden></div><div id="sectionsBox"></div>
       <div id="guidanceBox"></div><div id="experimentBox"></div><div id="stepsBox" class="pane"></div>`;
   }
   renderHead(v);
+  renderSavedRecovery(v);
   renderSupplement(v);
   renderResult(v);
   renderPapers(v);
@@ -734,6 +735,58 @@ function renderSections(v) {
   for (const c of box.querySelectorAll(".cite")) c.onclick = () => showEvidence(null, c.dataset.cite);
 }
 
+function renderSavedRecovery(v) {
+  const box=$('recoveryBox');
+  const sig=JSON.stringify([v.task_id,v.phase,v.status,v.steps.map(s=>[s.key,s.status,s.invocation_ids])]);
+  if(box.dataset.sig===sig)return;
+  box.dataset.sig=sig;box.replaceChildren();
+  if(v.phase!=='read'||!['paused','blocked','stopped'].includes(v.status)||v.continued_to)return;
+  if(!v.steps.some(s=>s.kind==='model'&&['study','study_patch'].includes(s.name)&&s.status!=='succeeded'&&!s.key.startsWith('history:')&&s.invocation_ids.length))return;
+  const add=(p,tag,t)=>{const e=document.createElement(tag);if(t!==undefined)e.textContent=t;p.append(e);return e;};
+  const panel=add(box,'div');panel.className='pane';
+  add(panel,'h2','已生成内容恢复');
+  add(panel,'p','模型已返回但校验失败的回复可以检查后接回原任务。此操作不调用模型、不恢复自动执行，后续审阅仍需授权。');
+  const scan=add(panel,'button','检查已生成回复（不调用模型）');
+  const results=add(panel,'div');
+  scan.onclick=async()=>{
+    scan.disabled=true;results.replaceChildren();
+    try {
+      const data=await api('GET',`/api/papers/${v.task_id}/recovery`);
+      if(S.current!==v.task_id||!panel.isConnected)return;
+      if(!data.candidates.length)add(results,'p','暂无能安全恢复的原始回复。');
+      for(const offer of data.candidates) {
+        const card=add(results,'section');
+        add(card,'h3',`${offer.units} 个讲解单元 · ${offer.invocation_id}`);
+        add(card,'p',offer.valid?'结构和来源校验通过；数学尚未复审。':`仍需处理：${offer.issues.map(i=>i.code==='source_limit_remaining'?`${i.unit_id} 的来源 ${i.count} 条，超过 ${i.limit} 条`:`${i.unit_id} 的原文引用未通过定位`).join('；')}`);
+        const edits=[];
+        for(const slot of offer.failed_sources) {
+          const group=add(card,'div');
+          add(group,'p',`${slot.unit_id} · 引用 ${slot.source_index+1} · PDF 页 ${slot.pdf_page ?? '未知'}`);
+          const details=add(group,'details');add(details,'summary','查看原来已批准的来源片段');
+          const pre=add(details,'pre',slot.approved_text);pre.style.whiteSpace='pre-wrap';pre.style.maxHeight='240px';pre.style.overflow='auto';
+          const label=add(group,'label','从上方同一片段复制可唯一定位的完整原文：');
+          const input=add(label,'textarea');input.value=slot.quote;input.rows=3;input.style.width='100%';
+          edits.push({slot,input});
+        }
+        const apply=add(card,'button','恢复这份回复到原任务（不调用模型）');
+        const result=add(card,'p');
+        const clientRequestId=crypto.randomUUID();
+        apply.onclick=async()=>{
+          apply.disabled=true;
+          const corrections=edits.filter(({slot,input})=>input.value!==slot.quote).map(({slot,input})=>({unit_id:slot.unit_id,source_index:slot.source_index,chunk_id:slot.chunk_id,quote:input.value}));
+          try {
+            const saved=await api('POST',`/api/papers/${v.task_id}/recovery`,{step_id:offer.step_id,invocation_id:offer.invocation_id,fingerprint:offer.fingerprint,client_request_id:clientRequestId,corrections});
+            result.textContent=`已接回 ${saved.units ?? offer.units} 个单元。阶段仍暂停或阻塞，未启动模型；请先核对讲解，再决定后续审阅授权。`;
+            toast('已接回原任务，没有启动模型');
+            await refresh(true);
+          } catch(e) {result.textContent=e.message;apply.disabled=false;}
+        };
+      }
+      for(const row of data.unavailable)add(results,'p',`${row.invocation_id} 暂不能恢复：${row.message}`);
+    } catch(e) {add(results,'p',e.message);} finally {scan.disabled=false;}
+  };
+}
+
 function renderGuidance(v) {
   const box=$("guidanceBox"), studies=v.outcome.studies || {}, directions=v.outcome.directions || {};
   const sig=JSON.stringify([studies,directions,v.outcome.quality_dimensions,v.usage_by_step,v.status]);
@@ -747,6 +800,7 @@ function renderGuidance(v) {
   const depth={material_missing:'核心全文不足',partial:'推导仍有缺口',method_read:'方法已整理，推导未核查',model_checked:'推导经模型审阅（非形式化证明）'};
   for(const s of Object.values(studies)) {
     add(panel,'h3',s.title);add(panel,'p',depth[s.depth] || s.depth);
+    if(s.recovery)add(panel,'p','已从保存的模型回复接回原任务；未新增模型调用，数学仍待复审。');
     const cov=s.coverage||{};add(panel,'p',`阅读覆盖：PDF 页 ${cov.pdf_pages || '未知'}，分块 ${cov.selected || 0}/${cov.total || 0}`);
     for(const u of s.units || []) {
       const detail=add(panel,'details');detail.open=['problem','intuition'].includes(u.kind);

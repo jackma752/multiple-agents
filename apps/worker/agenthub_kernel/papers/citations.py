@@ -28,6 +28,31 @@ class ReferenceLimitError(FormatError):
         super().__init__("too many sources per unit (limit 12): " + detail)
 
 
+class TeachingFieldError(FormatError):
+    """Retain a paid draft whose required reason fields need local completion."""
+    def __init__(self, issues, candidate):
+        self.issues, self.candidate = issues, copy.deepcopy(candidate)
+        super().__init__('missing reason fields: ' + ', '.join(i['unit_id'] for i in issues))
+
+
+def apply_reason_patch(out, seed, issues):
+    if not isinstance(out, dict) or set(out) != {'reasons'} or not isinstance(out['reasons'], list):
+        raise FormatError('reason repair must contain reasons only')
+    allowed = {i['unit_id'] for i in issues}
+    fixed, seen = copy.deepcopy(seed), set()
+    units = {u['id']:u for u in fixed['units']}
+    for row in out['reasons']:
+        if (not isinstance(row, dict) or set(row) != {'unit_id','reason'}
+                or not isinstance(row['unit_id'], str) or row['unit_id'] not in allowed or row['unit_id'] in seen
+                or not isinstance(row['reason'], str) or not row['reason'].strip() or len(row['reason']) > 4000):
+            raise FormatError('reason repair may fill named missing fields only (1..4000 chars)')
+        units[row['unit_id']]['reason'] = row['reason']
+        seen.add(row['unit_id'])
+    if seen != allowed:
+        raise FormatError('reason repair must fill every named field')
+    return fixed
+
+
 def apply_source_selection(out, seed, issues):
     """Select existing references only. Never edit prose, math or dependencies."""
     if not isinstance(out, dict) or set(out) != {'selections'} or not isinstance(out['selections'], list):

@@ -32,7 +32,7 @@ from agenthub.papers import ResearchRetryCheckpoint
 from agenthub.stage import STAGE_OPEN
 from agenthub_kernel.autopilot import _event, proven_modes
 from agenthub_kernel.db import (
-    ConversationRow, InvocationRow, StageGrantRow, StageRunRow, TaskRow, TreeQuotaRow, UsageLedgerRow,
+    ChatMessageRow, ConversationRow, InvocationRow, StageGrantRow, StageRunRow, TaskRow, TreeQuotaRow, UsageLedgerRow,
 )
 from agenthub_kernel.papers.db import (
     EvidenceRow, MissingItemRow, PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow, ResearchTaskRow, SectionRow,
@@ -293,29 +293,82 @@ def _copy_material(session: Session, old: ResearchTaskRow, new: ResearchTaskRow)
 
 def _carry_study_repair(session: Session, old: ResearchTaskRow, new: ResearchTaskRow,
                        old_paper: PaperRow, paper: PaperRow, ids: dict) -> None:
-    """Reuse a bounded citation repair seed; it still must pass the full validator."""
-    from agenthub_kernel.papers.citations import CitationError
+    """Reuse a paid local-repair seed; it still must pass the full validator."""
+    from agenthub_kernel.papers.citations import CitationError, ReferenceLimitError, TeachingFieldError
     from agenthub_kernel.papers.guidance import STUDY, study_result
-    from agenthub_kernel.papers.validate import FormatError
+    from agenthub_kernel.papers.validate import FormatError, parse_json
+    from agenthub.contracts import InvocationSnapshot
+    import json
 
     old_hash, _ = _study_input(session, old, old_paper)
+    if not old_hash:return
     row = session.scalar(select(PaperStepRow).where(
         PaperStepRow.task_id == old.id, PaperStepRow.kind == "model", PaperStepRow.name == "study",
         PaperStepRow.target == old_paper.id, PaperStepRow.input_hash == old_hash,
         PaperStepRow.key == f"v{old.input_version}:study:{old_paper.id}:{old_hash[:16]}"))
     state = _remap(row.result, ids) if row and isinstance(row.result, dict) else {}
-    repair = state.get("_citation_repair") or {}
-    if not repair.get("seed"):
-        return
     digest, selected = _study_input(session, new, paper)
+    if not digest or session.scalar(select(PaperStepRow.id).where(PaperStepRow.task_id == new.id,
+            PaperStepRow.key == f'v{new.input_version}:study:{paper.id}:{digest[:16]}')):
+        return
+    repair = next((state[k] for k in ('_citation_repair','_reason_repair','_source_selection') if state.get(k)), {})
+    seed = repair.get('seed')
+    if seed is None and row:
+        # Validate the original snapshot and exact original sent material before
+        # remapping IDs into the continuation. No new material or model call.
+        _, old_selected = _study_input(session, old, old_paper)
+        expected = {c.id:c for c in old_selected}
+        for iid in reversed(row.invocation_ids or []):
+            inv = session.get(InvocationRow, iid)
+            if inv is None or inv.status != 'succeeded':continue
+            prompt = session.scalar(select(ChatMessageRow.text).where(ChatMessageRow.invocation_id==iid,ChatMessageRow.role=='user'))
+            reply = session.scalar(select(ChatMessageRow.text).where(ChatMessageRow.invocation_id==iid,ChatMessageRow.role=='assistant'))
+            if not prompt or reply is None or not prompt.startswith('AGENTHUB-TEMPLATE: '+STUDY.id+'\n'):continue
+            try:
+                assert InvocationSnapshot(**inv.snapshot).payload_hash() == inv.payload_hash
+                assert prompt in inv.snapshot['task_input']
+                data = json.JSONDecoder().raw_decode(prompt.split('<<<DATA (untrusted material)\n',1)[1])[0]
+                assert {c['chunk_id'] for c in data['chunks']} == set(expected)
+                assert all(c['text']==expected[c['chunk_id']].text and c['pdf_page']==expected[c['chunk_id']].page for c in data['chunks'])
+                seed = _remap(parse_json(reply), ids)
+                state['_paid_seed'] = {'invocation_id':iid, 'source_step_id':row.id}
+                break
+            except (ValueError, TypeError, KeyError, IndexError, AssertionError):continue
+    if seed is None:return
+    status = 'pending'
     try:
-        study_result(repair["seed"], selected)
-    except CitationError as exc:
-        state["_citation_repair"] = {"seed": exc.candidate, "issues": exc.issues}
+        checked = study_result(seed, selected)
+    except (CitationError, ReferenceLimitError, TeachingFieldError) as exc:
+        for key in ('_citation_repair','_reason_repair','_source_selection'):state.pop(key,None)
+        key = ('_reason_repair' if isinstance(exc,TeachingFieldError) else
+               '_citation_repair' if isinstance(exc,CitationError) else '_source_selection')
+        state[key] = {"seed":exc.candidate, "issues":exc.issues}
     except FormatError:
         return  # Unusable structure needs a new failed-step generation, not an invented repair.
     else:
-        return
+        state, status = checked, 'succeeded'
     session.add(PaperStepRow(task_id=new.id, key=f"v{new.input_version}:study:{paper.id}:{digest[:16]}",
-        kind="model", name="study", target=paper.id, input_hash=digest, status="pending", attempts=0,
+        kind="model", name="study", target=paper.id, input_hash=digest, status=status, attempts=0,
         invocation_ids=[], template=STUDY.meta(), result=state))
+    session.flush()
+
+
+def carry_legacy_study(session, task, paper):
+    """Upgrade a prior continuation's missing checkpoint in its current phase."""
+    source = ((task.outcome or {}).get('continued_from') or {}).get('task_id')
+    if not source:return
+    digest, _ = _study_input(session,task,paper)
+    if not digest or session.scalar(select(PaperStepRow.id).where(PaperStepRow.task_id==task.id,
+            PaperStepRow.key==f'v{task.input_version}:study:{paper.id}:{digest[:16]}')):return
+    old = session.get(ResearchTaskRow, source)
+    if old is None or old.user_id != task.user_id:return
+    old_paper = session.scalar(select(PaperRow).where(PaperRow.task_id==old.id,
+        PaperRow.source==paper.source, PaperRow.source_id==paper.source_id))
+    doc = session.get(PaperDocumentRow,paper.document_id) if paper.document_id else None
+    old_doc = session.get(PaperDocumentRow,old_paper.document_id) if old_paper and old_paper.document_id else None
+    if not doc or not old_doc or doc.sha256 != old_doc.sha256:return
+    current = {c.seq:c for c in session.scalars(select(PaperChunkRow).where(PaperChunkRow.document_id==doc.id))}
+    earlier = list(session.scalars(select(PaperChunkRow).where(PaperChunkRow.document_id==old_doc.id)))
+    if len(current)!=len(earlier) or any(c.seq not in current or c.text!=current[c.seq].text or c.sha256!=current[c.seq].sha256 for c in earlier):return
+    ids = {old_paper.id:paper.id,old_doc.id:doc.id,**{c.id:current[c.seq].id for c in earlier}}
+    _carry_study_repair(session,old,task,old_paper,paper,ids)

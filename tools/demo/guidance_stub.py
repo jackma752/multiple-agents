@@ -32,6 +32,8 @@ def teaching(data):
 
 
 def respond(template,data):
+    if template == 'research.reason-repair.v1':
+        return {'reasons':[{'unit_id':i['unit_id'],'reason':'离线教学示例：该已陈述条件用于控制几何级数尾和；仍需后续数学审阅。'} for i in data['issues']]}
     if template == 'research.source-select.v1':
         return {'selections': [{'unit_id': i['unit_id'], 'source_indices': list(range(i['limit']))}
                                for i in data['issues']]}

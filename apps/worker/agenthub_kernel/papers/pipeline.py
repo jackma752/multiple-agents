@@ -52,7 +52,7 @@ from agenthub_kernel.papers.parse import chunk, parse_bytes, quote_in
 from agenthub_kernel.papers.templates import ABSTRACT, EXTRACT, OUTLINE, PLAN, REVIEW, SCREEN, SECTION, SYNTHESIZE, render
 from agenthub_kernel.papers.validate import FormatError, parse_json
 from agenthub_kernel.papers.citations import (
-    CitationError, ReferenceLimitError, apply_source_patch, apply_source_selection, merge_audit,
+    CitationError, ReferenceLimitError, TeachingFieldError, apply_source_patch, apply_source_selection, apply_reason_patch, merge_audit,
 )
 from agenthub_kernel.service import new_id
 
@@ -173,18 +173,33 @@ class Ctx:
         last = self.session.get(InvocationRow, row.invocation_ids[-1]) if row.invocation_ids else None
         grant = self.session.scalar(select(StageGrantRow).where(StageGrantRow.invocation_id == last.id)) if last else None
         legacy_patch = last and (last.status == 'failed' or (grant and grant.stage_id != self.stage.id))
-        if name.startswith('study_patch:') and legacy_patch and not any((row.result or {}).get(k) for k in ('_citation_repair','_source_selection')):
+        if name.startswith('study_patch:') and legacy_patch and not any((row.result or {}).get(k) for k in ('_citation_repair','_source_selection','_reason_repair')):
             recovered = self._saved_patch(row, validator)
             if recovered is not None:
                 return recovered
         state_data = row.result if isinstance(row.result, dict) else {}
         repair = state_data.get('_citation_repair')
         selection = state_data.get('_source_selection')
+        fields = state_data.get('_reason_repair')
         active_template, active_data = template, data
         if name.startswith(('study:', 'study_patch:')):
             active_data = {**data, 'output_constraints': {'max_sources_per_unit': 12, 'max_units': 60,
                 'instruction': 'Keep references concise. Do not regenerate unrelated teaching units.'}}
-        if repair:
+        if fields:
+            from agenthub_kernel.papers.guidance import REASON_REPAIR
+            active_template = REASON_REPAIR
+            ids = {i['unit_id'] for i in fields['issues']}
+            relevant = set(ids)
+            for unit in reversed(fields['seed']['units']):
+                if unit['id'] in relevant:relevant.update(unit.get('depends_on', []))
+            units = [u for u in fields['seed']['units'] if u['id'] in relevant]
+            ref_ids = {r.get('chunk_id') or r.get('source_id') for u in units for r in u.get('sources', []) if isinstance(r,dict)}
+            available = repair_material if repair_material is not None else data['chunks']
+            from agenthub_kernel.papers.guidance import unit_payload
+            active_data = {'issues':fields['issues'], 'units':unit_payload([u for u in units if u['id'] in ids]),
+                'context':[{k:u[k] for k in ('id','title','text','latex') if k in u} for u in units if u['id'] not in ids],
+                'chunks':[c for c in available if c['chunk_id'] in ref_ids or c.get('source_id') in ref_ids]}
+        elif repair:
             from agenthub_kernel.papers.guidance import SOURCE_REPAIR
             active_template = SOURCE_REPAIR
             failed = {i['unit_id'] for i in repair['issues']}
@@ -211,7 +226,7 @@ class Ctx:
                                                 render(active_template, active_data, language=self.request.language),
                                                 self.to_start)
         except _Blocked as blocked:
-            if (repair or selection) and blocked.reason in SOFT_REASONS:
+            if (repair or selection or fields) and blocked.reason in SOFT_REASONS:
                 raise _Blocked(stage_step, 'paper_repair_review',
                     'Saved teaching retained; reference repair needs a new user-authorized stage. No full regeneration.',
                     blocked.invocation_id)
@@ -228,13 +243,14 @@ class Ctx:
         try:
             result = self._checked_reply(row, validator, reply.text)
         except FormatError as exc:
-            targeted = isinstance(exc, (CitationError, ReferenceLimitError)) and name.startswith(('study:', 'study_patch:'))
+            targeted = isinstance(exc, (CitationError, ReferenceLimitError, TeachingFieldError)) and name.startswith(('study:', 'study_patch:'))
             if targeted:
                 self._save_reference_repair(row, exc)
             # A failed local repair must never fall back to rewriting all units.
             # Permit a source-list selection to expose a *different* exact-span
             # problem once; every other failed local repair blocks immediately.
-            if (repair or selection) and not (selection and isinstance(exc, CitationError)):
+            transitioned = (selection and isinstance(exc, CitationError)) or (fields and isinstance(exc, (CitationError, ReferenceLimitError)))
+            if (repair or selection or fields) and not transitioned:
                 row.error = f'local_reference_repair_failed: {str(exc)[:350]}'
                 raise _Blocked(stage_step, 'paper_repair_review', row.error, inv.id)
             if name.startswith('study_patch:') and not targeted:
@@ -257,7 +273,11 @@ class Ctx:
         state = row.result if isinstance(row.result, dict) else {}
         repair = state.get('_citation_repair')
         selection = state.get('_source_selection')
-        if repair:
+        fields = state.get('_reason_repair')
+        if fields:
+            out = apply_reason_patch(out, fields['seed'], fields['issues'])
+            out = Ctx._patch_envelope(out, fields)
+        elif repair:
             out = apply_source_patch(out, repair['seed'], repair['issues'])
             out = Ctx._patch_envelope(out, repair)
         elif selection:
@@ -274,7 +294,9 @@ class Ctx:
         if patch is None:
             return candidate
         by_id = {u['id']: u for u in candidate['units']}
-        return {**patch, **{key: [{**u, 'sources': by_id[u['id']].get('sources', [])} for u in patch.get(key, [])]
+        reasons = {i['unit_id'] for i in repair.get('issues', []) if i.get('field') == 'reason'}
+        return {**patch, **{key: [{**u, 'sources': by_id[u['id']].get('sources', []),
+                                   **({'reason':by_id[u['id']]['reason']} if u['id'] in reasons else {})} for u in patch.get(key, [])]
                            for key in ('replacements', 'additions')}}
 
     @staticmethod
@@ -283,9 +305,11 @@ class Ctx:
         seed = {'seed': exc.candidate, 'issues': exc.issues}
         if hasattr(exc, 'patch'):
             seed['patch'] = exc.patch
-        key = '_citation_repair' if isinstance(exc, CitationError) else '_source_selection'
+        key = ('_reason_repair' if isinstance(exc, TeachingFieldError) else
+               '_citation_repair' if isinstance(exc, CitationError) else '_source_selection')
         state.pop('_citation_repair', None)
         state.pop('_source_selection', None)
+        state.pop('_reason_repair', None)
         state[key] = seed
         state['_citation_history'] = state.get('_citation_history', []) + exc.candidate.get('citation_audit', [])
         row.result = state
@@ -301,7 +325,7 @@ class Ctx:
                 continue
             try:
                 checked = validator(parse_json(reply.text))
-            except (ReferenceLimitError, CitationError) as exc:
+            except (ReferenceLimitError, CitationError, TeachingFieldError) as exc:
                 self._save_reference_repair(row, exc)
                 _event(self.session, self.stage, 'paper_patch_seed_recovered', invocation_id=iid, step=row.key[:120])
                 return None

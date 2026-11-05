@@ -56,6 +56,23 @@ class ContinueIn(BaseModel):
     supervised_consent: StrictBool = False
 
 
+class RecoveryCorrectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    unit_id: str = Field(min_length=1, max_length=100)
+    source_index: StrictInt = Field(ge=0, le=1000)
+    chunk_id: str = Field(min_length=1, max_length=100)
+    quote: str = Field(min_length=12, max_length=24000)
+
+
+class RecoveryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    step_id: StrictInt = Field(ge=1)
+    invocation_id: str = Field(min_length=1, max_length=100)
+    fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    client_request_id: str = Field(min_length=1, max_length=100)
+    corrections: list[RecoveryCorrectionIn] = Field(default_factory=list, max_length=40)
+
+
 class ChoiceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: str
@@ -347,6 +364,28 @@ def register_papers(app, db) -> None:
             view = service.task_view(session, task, clock())
         app.state.autopilot.kick()
         return view
+
+    @app.get("/api/papers/{task_id}/recovery")
+    def recovery_preview(task_id: str, principal: Principal = Depends(authenticate)):
+        from agenthub_kernel.papers.saved_recovery import preview
+        require_approver(principal)
+        with db.session() as session:
+            try:
+                return preview(session, service.owned_task(session, task_id, principal.identity))
+            except QuotaError as exc:
+                raise refused(exc)
+
+    @app.post("/api/papers/{task_id}/recovery")
+    def recovery_apply(task_id: str, body: RecoveryIn, principal: Principal = Depends(authenticate)):
+        from agenthub_kernel.papers.saved_recovery import apply
+        require_approver(principal)
+        with db.session() as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                return apply(session, principal.identity, task_id, body.model_dump(), clock())
+            except QuotaError as exc:
+                raise refused(exc)
+        # Deliberately no scheduler kick: recovery grants no model authorization.
 
     @app.post("/api/papers/{task_id}/reexport")
     def reexport(task_id: str, principal: Principal = Depends(authenticate)):

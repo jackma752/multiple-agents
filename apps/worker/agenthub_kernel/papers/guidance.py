@@ -13,7 +13,7 @@ from sqlalchemy import select
 from agenthub_kernel.papers.db import PaperChunkRow, PaperDocumentRow, PaperRow, PaperStepRow
 from agenthub_kernel.papers.templates import Template, _register
 from agenthub_kernel.papers.validate import FormatError
-from agenthub_kernel.papers.citations import CitationError, ReferenceLimitError, merge_audit, resolve_units, source_aliases
+from agenthub_kernel.papers.citations import CitationError, ReferenceLimitError, TeachingFieldError, merge_audit, resolve_units, source_aliases
 
 KINDS = ("problem", "intuition", "prerequisites", "symbols", "setting", "assumption", "result", "step", "example", "next")
 UNIT_SCHEMA = ('{"id":"stable unique id","kind":"problem|intuition|prerequisites|symbols|setting|assumption|result|step|example|next",'
@@ -55,6 +55,15 @@ SOURCE_SELECT = _register(Template(
     "the program will stop for human review rather than regenerate the teaching text.",
     "Reduce over-limit source lists only. Return indices, not the references or teaching units. "
     "A selection is not mathematical review or proof of completeness.",
+))
+REASON_REPAIR = _register(Template(
+    'research.reason-repair.v1', 1, 'read', ('issues','units','chunks'),
+    '{"reasons":[{"unit_id":"given id","reason":"why this stated assumption/step is needed"}]}',
+    'Fill ONLY the missing reason fields named by issues. All explanations, equations, dependencies, '
+    'references and material gaps are retained by the backend. Use only the supplied approved context.',
+    'Do not invent an author proof, new assumption or new evidence. State any limitation rather than claim proof.',
+    'Explain the purpose of each named assumption or why the already stated step follows. Return reasons only, '
+    'at most 4000 characters per field. This field completion does not replace mathematical review.',
 ))
 CHECK = _register(Template(
     "research.study-review.v1", 1, "review", ("units", "chunks", "previous_issues"),
@@ -130,7 +139,7 @@ def study_result(out, chunks):
     units = out.get("units")
     if not isinstance(units, list) or not 1 <= len(units) <= 60:
         raise FormatError("study needs all teaching units and at least two derivation steps")
-    seen, kinds, overflow = set(), [], []
+    seen, kinds, overflow, fields = set(), [], [], []
     for unit in units:
         uid = _text(unit, "id")
         if uid in seen or len(uid)>80 or not re.fullmatch(r"[A-Za-z0-9_-]+", uid):
@@ -150,9 +159,12 @@ def study_result(out, chunks):
                 raise FormatError("symbols need explicit symbol/meaning/domain definitions")
             for definition in definitions:
                 for key in ("symbol","meaning","domain"):_text(definition,key)
-        if kind=="assumption":_text(unit,"reason")
+        if kind in ('assumption','step','example'):
+            if unit.get('reason') is None or isinstance(unit.get('reason'), str) and not unit['reason'].strip():
+                fields.append({'unit_id':uid, 'field':'reason'})
+            else:
+                _text(unit,'reason')
         if kind in ("step", "example"):
-            _text(unit, "reason")
             if not deps:
                 raise FormatError("steps/examples must name their assumptions or previous steps")
         if kind=="step":_text(unit,"latex")
@@ -169,6 +181,8 @@ def study_result(out, chunks):
     if out.get("math_state")=="complete" and (set(KINDS)-set(kinds) or kinds.count("step")<2):
         raise FormatError("missing teaching components")
     missing=missing_items(out)
+    if fields:
+        raise TeachingFieldError(fields,{"units":units,"math_state":out["math_state"],"missing":missing})
     if overflow:
         raise ReferenceLimitError(overflow,{"units":units,"math_state":out["math_state"],"missing":missing})
     checked = resolve_units({"units":units,"math_state":out["math_state"],"missing":missing}, chunks)
@@ -248,7 +262,7 @@ def patch_result(out, study, chunks, editable, allow_additions=False, *, preserv
             candidate['math_state'] = 'incomplete'
     try:
         checked = study_result(candidate,chunks)
-    except (CitationError, ReferenceLimitError) as exc:
+    except (CitationError, ReferenceLimitError, TeachingFieldError) as exc:
         # Retain the exact patch envelope as well as the assembled candidate.
         # A repair may edit reference slots/lists, never other teaching fields.
         exc.patch = copy.deepcopy(out)
@@ -330,6 +344,10 @@ def phase_read(ctx):
             ctx.outcome(studies=studies);continue
         chunks=list(ctx.session.scalars(select(PaperChunkRow).where(PaperChunkRow.document_id==doc.id).order_by(PaperChunkRow.seq)))
         selected=pick(chunks)
+        # Older continuations only carried citation errors. Recover paid drafts
+        # with missing reason fields before a new full teaching call is made.
+        from agenthub_kernel.papers.continuation import carry_legacy_study
+        carry_legacy_study(ctx.session, ctx.task, paper)
         state,result=ctx.model(f"study:{paper.id}",paper.id,STUDY,
             {"topic":ctx.request.topic,"paper":{"paper_id":paper.id,"title":paper.title},"chunks":payload(selected),
              "coverage":{"selected":len(selected),"total":len(chunks),"selection":"definitions/proofs and adjacent chunks; bounded"}},

@@ -42,6 +42,24 @@ class ResearchRetryCheckpoint(TypedDict):
     remaining_calls: Optional[int]
     remaining_tokens: Optional[int]
 
+
+class SavedReplyRecovery(TypedDict):
+    """An offline checkpoint repair, never a stage/model authorization.
+
+    GET /api/papers/{task}/recovery lists candidates. POST applies one saved
+    reply under its preview fingerprint, with optional exact quote corrections
+    restricted to failed slots in their original approved chunk. All model
+    calls/usage and prior checkpoint data remain in the audit history.
+    """
+
+    step_id: int
+    invocation_id: str
+    fingerprint: str
+    units: int
+    valid: bool
+    issues: list[dict]
+    model_calls: int
+
 # --------------------------------------------------------------------------- #
 # request
 # --------------------------------------------------------------------------- #
